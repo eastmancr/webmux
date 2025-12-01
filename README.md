@@ -48,6 +48,10 @@ $wm upload <file>...      # upload files
 $wm scratch [text]        # get/set scratch pad
 $wm scratch -             # send stdin to scratch pad
 $wm scratch clear         # clear scratch pad
+$wm mark                  # list marked files
+$wm mark <file|dir>...    # mark files/directories for download
+$wm mark unmark <path>    # unmark a file/directory
+$wm mark clear            # clear all marked files
 ```
 
 ## Features
@@ -55,11 +59,17 @@ $wm scratch clear         # clear scratch pad
 - Multiple terminal sessions with persistent tmux backing
 - Session management (create, rename, close)
 - Split panes (2, 3, or 4 terminals per group)
-- File upload/download
+- Drag-and-drop session reordering and grouping
+- File browser with:
+  - Mark files and directories for bulk download
+  - Single file direct download
+  - Directory download as zip
+  - File info popup with copy path and send to scratch pad
+- File upload via drag-and-drop or file picker
 - Scratch pad for CLI-browser text exchange
 - Customizable UI and terminal colors (Base24 theme support)
 - Clipboard integration via OSC 52
-- Toast notifications
+- Keyboard shortcuts (Ctrl+Shift+T for new session, etc.)
 
 ## Files
 

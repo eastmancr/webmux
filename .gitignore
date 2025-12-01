@@ -4,6 +4,9 @@ webmux-dev
 /wm
 static/wm
 
+# Package build
+pkg/
+
 # IDE
 .idea/
 .vscode/
