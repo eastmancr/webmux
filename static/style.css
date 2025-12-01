@@ -1,0 +1,2566 @@
+/*
+ * Webmux - a browser-based terminal multiplexer
+ * Copyright (C) 2025  Webmux contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+:root {
+    --bg-primary: #1e1e2e;
+    --bg-secondary: #181825;
+    --bg-tertiary: #313244;
+    --text-primary: #cdd6f4;
+    --text-secondary: #a6adc8;
+    --text-muted: #6c7086;
+    --accent: #89b4fa;
+    --accent-hover: #b4befe;
+    --danger: #f38ba8;
+    --success: #a6e3a1;
+    --warning: #f9e2af;
+    --border: #45475a;
+    --sidebar-width: 280px;
+    --transition-speed: 0.2s;
+    --split-gap: 2px;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html, body {
+    height: 100%;
+    overflow: hidden;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+}
+
+/* Sidebar */
+.sidebar {
+    width: var(--sidebar-width);
+    min-width: var(--sidebar-width);
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: row;
+    transition: all var(--transition-speed) ease;
+    overflow: hidden;
+}
+
+.sidebar.collapsed {
+    width: 0;
+    min-width: 0;
+    border-right: none;
+}
+
+/* Icon bar - left strip */
+.sidebar-icons {
+    width: 48px;
+    min-width: 48px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 8px;
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+    transition: none;
+}
+
+.sidebar-icons .icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+}
+
+.sidebar-icons-spacer {
+    flex: 1;
+}
+
+/* Floating icon bar when collapsed */
+.sidebar.collapsed .sidebar-icons {
+    position: fixed;
+    left: 12px;
+    top: 12px;
+    width: auto;
+    min-width: auto;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 8px;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transition: opacity 0.3s ease, left var(--transition-speed) ease;
+    animation: slideInFromLeft var(--transition-speed) ease;
+}
+
+@keyframes slideInFromLeft {
+    from {
+        left: -60px;
+    }
+    to {
+        left: 12px;
+    }
+}
+
+.sidebar.collapsed .sidebar-icons.faded {
+    opacity: 0;
+}
+
+.sidebar.collapsed .sidebar-icons:hover {
+    opacity: 1;
+}
+
+/* Flip the collapse arrow when collapsed */
+.sidebar.collapsed .sidebar-icons .icon-btn:first-child svg {
+    transform: rotate(180deg);
+}
+
+/* Hide spacer and keybinds button in collapsed state */
+.sidebar.collapsed .sidebar-icons-spacer,
+.sidebar.collapsed #open-keybinds {
+    display: none;
+}
+
+/* Session panel - right side */
+.sidebar-panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-width: 0;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px;
+    border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header h2 {
+    font-size: 14px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.sidebar-actions {
+    padding: 12px;
+}
+
+.sidebar-actions .btn {
+    width: 100%;
+}
+
+.session-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+}
+
+.session-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.session-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.session-list::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+/* Group container */
+.group-container {
+    margin-bottom: 4px;
+}
+
+/* Group header (for multi-session groups) */
+.group-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background var(--transition-speed);
+    gap: 10px;
+    background: var(--bg-tertiary);
+    margin-bottom: 2px;
+}
+
+.group-header:hover {
+    background: var(--border);
+}
+
+.group-header.active {
+    background: var(--border);
+    border-left: 3px solid var(--accent);
+}
+
+.group-header .icon {
+    color: var(--accent);
+    flex-shrink: 0;
+}
+
+.group-header .name {
+    flex: 1;
+    font-size: 14px;
+    font-weight: 500;
+}
+
+.group-header .actions {
+    display: none;
+    gap: 4px;
+    position: absolute;
+    right: 8px;
+    background: var(--bg-tertiary);
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.group-header {
+    position: relative;
+}
+
+.group-header:hover .actions {
+    display: flex;
+}
+
+/* Compact group header for splits */
+.group-header.compact {
+    padding: 4px 8px;
+    gap: 6px;
+}
+
+.group-header.compact .name {
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.group-header.compact .actions {
+    padding: 1px;
+}
+
+/* Group sessions (nested under header) */
+.group-sessions {
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+    margin-left: 20px;
+}
+
+/* Session items */
+.session-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    margin-bottom: 2px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background var(--transition-speed);
+    gap: 10px;
+}
+
+.session-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.session-item.active {
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--accent);
+}
+
+.session-item.sub-item {
+    padding: 8px 10px;
+    font-size: 13px;
+}
+
+.session-item.sub-item .icon {
+    width: 16px;
+    height: 16px;
+}
+
+.session-item .icon {
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+.session-item.active .icon {
+    color: var(--accent);
+}
+
+.session-item .name {
+    flex: 1;
+    font-size: 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.session-item .name .process-name {
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.session-item .actions {
+    display: none;
+    gap: 4px;
+    position: absolute;
+    right: 8px;
+    background: var(--bg-tertiary);
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.session-item {
+    position: relative;
+}
+
+.session-item:hover .actions {
+    display: flex;
+}
+
+/* Hide popout button for non-active sessions */
+.session-item .action-btn.popout {
+    display: none;
+}
+
+.session-item.active .action-btn.popout {
+    display: flex;
+}
+
+.session-item .action-btn,
+.group-header .action-btn {
+    padding: 4px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.session-item .action-btn:hover,
+.group-header .action-btn:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.session-item .action-btn.close:hover,
+.group-header .action-btn.close:hover {
+    color: var(--danger);
+}
+
+/* Inline rename input */
+.inline-rename-input {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    font-size: 14px;
+    font-family: inherit;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-primary);
+    outline: none;
+}
+
+.inline-rename-input:focus {
+    box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.3);
+}
+
+/* Dragging state */
+.session-item.dragging,
+.group-container.dragging {
+    opacity: 0.5;
+}
+
+/* Sidebar drop indicators */
+.group-container.drop-above {
+    border-top: 2px solid var(--accent);
+    margin-top: -2px;
+}
+
+.group-container.drop-below {
+    border-bottom: 2px solid var(--accent);
+    margin-bottom: -2px;
+}
+
+.sidebar-footer {
+    padding: 12px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+/* Buttons */
+.btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    white-space: nowrap;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
+.btn-primary:hover {
+    background: var(--accent-hover);
+}
+
+.btn-secondary {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+    background: var(--border);
+}
+
+.btn.success {
+    background: var(--success);
+    color: var(--bg-primary);
+}
+
+.icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-speed);
+}
+
+.icon-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.icon-btn.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
+.icon-btn.active:hover {
+    background: var(--accent-hover);
+    color: var(--bg-primary);
+}
+
+/* Main terminal area */
+#terminal-container {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-primary);
+    position: relative;
+}
+
+#terminals {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    display: grid;
+    gap: var(--split-gap);
+    /* Border color shows through the gaps between splits */
+    background: var(--border);
+}
+
+/* Layout modes - applied to #terminals */
+/* Grid templates are set dynamically via JS for resizable splits */
+#terminals.layout-single {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr;
+}
+
+/* Horizontal: 2 columns, 1 row */
+#terminals.layout-horizontal {
+    grid-template-rows: 1fr;
+    /* columns set by JS */
+}
+
+/* Vertical: 1 column, 2 rows */
+#terminals.layout-vertical {
+    grid-template-columns: 1fr;
+    /* rows set by JS */
+}
+
+/* Grid: 2x2 */
+#terminals.layout-grid {
+    /* both set by JS */
+}
+
+/* Terminal containers - one per session, never moved */
+.terminal-container {
+    position: relative;
+    overflow: hidden;
+    /* Match ttyd's terminal background color so gaps blend in */
+    background: #1e1e2e;
+    min-width: 100px;
+    min-height: 50px;
+    display: none; /* Hidden by default */
+}
+
+.terminal-container.visible {
+    display: block;
+}
+
+/* Pane positioning - accounts for divider columns/rows in grid */
+/* Horizontal layout: col 1 | divider | col 3 */
+.layout-horizontal .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-horizontal .terminal-container.pane-1 { grid-column: 3; grid-row: 1; }
+
+/* Vertical layout: row 1 / divider / row 3 */
+.layout-vertical .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-vertical .terminal-container.pane-1 { grid-column: 1; grid-row: 3; }
+
+/* Grid layout: 
+   col 1 | divider | col 3
+   row 1    [0]       [1]
+   divider  ---       ---
+   row 3    [2]       [3]
+*/
+.layout-grid .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-grid .terminal-container.pane-1 { grid-column: 3; grid-row: 1; }
+.layout-grid .terminal-container.pane-2 { grid-column: 1; grid-row: 3; }
+.layout-grid .terminal-container.pane-3 { grid-column: 3; grid-row: 3; }
+
+.terminal-container iframe {
+    width: 100%;
+    height: 100%;
+    border: none;
+    display: block;
+    /* Ensure iframe background matches */
+    background: #1e1e2e;
+}
+
+/* Popout placeholder */
+.popout-placeholder {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+}
+
+.popout-placeholder svg {
+    opacity: 0.5;
+}
+
+.popout-placeholder p {
+    font-size: 14px;
+}
+
+.popout-placeholder.hidden {
+    display: none;
+}
+
+/* When terminal is popped out, hide iframe and show placeholder */
+.terminal-container.popped-out iframe {
+    visibility: hidden;
+}
+
+.terminal-container.popped-out .popout-placeholder.hidden {
+    display: flex !important;
+}
+
+/* 3-pane layout - expanded pane spans full row or column */
+/* 3-pane layouts - one pane spans full row or column */
+
+/* Bottom wide (pane-2): spans full bottom row - small panes at top */
+#terminals.layout-grid .terminal-container.pane-2.expanded {
+    grid-column: 1 / 4;
+}
+
+/* Top wide (pane-0): spans full top row - small panes at bottom */
+#terminals.layout-grid .terminal-container.pane-0.expanded-top {
+    grid-column: 1 / 4;
+    grid-row: 1;
+}
+#terminals.layout-grid.top-wide .terminal-container.pane-1 {
+    grid-column: 1;
+    grid-row: 3;
+}
+#terminals.layout-grid.top-wide .terminal-container.pane-2 {
+    grid-column: 3;
+    grid-row: 3;
+}
+
+/* Right wide (pane-1): spans full right column - small panes at left */
+#terminals.layout-grid .terminal-container.pane-1.expanded {
+    grid-row: 1 / 4;
+}
+
+/* Left wide (pane-0): spans full left column - small panes at right */
+#terminals.layout-grid .terminal-container.pane-0.expanded-left {
+    grid-row: 1 / 4;
+    grid-column: 1;
+}
+#terminals.layout-grid.left-wide .terminal-container.pane-1 {
+    grid-column: 3;
+    grid-row: 1;
+}
+#terminals.layout-grid.left-wide .terminal-container.pane-2 {
+    grid-column: 3;
+    grid-row: 3;
+}
+
+/* Split dividers */
+.split-divider {
+    background: var(--border);
+    position: relative;
+    z-index: 10;
+    transition: background 0.15s ease;
+}
+
+/* Larger hit area for easier resizing */
+.split-divider::before {
+    content: '';
+    position: absolute;
+}
+
+.split-divider:hover,
+.split-divider.dragging {
+    background: var(--accent);
+}
+
+.split-divider-h {
+    cursor: col-resize;
+    width: var(--split-gap);
+}
+
+.split-divider-h::before {
+    top: 0;
+    bottom: 0;
+    left: -8px;
+    right: -8px;
+    cursor: col-resize;
+}
+
+.split-divider-v {
+    cursor: row-resize;
+    height: var(--split-gap);
+}
+
+.split-divider-v::before {
+    left: 0;
+    right: 0;
+    top: -8px;
+    bottom: -8px;
+    cursor: row-resize;
+}
+
+/* Divider control button - overlays at divider intersection */
+.divider-control {
+    position: absolute;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.divider-control.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* 2-pane simple button - integrated into handle */
+.divider-control-btn {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--border);
+    border: none;
+    color: transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    padding: 0;
+    overflow: visible;
+    position: relative;
+}
+
+/* Inner dot for 2-pane button */
+.divider-control-btn .inner-dot {
+    width: 4px;
+    height: 4px;
+    background: var(--bg-primary);
+    border-radius: 50%;
+    transition: all 0.15s ease;
+}
+
+.divider-control-btn:hover .inner-dot {
+    opacity: 0;
+}
+
+/* Tapers for 2-pane button - only show when in proper layout context */
+.divider-control-btn::before,
+.divider-control-btn::after {
+    content: '';
+    position: absolute;
+    background: var(--border);
+    transition: all 0.15s ease;
+    /* Hidden by default */
+    width: 0;
+    height: 0;
+}
+
+/* Horizontal layout has a vertical divider, so tapers extend vertically (along the divider) */
+.divider-control.layout-horizontal .divider-control-btn::before,
+.divider-control.layout-horizontal .divider-control-btn::after {
+    width: 2px;
+    height: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.divider-control.layout-horizontal .divider-control-btn::before {
+    bottom: calc(100% - 2px);
+    background: linear-gradient(to bottom, transparent, var(--border));
+}
+
+.divider-control.layout-horizontal .divider-control-btn::after {
+    top: calc(100% - 2px);
+    background: linear-gradient(to top, transparent, var(--border));
+}
+
+/* Vertical layout has a horizontal divider, so tapers extend horizontally (along the divider) */
+.divider-control.layout-vertical .divider-control-btn::before,
+.divider-control.layout-vertical .divider-control-btn::after {
+    width: 20px;
+    height: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.divider-control.layout-vertical .divider-control-btn::before {
+    right: calc(100% - 2px);
+    background: linear-gradient(to right, transparent, var(--border));
+}
+
+.divider-control.layout-vertical .divider-control-btn::after {
+    left: calc(100% - 2px);
+    background: linear-gradient(to left, transparent, var(--border));
+}
+
+.divider-control-btn:hover {
+    width: 28px;
+    height: 28px;
+    background: var(--border);
+    color: var(--text-primary);
+}
+
+.divider-control-btn:hover::before,
+.divider-control-btn:hover::after {
+    opacity: 0;
+}
+
+.divider-control-btn svg {
+    width: 0;
+    height: 0;
+    transition: all 0.15s ease;
+    opacity: 0;
+}
+
+.divider-control-btn:hover svg {
+    width: 18px;
+    height: 18px;
+    opacity: 1;
+}
+
+/* Indicator dot that looks integrated into handle */
+.divider-control-indicator {
+    width: 16px;
+    height: 16px;
+    background: var(--border);
+    border-radius: 50%;
+    cursor: pointer;
+    position: relative;
+    transition: all 0.15s ease;
+}
+
+/* Inner dot for contrast */
+.divider-control-indicator .inner-dot {
+    position: absolute;
+    width: 4px;
+    height: 4px;
+    background: var(--bg-primary);
+    border-radius: 50%;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* Horizontal tapers */
+.divider-control-indicator .taper-h-left,
+.divider-control-indicator .taper-h-right {
+    position: absolute;
+    width: 20px;
+    height: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.divider-control-indicator .taper-h-left {
+    right: calc(100% - 2px);
+    background: linear-gradient(to right, transparent, var(--border));
+}
+
+.divider-control-indicator .taper-h-right {
+    left: calc(100% - 2px);
+    background: linear-gradient(to left, transparent, var(--border));
+}
+
+/* Vertical taper pieces */
+.divider-control-indicator .taper-v-top,
+.divider-control-indicator .taper-v-bottom {
+    position: absolute;
+    width: 2px;
+    height: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.divider-control-indicator .taper-v-top {
+    bottom: calc(100% - 2px);
+    background: linear-gradient(to bottom, transparent, var(--border));
+}
+
+.divider-control-indicator .taper-v-bottom {
+    top: calc(100% - 2px);
+    background: linear-gradient(to top, transparent, var(--border));
+}
+
+/* Menu - integrated into handle style */
+.divider-control-menu {
+    display: none;
+    position: absolute;
+    background: var(--border);
+    border: none;
+    border-radius: 12px;
+    padding: 4px;
+    gap: 2px;
+    z-index: 25;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+}
+
+/* Tapers on the menu */
+.divider-control-menu::before,
+.divider-control-menu::after {
+    content: '';
+    position: absolute;
+    background: var(--border);
+}
+
+/* Horizontal tapers on menu */
+.divider-control.at-crux .divider-control-menu::before,
+.divider-control.at-crux .divider-control-menu::after {
+    width: 20px;
+    height: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.divider-control.at-crux .divider-control-menu::before {
+    right: calc(100% - 2px);
+    background: linear-gradient(to right, transparent, var(--border));
+}
+
+.divider-control.at-crux .divider-control-menu::after {
+    left: calc(100% - 2px);
+    background: linear-gradient(to left, transparent, var(--border));
+}
+
+/* Vertical tapers need extra elements */
+.divider-control-menu .taper-v-top,
+.divider-control-menu .taper-v-bottom {
+    position: absolute;
+    width: 2px;
+    height: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+}
+
+.divider-control-menu .taper-v-top {
+    bottom: calc(100% - 2px);
+    background: linear-gradient(to bottom, transparent, var(--border));
+}
+
+/* Horizontal tapers for menu */
+.divider-control-menu .taper-h-left,
+.divider-control-menu .taper-h-right {
+    position: absolute;
+    width: 20px;
+    height: 2px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+.divider-control-menu .taper-h-left {
+    right: calc(100% - 2px);
+    background: linear-gradient(to right, transparent, var(--border));
+}
+
+.divider-control-menu .taper-h-right {
+    left: calc(100% - 2px);
+    background: linear-gradient(to left, transparent, var(--border));
+}
+
+.divider-control-menu .taper-v-bottom {
+    top: calc(100% - 2px);
+    background: linear-gradient(to top, transparent, var(--border));
+}
+
+/* 3-pane: hide tapers that point into the wide pane */
+/* expand-bottom: hide bottom taper (points into wide pane at bottom) */
+.divider-control.expand-bottom .divider-control-indicator .taper-v-bottom,
+.divider-control.expand-bottom .divider-control-menu .taper-v-bottom {
+    display: none;
+}
+
+/* expand-top: hide top taper (points into wide pane at top) */
+.divider-control.expand-top .divider-control-indicator .taper-v-top,
+.divider-control.expand-top .divider-control-menu .taper-v-top {
+    display: none;
+}
+
+/* expand-right: hide right taper (points into wide pane at right) */
+.divider-control.expand-right .divider-control-indicator .taper-h-right,
+.divider-control.expand-right .divider-control-menu .taper-h-right,
+.divider-control.expand-right .divider-control-menu::after {
+    display: none;
+}
+
+/* expand-left: hide left taper (points into wide pane at left) */
+.divider-control.expand-left .divider-control-indicator .taper-h-left,
+.divider-control.expand-left .divider-control-menu .taper-h-left,
+.divider-control.expand-left .divider-control-menu::before {
+    display: none;
+}
+
+.divider-control:hover .divider-control-menu,
+.divider-control-menu.open,
+.divider-control.pinned .divider-control-menu {
+    display: flex;
+    flex-direction: column;
+}
+
+/* 3-pane menu: Top/Bottom stacked on top half, Left/Right side-by-side on bottom */
+/* Only apply grid when menu is shown (hover or pinned) */
+.divider-control.expand-top:hover .divider-control-menu,
+.divider-control.expand-bottom:hover .divider-control-menu,
+.divider-control.expand-left:hover .divider-control-menu,
+.divider-control.expand-right:hover .divider-control-menu,
+.divider-control.expand-top.pinned .divider-control-menu,
+.divider-control.expand-bottom.pinned .divider-control-menu,
+.divider-control.expand-left.pinned .divider-control-menu,
+.divider-control.expand-right.pinned .divider-control-menu {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    width: 110px;
+    gap: 4px;
+}
+
+.divider-control.expand-top .divider-control-menu button,
+.divider-control.expand-bottom .divider-control-menu button,
+.divider-control.expand-left .divider-control-menu button,
+.divider-control.expand-right .divider-control-menu button {
+    flex-direction: column;
+    padding: 6px 4px;
+    gap: 2px;
+}
+
+/* Top and Bottom buttons span full width */
+.divider-control.expand-top .divider-control-menu button[data-action="expand-top"],
+.divider-control.expand-bottom .divider-control-menu button[data-action="expand-top"],
+.divider-control.expand-left .divider-control-menu button[data-action="expand-top"],
+.divider-control.expand-right .divider-control-menu button[data-action="expand-top"],
+.divider-control.expand-top .divider-control-menu button[data-action="expand-bottom"],
+.divider-control.expand-bottom .divider-control-menu button[data-action="expand-bottom"],
+.divider-control.expand-left .divider-control-menu button[data-action="expand-bottom"],
+.divider-control.expand-right .divider-control-menu button[data-action="expand-bottom"] {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: center;
+    padding: 6px 10px;
+}
+
+.divider-control.expand-top .divider-control-menu button svg,
+.divider-control.expand-bottom .divider-control-menu button svg,
+.divider-control.expand-left .divider-control-menu button svg,
+.divider-control.expand-right .divider-control-menu button svg {
+    width: 18px;
+    height: 18px;
+}
+
+.divider-control.expand-top .divider-control-menu button span,
+.divider-control.expand-bottom .divider-control-menu button span,
+.divider-control.expand-left .divider-control-menu button span,
+.divider-control.expand-right .divider-control-menu button span {
+    font-size: 10px;
+}
+
+/* 4-pane menu: 2x2 grid layout with icons above text */
+.divider-control.at-crux:not(.expand-top):not(.expand-bottom):not(.expand-left):not(.expand-right) .divider-control-menu {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 110px;
+    gap: 4px;
+}
+
+.divider-control.at-crux:not(.expand-top):not(.expand-bottom):not(.expand-left):not(.expand-right) .divider-control-menu button {
+    flex-direction: column;
+    width: 49px;
+    padding: 8px 4px;
+    gap: 4px;
+}
+
+.divider-control.at-crux:not(.expand-top):not(.expand-bottom):not(.expand-left):not(.expand-right) .divider-control-menu button svg {
+    width: 24px;
+    height: 24px;
+}
+
+.divider-control.at-crux:not(.expand-top):not(.expand-bottom):not(.expand-left):not(.expand-right) .divider-control-menu button span {
+    font-size: 10px;
+}
+
+/* Hide indicator when pinned (menu is shown) */
+.divider-control.pinned .divider-control-indicator {
+    opacity: 0;
+}
+
+/* Hide indicator when menu is shown */
+.divider-control:hover .divider-control-indicator {
+    opacity: 0;
+}
+
+.divider-control-menu button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-secondary);
+    border: none;
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.1s ease;
+}
+
+.divider-control-menu button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.divider-control-menu button svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+}
+
+/* Resize overlay - blocks iframe events during resize */
+#resize-overlay {
+    display: none;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+}
+
+#resize-overlay.active {
+    display: block;
+}
+
+#resize-overlay.col-resize {
+    cursor: col-resize;
+}
+
+#resize-overlay.row-resize {
+    cursor: row-resize;
+}
+
+/* Highlighted terminal (on sidebar hover) */
+.terminal-container.highlighted {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.terminal-container.highlighted::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--accent);
+    opacity: 0.1;
+    pointer-events: none;
+    z-index: 10;
+}
+
+/* Drop target highlight (when dragging to split) */
+.terminal-container.drop-target {
+    outline: 3px solid var(--accent);
+    outline-offset: -3px;
+}
+
+/* Drag capture overlay - appears when dragging a session */
+#drag-capture-overlay {
+    display: none;
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    z-index: 200;
+}
+
+/* Split drop zones - used in #drag-capture-overlay */
+#drag-capture-overlay .drop-zone {
+    position: absolute;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    pointer-events: auto;
+    transition: all 0.15s ease;
+    border: 1px dashed var(--border);
+    padding: 8px;
+    cursor: default;
+    text-align: center;
+    box-sizing: border-box;
+    margin: 2px;
+}
+
+#drag-capture-overlay .drop-zone:hover,
+#drag-capture-overlay .drop-zone.drag-over {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+/* Full zone for empty state */
+#drag-capture-overlay .drop-full {
+    top: 4px;
+    left: 4px;
+    right: 4px;
+    bottom: 4px;
+    border-radius: 8px;
+    margin: 0;
+}
+
+/* Edge zones - positioned at edges with gaps between them */
+#drag-capture-overlay .drop-edge {
+    border-radius: 6px;
+}
+
+#drag-capture-overlay .drop-edge.drop-top {
+    top: 4px;
+    left: 28%;
+    right: 28%;
+    height: 32%;
+}
+
+#drag-capture-overlay .drop-edge.drop-bottom {
+    bottom: 4px;
+    left: 28%;
+    right: 28%;
+    height: 32%;
+}
+
+#drag-capture-overlay .drop-edge.drop-left {
+    top: 28%;
+    bottom: 28%;
+    left: 4px;
+    width: 32%;
+}
+
+#drag-capture-overlay .drop-edge.drop-right {
+    top: 28%;
+    bottom: 28%;
+    right: 4px;
+    width: 32%;
+}
+
+/* Quadrant zone for grid layout */
+#drag-capture-overlay .drop-quad {
+    border-radius: 6px;
+}
+
+/* Half zones for 2->3 pane transition */
+#drag-capture-overlay .drop-half {
+    border-radius: 6px;
+}
+
+/* No session placeholder */
+.no-session {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    gap: 16px;
+    color: var(--text-muted);
+}
+
+.no-session p {
+    font-size: 16px;
+}
+
+/* Modals */
+.modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    backdrop-filter: blur(4px);
+}
+
+.modal.hidden {
+    display: none;
+}
+
+.modal-content {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    width: 90%;
+    max-width: 500px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    z-index: 1; /* Above sidekick (0) so modal covers sidekick's left edge */
+}
+
+.modal-content.modal-lg {
+    max-width: 700px;
+}
+
+.modal-content.modal-sm {
+    max-width: 350px;
+}
+
+.modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+}
+
+.modal-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.modal-body {
+    padding: 20px;
+    overflow-y: auto;
+}
+
+/* Upload modal specific */
+#upload-modal .modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+#upload-modal .drop-zone {
+    margin-bottom: 0;
+}
+
+#upload-modal .upload-options {
+    margin-top: 0;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+}
+
+/* Drop zone for file upload */
+.drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: 12px;
+    padding: 32px 20px;
+    text-align: center;
+    transition: all var(--transition-speed);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    position: relative;
+    overflow: visible;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+    border-color: var(--accent);
+    background: rgba(137, 180, 250, 0.1);
+}
+
+.drop-zone svg {
+    color: var(--text-primary);
+    flex-shrink: 0;
+}
+
+.drop-zone p {
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.drop-zone .or {
+    color: var(--text-secondary);
+    font-size: 12px;
+    margin: 4px 0;
+}
+
+.drop-zone .btn {
+    flex-shrink: 0;
+    position: relative;
+    z-index: 2;
+}
+
+.upload-options {
+    position: relative;
+}
+
+.upload-options label {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.upload-options input {
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.upload-options input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.upload-progress {
+    margin-top: 16px;
+}
+
+.progress-bar {
+    height: 6px;
+    background: var(--bg-tertiary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    width: 0%;
+    transition: width 0.3s ease;
+}
+
+.progress-text {
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.upload-results {
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+}
+
+.upload-results p {
+    font-size: 14px;
+    color: var(--success);
+}
+
+/* File browser */
+.path-bar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.file-browser {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.file-header {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    gap: 12px;
+}
+
+.file-header .sortable {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    user-select: none;
+    transition: color var(--transition-speed);
+}
+
+.file-header .sortable:hover {
+    color: var(--text-primary);
+}
+
+.file-header .sortable.active {
+    color: var(--accent);
+}
+
+.file-header .sort-icon {
+    opacity: 0;
+    transition: opacity var(--transition-speed), transform var(--transition-speed);
+}
+
+.file-header .sortable:hover .sort-icon {
+    opacity: 0.5;
+}
+
+.file-header .sortable.active .sort-icon {
+    opacity: 1;
+}
+
+.file-header .sortable.active.asc .sort-icon {
+    transform: rotate(180deg);
+}
+
+.file-header .col-name {
+    flex: 1;
+    min-width: 200px;
+}
+
+.file-header .col-size {
+    width: 80px;
+    text-align: right;
+    justify-content: flex-end;
+}
+
+.file-header .col-modified {
+    width: 120px;
+    text-align: right;
+    justify-content: flex-end;
+}
+
+.file-header .col-actions {
+    width: 80px;
+}
+
+.file-status {
+    margin-top: 12px;
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+.path-bar input {
+    flex: 1;
+    padding: 10px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: monospace;
+}
+
+.path-bar input:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.file-list {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background var(--transition-speed);
+    gap: 12px;
+}
+
+.file-item:last-child {
+    border-bottom: none;
+}
+
+.file-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.file-item .icon {
+    color: var(--text-muted);
+    flex-shrink: 0;
+    width: 18px;
+    height: 18px;
+}
+
+.file-item.directory .icon {
+    color: var(--accent);
+}
+
+.file-item .name {
+    flex: 1;
+    min-width: 200px;
+    font-size: 13px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-item .size {
+    width: 80px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.file-item .modified {
+    width: 120px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: right;
+    flex-shrink: 0;
+}
+
+.file-item .actions {
+    width: 70px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+/* Utilities */
+.hidden {
+    display: none !important;
+}
+
+/* Loading state */
+.loading {
+    position: relative;
+    pointer-events: none;
+}
+
+.loading::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: translate(-50%, -50%) rotate(360deg);
+    }
+}
+
+/* Settings Modal */
+.settings-modal {
+    max-width: 600px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-modal .modal-body {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+.settings-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.settings-tabs {
+    display: flex;
+    gap: 4px;
+}
+
+.settings-tab {
+    padding: 8px 16px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all var(--transition-speed);
+}
+
+.settings-tab:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+}
+
+.settings-tab.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
+.settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+}
+
+.settings-panel {
+    display: none;
+}
+
+.settings-panel.active {
+    display: block;
+}
+
+.settings-section {
+    margin-bottom: 24px;
+}
+
+.settings-section h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+}
+
+.color-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+}
+
+.color-input {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.color-input span {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.color-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.color-input input[type="color"] {
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    cursor: pointer;
+    transition: border-color var(--transition-speed);
+}
+
+.color-input input[type="color"]:hover {
+    border-color: var(--accent);
+}
+
+.color-input input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+.color-input input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 4px;
+}
+
+.color-input input[type="text"] {
+    flex: 1;
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 13px;
+    text-transform: uppercase;
+}
+
+.color-input input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+.settings-note {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-top: 12px;
+    padding: 10px;
+    background: var(--bg-tertiary);
+    border-radius: 6px;
+}
+
+.settings-note-inline {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    margin-bottom: 16px;
+}
+
+.settings-footer {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.settings-actions {
+    display: flex;
+    justify-content: space-between;
+}
+
+.settings-actions .btn-group {
+    display: flex;
+    gap: 8px;
+}
+
+/* Keybinds Modal */
+.keybinds-modal {
+    max-width: 400px;
+}
+
+.keybinds-section {
+    margin-bottom: 20px;
+}
+
+.keybinds-section:last-child {
+    margin-bottom: 0;
+}
+
+.keybinds-section h4 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+}
+
+.keybind-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    font-size: 13px;
+}
+
+.keybind-row .keybind-desc {
+    flex: 1;
+}
+
+.keybind-row .keybind-keys {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.keybind-desc {
+    color: var(--text-primary);
+}
+
+.keybind-row kbd {
+    display: inline-block;
+    padding: 3px 6px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 11px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-secondary);
+}
+
+.keybind-note {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Toast notifications */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.toast {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    animation: toast-in 0.2s ease-out;
+    max-width: 400px;
+}
+
+.toast.toast-out {
+    animation: toast-out 0.2s ease-in forwards;
+}
+
+@keyframes toast-in {
+    from {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
+@keyframes toast-out {
+    from {
+        opacity: 1;
+        transform: translateX(0);
+    }
+    to {
+        opacity: 0;
+        transform: translateX(100%);
+    }
+}
+
+.toast-icon {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+}
+
+.toast-message {
+    flex: 1;
+    line-height: 1.4;
+}
+
+.toast-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.toast-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.toast-close svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Toast variants */
+.toast.toast-error {
+    border-color: var(--danger);
+}
+
+.toast.toast-error .toast-icon {
+    color: var(--danger);
+}
+
+.toast.toast-success {
+    border-color: var(--success);
+}
+
+.toast.toast-success .toast-icon {
+    color: var(--success);
+}
+
+.toast.toast-warning {
+    border-color: var(--warning);
+}
+
+.toast.toast-warning .toast-icon {
+    color: var(--warning);
+}
+
+.toast.toast-info {
+    border-color: var(--accent);
+}
+
+.toast.toast-info .toast-icon {
+    color: var(--accent);
+}
+
+/* Scratch pad - persistent editable toast */
+.scratch-pad {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    animation: toast-in 0.2s ease-out;
+    min-width: 300px;
+    max-width: 400px;
+}
+
+.scratch-pad.scratch-out {
+    animation: toast-out 0.2s ease-in forwards;
+}
+
+.scratch-pad-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.scratch-pad-icon-btn {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    background: none;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.15s;
+    position: relative;
+}
+
+.scratch-pad-icon-btn:hover {
+    background: var(--bg-tertiary);
+}
+
+.scratch-pad-icon-btn svg {
+    width: 18px;
+    height: 18px;
+    position: absolute;
+    transition: opacity 0.15s;
+}
+
+.scratch-pad-icon-btn .icon-copy {
+    opacity: 0;
+}
+
+.scratch-pad-icon-btn:hover .icon-default {
+    opacity: 0;
+}
+
+.scratch-pad-icon-btn:hover .icon-copy {
+    opacity: 1;
+}
+
+.scratch-pad-icon-btn.copied {
+    color: var(--success);
+}
+
+.scratch-pad-title {
+    flex: 1;
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.scratch-pad-close {
+    flex-shrink: 0;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.scratch-pad-close:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+}
+
+.scratch-pad-close svg {
+    width: 16px;
+    height: 16px;
+}
+
+.scratch-pad-content {
+    width: 100%;
+    min-height: 60px;
+    max-height: 200px;
+    padding: 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.4;
+    resize: vertical;
+}
+
+.scratch-pad-content:focus {
+    outline: none;
+    border-color: var(--accent);
+}
+
+/* Marked files sidekick panel - peeks out from behind download modal */
+.marked-sidekick {
+    position: absolute;
+    top: 50%;
+    /* modal-lg is max-width 700px, so right edge is at 50% + 350px */
+    /* Nudge left by ~14px so modal covers the sidekick's left border radius */
+    left: calc(50% + 350px - 14px);
+    transform: translateY(-50%);
+    width: 280px;
+    /* max-height set dynamically by JS to match modal height */
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    z-index: 0; /* Below modal-content (1) */
+    animation: sidekick-in 0.2s ease-out;
+}
+
+@keyframes sidekick-in {
+    from {
+        opacity: 0;
+        transform: translateY(-50%) translateX(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(-50%) translateX(0);
+    }
+}
+
+.marked-sidekick.hidden {
+    display: none;
+}
+
+.marked-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
+    border-radius: 12px 12px 0 0;
+}
+
+.marked-header h4 {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.marked-header .icon-btn {
+    width: 28px;
+    height: 28px;
+    padding: 4px;
+}
+
+.marked-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    min-height: 60px;
+}
+
+.marked-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+    transition: background var(--transition-speed);
+}
+
+.marked-item:hover {
+    background: var(--bg-tertiary);
+}
+
+.marked-item .icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.marked-item.directory .icon {
+    color: var(--accent);
+}
+
+.marked-item .name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.marked-item .actions {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity var(--transition-speed);
+}
+
+.marked-item:hover .actions {
+    opacity: 1;
+}
+
+.marked-item .action-btn {
+    padding: 3px;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+}
+
+.marked-item .action-btn:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.marked-item .action-btn.download-one:hover {
+    color: var(--accent);
+}
+
+.marked-item .action-btn.unmark:hover {
+    color: var(--danger);
+}
+
+.marked-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+}
+
+.marked-footer .btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-size: 13px;
+    padding: 8px 16px;
+}
+
+/* Icon action buttons in file browser */
+.file-item .action-btn {
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all var(--transition-speed);
+}
+
+/* Mark button on left - always visible but subtle */
+.file-item .action-btn.mark-btn {
+    opacity: 0.4;
+}
+
+.file-item:hover .action-btn.mark-btn {
+    opacity: 1;
+}
+
+.file-item .action-btn.mark-btn.marked {
+    opacity: 1;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+
+.file-item .action-btn.mark-btn:not(.disabled):hover {
+    color: var(--accent);
+    border-color: var(--accent);
+}
+
+.file-item .action-btn.mark-btn.disabled {
+    opacity: 0.2;
+    cursor: not-allowed;
+}
+
+.file-item:hover .action-btn.mark-btn.disabled {
+    opacity: 0.3;
+}
+
+/* Download button on right - hidden until hover */
+.file-item .action-btn.download-btn {
+    opacity: 0;
+}
+
+.file-item:hover .action-btn.download-btn {
+    opacity: 1;
+}
+
+.file-item .action-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border);
+}
+
+.file-item .action-btn.download-btn:hover {
+    color: var(--success);
+    border-color: var(--success);
+}
+
+/* Marked files toast notification */
+.marked-toast {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    pointer-events: auto;
+    animation: toast-in 0.2s ease-out;
+    min-width: 280px;
+    max-width: 360px;
+}
+
+.marked-toast.toast-out {
+    animation: toast-out 0.2s ease-in forwards;
+}
+
+.marked-toast-icon {
+    flex-shrink: 0;
+    color: var(--accent);
+}
+
+.marked-toast-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.marked-toast-count {
+    font-weight: 500;
+    color: var(--text-primary);
+}
+
+.marked-toast-latest {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
+.marked-toast-action {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    background: var(--accent);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background var(--transition-speed);
+}
+
+.marked-toast-action:hover {
+    background: var(--accent-hover);
+}
+
+/* File Info Popup */
+.file-info-popup {
+    position: fixed;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    min-width: 280px;
+    max-width: 400px;
+    z-index: 1100;
+    animation: popup-in 0.15s ease-out;
+}
+
+@keyframes popup-in {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+.file-info-popup.hidden {
+    display: none;
+}
+
+.file-info-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-primary);
+    border-radius: 8px 8px 0 0;
+}
+
+.file-info-icon {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.file-info-popup.directory .file-info-icon {
+    color: var(--accent);
+}
+
+.file-info-name {
+    flex: 1;
+    font-weight: 500;
+    font-size: 14px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-info-close {
+    flex-shrink: 0;
+}
+
+.file-info-details {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.file-info-row {
+    display: flex;
+    gap: 12px;
+    font-size: 13px;
+}
+
+.file-info-label {
+    color: var(--text-muted);
+    width: 60px;
+    flex-shrink: 0;
+}
+
+.file-info-value {
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-info-path {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 12px;
+}
+
+.file-info-actions {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+}
+
+.file-info-actions .btn {
+    flex: 1;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .sidebar {
+        position: fixed;
+        z-index: 50;
+        height: 100%;
+    }
+    
+    .sidebar.collapsed {
+        transform: translateX(-100%);
+    }
+
+    .color-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .toast-container {
+        left: 20px;
+        right: 20px;
+    }
+
+    .toast {
+        max-width: none;
+    }
+
+    .modal-body-split {
+        flex-direction: column;
+    }
+
+    .marked-sidekick {
+        width: 100%;
+        min-width: 100%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+        max-height: 200px;
+    }
+}

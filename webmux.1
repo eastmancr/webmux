@@ -1,0 +1,113 @@
+.TH WEBMUX 1 "November 2025" "0.1" "Webmux Manual"
+.SH NAME
+webmux \- browser-based terminal multiplexer
+.SH SYNOPSIS
+.B webmux
+[\fIOPTIONS\fR] [\fIDIRECTORY\fR]
+.SH DESCRIPTION
+.B webmux
+is a browser-based terminal multiplexer. It runs an HTTP server that proxies to per-session \fBttyd\fR(1) instances backed by \fBtmux\fR(1) for persistence.
+.P
+Each terminal session runs inside a \fBtmux\fR session, allowing the terminal state to persist even when the browser disconnects. Reconnecting to a session resumes where you left off.
+.P
+The optional \fIDIRECTORY\fR argument sets the starting directory for new terminal sessions.
+
+.SH OPTIONS
+.TP
+.BR \-port =\fIPORT\fR
+HTTP server port. Default: \fB8080\fR
+.TP
+.BR \-shell =\fIPATH\fR
+Shell to spawn in new terminal sessions. Default: \fB$SHELL\fR environment variable, or \fB/bin/bash\fR if unset.
+.TP
+.BR \-upload-dir =\fIPATH\fR
+Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
+
+.SH CLI HELPER
+Inside webmux terminals, the \fB$wm\fR variable points to the CLI helper binary:
+.TP
+.B $wm info
+Show server information (port, sessions, paths).
+.TP
+.B $wm ls
+List all active sessions.
+.TP
+.B $wm new \fR[\fIname\fR]
+Create a new session with optional name.
+.TP
+.B $wm close \fR\fIid\fR
+Close a session by ID.
+.TP
+.B $wm rename \fR\fIid\fR \fIname\fR
+Rename a session.
+.TP
+.B $wm upload \fR\fIfile\fR...
+Upload files to the server.
+.TP
+.B $wm scratch \fR[\fItext\fR]
+Get or set scratch pad content. Use \fB-\fR to read from stdin, \fBclear\fR to clear.
+
+.SH FILES
+.TP
+.B ~/.config/webmux/settings.json
+UI and terminal color configuration.
+.TP
+.B ~/.local/share/webmux/uploads
+Default upload directory.
+.TP
+.B $XDG_RUNTIME_DIR/webmux-tmux.sock
+Tmux socket for session management.
+
+.SH FEATURES
+.TP
+.B Session Management
+Create, rename, and close terminal sessions from the web UI. Sessions persist until explicitly closed or the shell exits.
+.TP
+.B Split Panes
+Group up to 4 terminals in resizable split layouts.
+.TP
+.B File Transfer
+Upload files via drag-and-drop or file picker. Download files by browsing the server filesystem.
+.TP
+.B Scratch Pad
+Exchange text between CLI and browser. Send from terminal with \fB$wm scratch\fR, edit in browser.
+.TP
+.B Theming
+Customizable UI and terminal colors using Base24 color schemes. Settings are persisted to disk.
+.TP
+.B Clipboard
+Copy support via OSC 52 escape sequences. Paste via Ctrl+Shift+V.
+
+.SH EXAMPLES
+.TP
+Start webmux on default port:
+.B webmux
+.TP
+Start in a specific directory:
+.B webmux ~/projects
+.TP
+Start on a custom port:
+.B webmux -port 3000
+.TP
+Use zsh as the default shell:
+.B webmux -shell /bin/zsh
+
+.SH ENVIRONMENT
+.TP
+.B WEBMUX_PORT
+Set automatically in webmux terminals. Used by \fB$wm\fR to connect to the server.
+.TP
+.B wm
+Set automatically in webmux terminals. Path to the CLI helper binary.
+
+.SH REQUIREMENTS
+.B webmux
+requires
+.B ttyd
+and
+.B tmux
+to be installed and available in PATH.
+
+.SH SEE ALSO
+.BR ttyd (1),
+.BR tmux (1)
