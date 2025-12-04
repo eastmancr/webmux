@@ -330,16 +330,18 @@ func SaveSettings(settings *Settings) error {
 
 // SessionManager handles multiple ttyd sessions
 type SessionManager struct {
-	sessions       map[string]*Session
-	mu             sync.RWMutex
-	nextPort       int32
-	nextNameNum    int32 // Atomic counter for default session names
-	shell          string
-	workDir        string // Starting directory for new sessions
-	tmuxConfigPath string
-	wmBinDir       string           // Directory containing wm binary (added to PATH)
-	getSettings    func() *Settings // Function to get current settings
-	serverPort     string           // HTTP server port for WEBMUX_PORT env var
+	sessions        map[string]*Session
+	mu              sync.RWMutex
+	nextPort        int32
+	startPort       int32 // Initial port to reset to when all sessions close
+	nextNameNum     int32 // Atomic counter for default session names
+	shell           string
+	workDir         string // Starting directory for new sessions
+	tmuxConfigPath  string
+	wmBinDir        string           // Directory containing wm binary (added to PATH)
+	getSettings     func() *Settings // Function to get current settings
+	serverPort      string           // HTTP server port for WEBMUX_PORT env var
+	onSessionClosed func(string)     // Callback when a session is closed/dies
 }
 
 // NewSessionManager creates a new session manager
@@ -347,6 +349,7 @@ func NewSessionManager(startPort int, shell, workDir, serverPort string) *Sessio
 	sm := &SessionManager{
 		sessions:   make(map[string]*Session),
 		nextPort:   int32(startPort),
+		startPort:  int32(startPort),
 		shell:      shell,
 		workDir:    workDir,
 		serverPort: serverPort,
@@ -582,7 +585,10 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 	if err := checkCmd.Run(); err != nil {
 		// tmux session is gone, clean up
 		log.Printf("Session %s: tmux session exited, cleaning up", session.ID)
-		delete(sm.sessions, session.ID)
+		sm.deleteSession(session.ID)
+		if len(sm.sessions) == 0 {
+			sm.resetCounters()
+		}
 		sm.mu.Unlock()
 		return
 	}
@@ -594,7 +600,10 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 	if err := sm.startTtyd(s); err != nil {
 		log.Printf("Session %s: failed to restart ttyd: %v", session.ID, err)
 		sm.mu.Lock()
-		delete(sm.sessions, session.ID)
+		sm.deleteSession(session.ID)
+		if len(sm.sessions) == 0 {
+			sm.resetCounters()
+		}
 		sm.mu.Unlock()
 	}
 }
@@ -624,7 +633,13 @@ func (sm *SessionManager) monitorSession(session *Session) {
 				if s.ttydCmd != nil && s.ttydCmd.Process != nil {
 					s.ttydCmd.Process.Kill()
 				}
-				delete(sm.sessions, session.ID)
+				sm.deleteSession(session.ID)
+			}
+			if len(sm.sessions) == 0 {
+				sm.resetCounters()
+			}
+			if len(sm.sessions) == 0 {
+				sm.resetCounters()
 			}
 			sm.mu.Unlock()
 			return
@@ -698,9 +713,33 @@ func (sm *SessionManager) CloseSession(id string) error {
 		exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", session.tmuxSession).Run()
 	}
 
-	delete(sm.sessions, id)
+	sm.deleteSession(id)
 	log.Printf("Closed session %s", id)
+
+	// Reset counters when all sessions are closed (ports are now free to reuse)
+	if len(sm.sessions) == 0 {
+		sm.resetCounters()
+	}
+
 	return nil
+}
+
+// resetCounters resets port and name counters to initial values
+// Called when all sessions have been closed to allow port reuse
+func (sm *SessionManager) resetCounters() {
+	atomic.StoreInt32(&sm.nextPort, sm.startPort)
+	atomic.StoreInt32(&sm.nextNameNum, 0)
+	log.Printf("All sessions closed, reset counters (port=%d, name=0)", sm.startPort)
+}
+
+// deleteSession removes a session from the map and notifies the callback
+// Must be called with sm.mu held
+func (sm *SessionManager) deleteSession(id string) {
+	delete(sm.sessions, id)
+	if sm.onSessionClosed != nil {
+		// Call outside of lock to avoid deadlock
+		go sm.onSessionClosed(id)
+	}
 }
 
 // RenameSession changes the display name of a session
@@ -756,6 +795,27 @@ type MarkedFile struct {
 	IsDir   bool   `json:"isDir"`
 }
 
+// UIGroup represents a visual grouping of sessions in the sidebar
+type UIGroup struct {
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	SessionIDs       []string  `json:"sessionIds"`
+	Layout           string    `json:"layout"`           // single, horizontal, vertical, grid
+	ExpandedQuadrant string    `json:"expandedQuadrant"` // for 3-pane: top, bottom, left, right
+	SplitRatio       []float64 `json:"splitRatio"`
+	CellMapping      []int     `json:"cellMapping"` // maps pane positions to session indices
+}
+
+// UIState represents the UI layout state (groups, order, etc.)
+type UIState struct {
+	Groups           []UIGroup `json:"groups"`
+	GroupOrder       []string  `json:"groupOrder"`
+	ActiveGroupID    string    `json:"activeGroupId"`
+	GroupCounter     int       `json:"groupCounter"`
+	SidebarCollapsed bool      `json:"sidebarCollapsed"`
+	CustomNames      []string  `json:"customNames"` // session IDs with custom names
+}
+
 // Server holds the HTTP server and session manager
 type Server struct {
 	manager      *SessionManager
@@ -770,6 +830,8 @@ type Server struct {
 	markedMu     sync.RWMutex
 	markedSubs   map[chan string]struct{} // SSE subscribers for marked files
 	markedSubMu  sync.Mutex
+	uiState      *UIState // UI layout state (groups, order, etc.)
+	uiStateMu    sync.RWMutex
 }
 
 // NewServer creates a new server instance
@@ -781,12 +843,20 @@ func NewServer(manager *SessionManager, uploadDir string) *Server {
 		scratchSubs: make(map[chan string]struct{}),
 		markedFiles: make([]MarkedFile, 0),
 		markedSubs:  make(map[chan string]struct{}),
+		uiState: &UIState{
+			Groups:     make([]UIGroup, 0),
+			GroupOrder: make([]string, 0),
+		},
 	}
 	// Wire up settings getter for session manager
 	manager.getSettings = func() *Settings {
 		s.settingsMu.RLock()
 		defer s.settingsMu.RUnlock()
 		return s.settings
+	}
+	// Wire up session cleanup callback
+	manager.onSessionClosed = func(sessionID string) {
+		s.removeSessionFromUIState(sessionID)
 	}
 	return s
 }
@@ -973,6 +1043,244 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// handleUIState handles GET/POST for UI layout state
+func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	switch r.Method {
+	case http.MethodGet:
+		s.uiStateMu.RLock()
+		state := s.uiState
+		s.uiStateMu.RUnlock()
+
+		// Validate state against current sessions before returning
+		validState := s.validateUIState(state)
+		json.NewEncoder(w).Encode(validState)
+
+	case http.MethodPost:
+		var state UIState
+		if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
+			http.Error(w, "Invalid state: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Validate against current sessions
+		validState := s.validateUIState(&state)
+
+		s.uiStateMu.Lock()
+		s.uiState = validState
+		s.uiStateMu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(validState)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// validateUIState removes references to sessions that no longer exist
+// and resets counters if all sessions are gone
+func (s *Server) validateUIState(state *UIState) *UIState {
+	if state == nil {
+		return &UIState{
+			Groups:     make([]UIGroup, 0),
+			GroupOrder: make([]string, 0),
+		}
+	}
+
+	// Get current valid session IDs
+	sessions := s.manager.ListSessions()
+	validSessionIDs := make(map[string]bool)
+	for _, sess := range sessions {
+		validSessionIDs[sess.ID] = true
+	}
+
+	// Filter groups to only include valid sessions
+	validGroups := make([]UIGroup, 0)
+	validGroupIDs := make(map[string]bool)
+
+	for _, group := range state.Groups {
+		validSessionIDsInGroup := make([]string, 0)
+		for _, sid := range group.SessionIDs {
+			if validSessionIDs[sid] {
+				validSessionIDsInGroup = append(validSessionIDsInGroup, sid)
+			}
+		}
+
+		if len(validSessionIDsInGroup) > 0 {
+			// Keep group with only valid sessions
+			newGroup := UIGroup{
+				ID:               group.ID,
+				Name:             group.Name,
+				SessionIDs:       validSessionIDsInGroup,
+				Layout:           group.Layout,
+				ExpandedQuadrant: group.ExpandedQuadrant,
+				SplitRatio:       group.SplitRatio,
+				CellMapping:      group.CellMapping,
+			}
+
+			// If session count changed, reset layout to defaults
+			if len(validSessionIDsInGroup) != len(group.SessionIDs) {
+				newGroup.Layout = getDefaultLayout(len(validSessionIDsInGroup))
+				newGroup.SplitRatio = getDefaultSplitRatio(len(validSessionIDsInGroup))
+				newGroup.CellMapping = nil
+			}
+
+			validGroups = append(validGroups, newGroup)
+			validGroupIDs[group.ID] = true
+		}
+	}
+
+	// Filter group order
+	validOrder := make([]string, 0)
+	for _, gid := range state.GroupOrder {
+		if validGroupIDs[gid] {
+			validOrder = append(validOrder, gid)
+		}
+	}
+
+	// Add any groups not in order
+	for _, g := range validGroups {
+		found := false
+		for _, gid := range validOrder {
+			if gid == g.ID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			validOrder = append(validOrder, g.ID)
+		}
+	}
+
+	// Filter custom names
+	validCustomNames := make([]string, 0)
+	for _, sid := range state.CustomNames {
+		if validSessionIDs[sid] {
+			validCustomNames = append(validCustomNames, sid)
+		}
+	}
+
+	// Validate active group
+	activeGroupID := state.ActiveGroupID
+	if !validGroupIDs[activeGroupID] && len(validOrder) > 0 {
+		activeGroupID = validOrder[0]
+	} else if len(validOrder) == 0 {
+		activeGroupID = ""
+	}
+
+	// Reset counter if no groups remain
+	groupCounter := state.GroupCounter
+	if len(validGroups) == 0 {
+		groupCounter = 0
+	}
+
+	return &UIState{
+		Groups:           validGroups,
+		GroupOrder:       validOrder,
+		ActiveGroupID:    activeGroupID,
+		GroupCounter:     groupCounter,
+		SidebarCollapsed: state.SidebarCollapsed,
+		CustomNames:      validCustomNames,
+	}
+}
+
+// removeSessionFromUIState removes a session from UI state when it dies
+func (s *Server) removeSessionFromUIState(sessionID string) {
+	s.uiStateMu.Lock()
+	defer s.uiStateMu.Unlock()
+
+	if s.uiState == nil {
+		return
+	}
+
+	// Remove from groups
+	newGroups := make([]UIGroup, 0)
+	removedGroupIDs := make(map[string]bool)
+
+	for _, group := range s.uiState.Groups {
+		originalCount := len(group.SessionIDs)
+		newSessionIDs := make([]string, 0)
+		for _, sid := range group.SessionIDs {
+			if sid != sessionID {
+				newSessionIDs = append(newSessionIDs, sid)
+			}
+		}
+
+		if len(newSessionIDs) > 0 {
+			group.SessionIDs = newSessionIDs
+			// Reset layout if count changed
+			if len(newSessionIDs) != originalCount {
+				group.Layout = getDefaultLayout(len(newSessionIDs))
+				group.SplitRatio = getDefaultSplitRatio(len(newSessionIDs))
+				group.CellMapping = nil
+			}
+			newGroups = append(newGroups, group)
+		} else {
+			removedGroupIDs[group.ID] = true
+		}
+	}
+
+	// Update group order
+	newOrder := make([]string, 0)
+	for _, gid := range s.uiState.GroupOrder {
+		if !removedGroupIDs[gid] {
+			newOrder = append(newOrder, gid)
+		}
+	}
+
+	// Update active group if it was removed
+	if removedGroupIDs[s.uiState.ActiveGroupID] {
+		if len(newOrder) > 0 {
+			s.uiState.ActiveGroupID = newOrder[0]
+		} else {
+			s.uiState.ActiveGroupID = ""
+		}
+	}
+
+	// Remove from custom names
+	newCustomNames := make([]string, 0)
+	for _, sid := range s.uiState.CustomNames {
+		if sid != sessionID {
+			newCustomNames = append(newCustomNames, sid)
+		}
+	}
+
+	s.uiState.Groups = newGroups
+	s.uiState.GroupOrder = newOrder
+	s.uiState.CustomNames = newCustomNames
+
+	// Reset counter if no groups remain
+	if len(newGroups) == 0 {
+		s.uiState.GroupCounter = 0
+	}
+}
+
+// getDefaultLayout returns the default layout for a given session count
+func getDefaultLayout(count int) string {
+	switch count {
+	case 1:
+		return "single"
+	case 2:
+		return "horizontal"
+	default:
+		return "grid"
+	}
+}
+
+// getDefaultSplitRatio returns the default split ratio for a given session count
+func getDefaultSplitRatio(count int) []float64 {
+	switch count {
+	case 1:
+		return nil
+	case 2:
+		return []float64{0.5}
+	default:
+		return []float64{0.5, 0.5}
 	}
 }
 
@@ -1211,9 +1519,36 @@ func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string, info os
 	})
 }
 
-// clipboardScript is injected into ttyd's HTML to enable OSC 52 clipboard copy
-// Paste is handled natively by xterm.js via Ctrl+Shift+V
-const clipboardScript = `<script>
+// ttydHeadScript is injected at the START of <head> to intercept WebSocket before ttyd loads
+// This MUST run before any other scripts to properly intercept WebSocket connections
+const ttydHeadScript = `<head><script>
+// WebSocket proxy fix - must run before ttyd's JavaScript
+(function() {
+    var OrigWebSocket = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+        // Rewrite localhost/127.0.0.1 WebSocket URLs to use current page's path
+        if (url.match(/^wss?:\/\/(localhost|127\.0\.0\.1)/)) {
+            var pagePath = window.location.pathname.replace(/\/$/, '');
+            var wsPath = url.replace(/^wss?:\/\/[^\/]+/, '');
+            var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            url = protocol + '//' + window.location.host + pagePath + wsPath;
+            console.log('[webmux] Rewriting WebSocket URL to:', url);
+        }
+        if (protocols) {
+            return new OrigWebSocket(url, protocols);
+        }
+        return new OrigWebSocket(url);
+    };
+    window.WebSocket.prototype = OrigWebSocket.prototype;
+    window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+    window.WebSocket.OPEN = OrigWebSocket.OPEN;
+    window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
+    window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+})();
+</script>`
+
+// ttydBodyScript is injected before </body> for OSC 52 clipboard support
+const ttydBodyScript = `<script>
 (function() {
     // Wait for terminal to initialize, then set up OSC 52 handler for copy
     var checkTerm = setInterval(function() {
@@ -1261,10 +1596,18 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the target URL
+	targetHost := fmt.Sprintf("127.0.0.1:%d", session.Port)
+
+	// Check if this is a WebSocket upgrade request
+	if r.Header.Get("Upgrade") == "websocket" {
+		s.proxyWebSocket(w, r, targetHost, parts)
+		return
+	}
+
+	// Build the target URL for HTTP requests
 	targetURL := &url.URL{
 		Scheme: "http",
-		Host:   fmt.Sprintf("127.0.0.1:%d", session.Port),
+		Host:   targetHost,
 	}
 
 	// Create reverse proxy
@@ -1299,8 +1642,10 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 
-			// Inject our script before </body>
-			content := strings.Replace(string(body), "</body>", clipboardScript, 1)
+			// Inject WebSocket fix at start of <head> (must run before ttyd's JS)
+			content := strings.Replace(string(body), "<head>", ttydHeadScript, 1)
+			// Inject OSC 52 clipboard handler before </body>
+			content = strings.Replace(content, "</body>", ttydBodyScript, 1)
 
 			// Update the response
 			resp.Body = io.NopCloser(strings.NewReader(content))
@@ -1312,6 +1657,90 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// proxyWebSocket handles WebSocket connections by proxying to ttyd
+func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHost string, parts []string) {
+	// Build target WebSocket path
+	targetPath := "/"
+	if len(parts) > 1 {
+		targetPath = "/" + parts[1]
+	}
+
+	// Connect to the backend ttyd WebSocket
+	targetConn, err := net.Dial("tcp", targetHost)
+	if err != nil {
+		http.Error(w, "Failed to connect to terminal", http.StatusBadGateway)
+		return
+	}
+
+	// Hijack the client connection
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		targetConn.Close()
+		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, clientBuf, err := hijacker.Hijack()
+	if err != nil {
+		targetConn.Close()
+		http.Error(w, "Failed to hijack connection", http.StatusInternalServerError)
+		return
+	}
+
+	// Manually construct and send the WebSocket upgrade request to ttyd
+	// We need to rewrite the path and Host header
+	upgradeReq := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, targetPath)
+	upgradeReq += fmt.Sprintf("Host: %s\r\n", targetHost)
+
+	// Copy relevant headers (but not Host, we set it above)
+	for key, values := range r.Header {
+		if key == "Host" {
+			continue
+		}
+		for _, value := range values {
+			upgradeReq += fmt.Sprintf("%s: %s\r\n", key, value)
+		}
+	}
+	upgradeReq += "\r\n"
+
+	// Send the upgrade request to ttyd
+	if _, err := targetConn.Write([]byte(upgradeReq)); err != nil {
+		clientConn.Close()
+		targetConn.Close()
+		return
+	}
+
+	// Bidirectionally copy data between client and backend
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Backend (ttyd) -> Client
+	go func() {
+		defer wg.Done()
+		io.Copy(clientConn, targetConn)
+		if tc, ok := clientConn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	// Client -> Backend (ttyd)
+	go func() {
+		defer wg.Done()
+		// First flush any buffered data from the hijacked connection
+		if clientBuf.Reader.Buffered() > 0 {
+			io.CopyN(targetConn, clientBuf, int64(clientBuf.Reader.Buffered()))
+		}
+		io.Copy(targetConn, clientConn)
+		if tc, ok := targetConn.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+	}()
+
+	wg.Wait()
+	clientConn.Close()
+	targetConn.Close()
 }
 
 // handleBrowse lists files in a directory for the download UI
@@ -1884,6 +2313,7 @@ func main() {
 	mux.HandleFunc("/api/download", server.handleDownload)
 	mux.HandleFunc("/api/browse", server.handleBrowse)
 	mux.HandleFunc("/api/settings", server.handleSettings)
+	mux.HandleFunc("/api/ui-state", server.handleUIState)
 	mux.HandleFunc("/api/scratch", server.handleScratch)
 	mux.HandleFunc("/api/scratch/events", server.handleScratchEvents)
 	mux.HandleFunc("/api/marked", server.handleMarked)

@@ -49,17 +49,63 @@ class TerminalMultiplexer {
         // Sidebar collapsed state
         this.sidebarCollapsed = false;
 
+        // Server connection state
+        this.serverConnected = true;
+        this.connectionCheckInterval = null;
+
+        // Base path for proxy support (detected from current URL)
+        this.basePath = this.detectBasePath();
+
         this.init();
+    }
+
+    // Detect base path from current URL for proxy support
+    // e.g., if accessed via /webmux/, basePath will be '/webmux'
+    detectBasePath() {
+        const path = window.location.pathname;
+        // If path ends with index.html or /, strip it to get base
+        // The app is served at the root of its path, so we look for
+        // the path before any trailing slash or index.html
+        let base = path.replace(/\/?(index\.html)?$/, '');
+        // Ensure it doesn't end with a slash (we'll add slashes when building URLs)
+        if (base.endsWith('/')) {
+            base = base.slice(0, -1);
+        }
+        // Empty string means root path
+        console.log('[webmux] Detected base path:', base || '(root)');
+        return base;
+    }
+
+    // Build a URL with the base path prepended
+    url(path) {
+        // Ensure path starts with /
+        if (!path.startsWith('/')) {
+            path = '/' + path;
+        }
+        return this.basePath + path;
+    }
+
+    // Build a WebSocket URL with the base path
+    wsUrl(path) {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${protocol}//${window.location.host}${this.url(path)}`;
     }
 
     async init() {
         this.bindElements();
         this.bindEvents();
         this.setupTerminalDragTarget();
-        await this.loadSettings();
-        await this.loadServerInfo();
-        this.loadUIState(); // Load saved UI state before loading sessions
-        await this.loadSessions();
+        
+        // Check server connection first
+        const connected = await this.checkServerConnection();
+        this.setServerConnected(connected);
+        
+        if (connected) {
+            await this.loadSettings();
+            await this.loadServerInfo();
+            await this.loadUIState(); // Load saved UI state from server before loading sessions
+            await this.loadSessions();
+        }
         
         if (this.groups.size === 0) {
             document.getElementById('no-session').classList.remove('hidden');
@@ -71,7 +117,7 @@ class TerminalMultiplexer {
             this.startIconFadeTimer();
         }
         
-        // Start polling for dead sessions
+        // Start polling for dead sessions (also checks connection)
         this.startSessionHealthCheck();
         
         // Save state periodically and on changes
@@ -89,6 +135,95 @@ class TerminalMultiplexer {
         setInterval(() => this.checkSessionHealth(), 500);
     }
     
+    // ============ Server Connection ============
+    
+    async checkServerConnection() {
+        try {
+            // Create abort controller for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 5000);
+            
+            const response = await fetch(this.url('/api/info'), { 
+                method: 'GET',
+                signal: controller.signal
+            });
+            
+            clearTimeout(timeoutId);
+            return response.ok;
+        } catch (error) {
+            return false;
+        }
+    }
+    
+    setServerConnected(connected) {
+        // Skip if state hasn't changed
+        if (connected === this.serverConnected) {
+            return;
+        }
+        
+        this.serverConnected = connected;
+        
+        // Update UI to reflect connection state
+        document.body.classList.toggle('server-disconnected', !connected);
+        
+        // Update button states
+        this.updateActionButtonStates();
+        
+        // Show/hide disconnection warning
+        if (!connected) {
+            this.showDisconnectionWarning();
+        } else {
+            this.hideDisconnectionWarning();
+            // Reload UI state and sessions when reconnected
+            this.loadUIState().then(() => this.loadSessions());
+        }
+    }
+    
+    updateActionButtonStates() {
+        const disabled = !this.serverConnected;
+        
+        // Disable buttons that require server connection
+        const serverButtons = [
+            this.newSessionBtn,
+            this.createFirstBtn,
+            this.openUploadBtn,
+            this.openDownloadBtn,
+        ];
+        
+        serverButtons.forEach(btn => {
+            if (btn) {
+                btn.disabled = disabled;
+                btn.classList.toggle('disabled', disabled);
+            }
+        });
+        
+        // Update sidebar action buttons
+        this.sessionList?.querySelectorAll('.action-btn').forEach(btn => {
+            btn.disabled = disabled;
+            btn.classList.toggle('disabled', disabled);
+        });
+    }
+    
+    showDisconnectionWarning() {
+        // Remove existing warning if any
+        this.hideDisconnectionWarning();
+        
+        const warning = document.createElement('div');
+        warning.id = 'disconnection-warning';
+        warning.className = 'disconnection-warning';
+        warning.innerHTML = `
+            <svg viewBox="0 0 24 24" width="20" height="20">
+                <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+            </svg>
+            <span>Server disconnected. Some actions are unavailable.</span>
+        `;
+        document.body.appendChild(warning);
+    }
+    
+    hideDisconnectionWarning() {
+        document.getElementById('disconnection-warning')?.remove();
+    }
+    
     // ============ State Persistence ============
     
     startAutoSave() {
@@ -98,7 +233,7 @@ class TerminalMultiplexer {
         window.addEventListener('beforeunload', () => this.saveUIState());
     }
     
-    saveUIState() {
+    async saveUIState() {
         const state = {
             groupOrder: this.groupOrder,
             groups: Array.from(this.groups.entries()).map(([id, g]) => ({
@@ -117,39 +252,55 @@ class TerminalMultiplexer {
         };
         
         try {
-            localStorage.setItem('multiplexer-ui-state', JSON.stringify(state));
+            // Save to server (authoritative source)
+            await fetch(this.url('/api/ui-state'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(state)
+            });
         } catch (e) {
-            console.warn('Failed to save UI state:', e);
+            console.warn('Failed to save UI state to server:', e);
         }
     }
     
-    loadUIState() {
+    async loadUIState() {
+        // Clear legacy localStorage state (now stored on server)
         try {
-            const saved = localStorage.getItem('multiplexer-ui-state');
-            if (!saved) return;
+            localStorage.removeItem('multiplexer-ui-state');
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+        
+        try {
+            const response = await fetch(this.url('/api/ui-state'));
+            if (!response.ok) return;
             
-            const state = JSON.parse(saved);
+            const state = await response.json();
             
             // Validate state structure
             if (!state || typeof state !== 'object') return;
             if (state.groups && !Array.isArray(state.groups)) return;
             if (state.groupOrder && !Array.isArray(state.groupOrder)) return;
             
-            // Restore state - will be reconciled with server sessions in loadSessions
+            // Restore state - already validated by server
             this.savedState = state;
             this.sidebarCollapsed = state.sidebarCollapsed || false;
             this.groupCounter = state.groupCounter || 0;
             this.customNames = new Set(state.customNames || []);
         } catch (e) {
-            console.warn('Failed to load UI state:', e);
-            // Clear corrupted state
-            localStorage.removeItem('multiplexer-ui-state');
+            console.warn('Failed to load UI state from server:', e);
         }
     }
     
     async checkSessionHealth() {
         try {
-            const response = await fetch('/api/sessions');
+            const response = await fetch(this.url('/api/sessions'));
+            
+            // Update connection status on successful response
+            if (!this.serverConnected) {
+                this.setServerConnected(true);
+            }
+            
             const sessions = await response.json();
             
             // Build a map of server sessions and update session data
@@ -181,7 +332,10 @@ class TerminalMultiplexer {
                 }
             }
         } catch (error) {
-            // Ignore errors during health check
+            // Update connection status on failure
+            if (this.serverConnected) {
+                this.setServerConnected(false);
+            }
         }
     }
     
@@ -556,8 +710,14 @@ class TerminalMultiplexer {
 
     async loadSessions() {
         try {
-            const response = await fetch('/api/sessions');
+            const response = await fetch(this.url('/api/sessions'));
             const serverSessions = await response.json();
+            
+            // Clear existing state before loading
+            this.sessions.clear();
+            this.groups.clear();
+            this.groupOrder = [];
+            this.sessionList.innerHTML = '';
             
             // Build map of server sessions
             const serverSessionMap = new Map();
@@ -566,8 +726,8 @@ class TerminalMultiplexer {
                 this.sessions.set(session.id, session);
             }
             
-            // Try to restore saved state
-            if (this.savedState && this.savedState.groups) {
+            // Try to restore saved state from server
+            if (this.savedState && this.savedState.groups && this.savedState.groups.length > 0) {
                 this.reconcileWithSavedState(serverSessionMap);
             } else {
                 // No saved state - create a group for each session
@@ -732,6 +892,10 @@ class TerminalMultiplexer {
     }
 
     async createNewSessionAndGroup() {
+        if (!this.serverConnected) {
+            this.toastError('Cannot create terminal: server disconnected');
+            return;
+        }
         const session = await this.createSession();
         if (session) {
             const group = this.createGroup([session.id]);
@@ -743,7 +907,7 @@ class TerminalMultiplexer {
 
     async createSession(name = '') {
         try {
-            const response = await fetch('/api/sessions', {
+            const response = await fetch(this.url('/api/sessions'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name })
@@ -770,7 +934,7 @@ class TerminalMultiplexer {
 
     async closeSession(sessionId) {
         try {
-            await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
+            await fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' });
             this.sessions.delete(sessionId);
             this.customNames.delete(sessionId);
             
@@ -824,7 +988,7 @@ class TerminalMultiplexer {
         const groupIndex = this.groupOrder.indexOf(groupId);
 
         for (const sessionId of group.sessionIds) {
-            fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+            fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' }).catch(() => {});
             this.sessions.delete(sessionId);
             this.customNames.delete(sessionId);
             
@@ -1234,7 +1398,7 @@ class TerminalMultiplexer {
         
         if (newName) {
             try {
-                await fetch(`/api/sessions/${sessionId}`, {
+                await fetch(this.url(`/api/sessions/${sessionId}`), {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name: newName })
@@ -1296,7 +1460,7 @@ class TerminalMultiplexer {
         const left = window.screenX + 50;
         const top = window.screenY + 50;
 
-        const popoutUrl = `/t/${session.id}/`;
+        const popoutUrl = this.url(`/t/${session.id}/`);
         const popoutWindow = window.open(
             popoutUrl,
             `terminal-${sessionId}`,
@@ -1331,7 +1495,7 @@ class TerminalMultiplexer {
         const iframe = container.querySelector('iframe');
         if (iframe) {
             // Reset to the correct terminal URL (not whatever the iframe might have navigated to)
-            const correctSrc = `/t/${sessionId}/`;
+            const correctSrc = this.url(`/t/${sessionId}/`);
             iframe.src = '';
             setTimeout(() => { iframe.src = correctSrc; }, 50);
         }
@@ -1391,11 +1555,19 @@ class TerminalMultiplexer {
     createSessionContainer(session) {
         const container = document.createElement('div');
         container.id = `terminal-${session.id}`;
-        container.className = 'terminal-container';
+        container.className = 'terminal-container loading';
         container.dataset.sessionId = session.id;
         
+        // Loading overlay shown while terminal connects
+        const loadingOverlay = document.createElement('div');
+        loadingOverlay.className = 'terminal-loading';
+        loadingOverlay.innerHTML = `
+            <div class="terminal-loading-spinner"></div>
+            <p>Connecting...</p>
+        `;
+        
         const iframe = document.createElement('iframe');
-        iframe.src = `/t/${session.id}/`;
+        iframe.src = this.url(`/t/${session.id}/`);
         iframe.className = 'terminal-iframe';
         iframe.allow = 'clipboard-read; clipboard-write';
         
@@ -1405,10 +1577,19 @@ class TerminalMultiplexer {
         iframe.addEventListener('load', () => {
             if (initialLoad) {
                 initialLoad = false;
+                // Remove loading state once terminal loads
+                container.classList.remove('loading');
                 return;
             }
             // iframe reloaded - session likely died, check immediately
             this.checkSessionHealth();
+        });
+        
+        // Also listen for errors to show loading failed
+        iframe.addEventListener('error', () => {
+            if (initialLoad) {
+                loadingOverlay.querySelector('p').textContent = 'Failed to connect';
+            }
         });
         
         const placeholder = document.createElement('div');
@@ -1430,6 +1611,7 @@ class TerminalMultiplexer {
             this.focusTerminal(session.id);
         });
         
+        container.appendChild(loadingOverlay);
         container.appendChild(iframe);
         container.appendChild(placeholder);
         this.terminalsContainer.appendChild(container);
@@ -2567,7 +2749,7 @@ class TerminalMultiplexer {
         progressText.textContent = 'Uploading...';
 
         try {
-            const response = await fetch('/api/upload', { method: 'POST', body: formData });
+            const response = await fetch(this.url('/api/upload'), { method: 'POST', body: formData });
             if (!response.ok) throw new Error('Upload failed');
 
             const result = await response.json();
@@ -2592,7 +2774,7 @@ class TerminalMultiplexer {
 
     async browsePath(path) {
         try {
-            const response = await fetch(`/api/browse?path=${encodeURIComponent(path)}`);
+            const response = await fetch(this.url(`/api/browse?path=${encodeURIComponent(path)}`));
             if (!response.ok) throw new Error('Failed to browse directory');
 
             const result = await response.json();
@@ -2734,7 +2916,7 @@ class TerminalMultiplexer {
             if (downloadBtn) {
                 downloadBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
-                    window.open(`/api/download?path=${encodeURIComponent(path)}`, '_blank');
+                    window.open(this.url(`/api/download?path=${encodeURIComponent(path)}`), '_blank');
                 });
             }
         });
@@ -2853,7 +3035,7 @@ class TerminalMultiplexer {
         if (!this.currentFileInfo) return;
         try {
             // Get current scratch content
-            const response = await fetch('/api/scratch');
+            const response = await fetch(this.url('/api/scratch'));
             const data = await response.json();
             const currentText = data.text || '';
             
@@ -2863,7 +3045,7 @@ class TerminalMultiplexer {
                 : this.currentFileInfo.path;
             
             // Save back
-            await fetch('/api/scratch', {
+            await fetch(this.url('/api/scratch'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: newText })
@@ -2880,7 +3062,7 @@ class TerminalMultiplexer {
 
     async loadSettings() {
         try {
-            const response = await fetch('/api/settings');
+            const response = await fetch(this.url('/api/settings'));
             this.settings = await response.json();
             this.applyUIColors(this.settings.ui);
         } catch (error) {
@@ -2892,7 +3074,7 @@ class TerminalMultiplexer {
 
     async loadServerInfo() {
         try {
-            const response = await fetch('/api/info');
+            const response = await fetch(this.url('/api/info'));
             const info = await response.json();
             this.serverInfo = info;
             
@@ -3008,7 +3190,7 @@ class TerminalMultiplexer {
         const settings = this.getSettingsFromInputs();
         
         try {
-            const response = await fetch('/api/settings', {
+            const response = await fetch(this.url('/api/settings'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
@@ -3270,6 +3452,11 @@ class TerminalMultiplexer {
         return this.toast(message, 'info', duration);
     }
 
+    // Alias for convenience
+    showToast(message, type = 'info', duration = 4000) {
+        return this.toast(message, type, duration);
+    }
+
     // ============ Scratch Pad ============
 
     showScratchPad(text = '') {
@@ -3392,7 +3579,7 @@ class TerminalMultiplexer {
 
     connectScratchEvents() {
         // Connect to SSE for scratch pad updates from CLI
-        const es = new EventSource('/api/scratch/events');
+        const es = new EventSource(this.url('/api/scratch/events'));
         
         es.onmessage = (e) => {
             try {
@@ -3443,7 +3630,7 @@ class TerminalMultiplexer {
     async syncScratchToServer(text) {
         this._lastSyncedText = text;
         try {
-            await fetch('/api/scratch', {
+            await fetch(this.url('/api/scratch'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text })
@@ -3456,7 +3643,7 @@ class TerminalMultiplexer {
     // ============ Marked Files ============
 
     connectMarkedEvents() {
-        const es = new EventSource('/api/marked/events');
+        const es = new EventSource(this.url('/api/marked/events'));
         
         es.onmessage = (e) => {
             try {
@@ -3477,7 +3664,7 @@ class TerminalMultiplexer {
 
     async markFile(path) {
         try {
-            const response = await fetch('/api/marked', {
+            const response = await fetch(this.url('/api/marked'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path })
@@ -3494,7 +3681,7 @@ class TerminalMultiplexer {
 
     async unmarkFile(path) {
         try {
-            await fetch(`/api/marked?path=${encodeURIComponent(path)}`, {
+            await fetch(this.url(`/api/marked?path=${encodeURIComponent(path)}`), {
                 method: 'DELETE'
             });
         } catch (err) {
@@ -3504,7 +3691,7 @@ class TerminalMultiplexer {
 
     async clearMarkedFiles() {
         try {
-            await fetch('/api/marked', { method: 'DELETE' });
+            await fetch(this.url('/api/marked'), { method: 'DELETE' });
         } catch (err) {
             console.error('Failed to clear marked files:', err);
         }
@@ -3514,13 +3701,13 @@ class TerminalMultiplexer {
         if (this.markedFiles.length === 0) return;
         
         // Trigger download
-        window.open('/api/marked/download', '_blank');
+        window.open(this.url('/api/marked/download'), '_blank');
     }
 
     async downloadSingleMarked(path) {
         // Download single item from marked list (handles both files and directories)
         // The endpoint will unmark after download
-        window.open(`/api/marked/download?path=${encodeURIComponent(path)}`, '_blank');
+        window.open(this.url(`/api/marked/download?path=${encodeURIComponent(path)}`), '_blank');
     }
 
     updateMarkedUI() {
@@ -3680,15 +3867,21 @@ class TerminalMultiplexer {
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new TerminalMultiplexer();
     
-    // Dev mode live reload (silently fails in production)
-    try {
-        const ws = new WebSocket(`ws://${location.host}/api/dev-reload`);
-        ws.onmessage = (e) => {
-            if (e.data === 'reload') {
-                console.log('[dev] Reloading...');
-                location.reload();
+    // Dev mode live reload - only attempt if endpoint exists
+    // Uses HEAD request to probe; avoids WebSocket errors in production
+    fetch(window.app.url('/api/dev-reload'), { method: 'HEAD' })
+        .then(response => {
+            // 400 = endpoint exists but needs WebSocket upgrade (expected)
+            if (response.status === 400 || response.ok) {
+                const ws = new WebSocket(window.app.wsUrl('/api/dev-reload'));
+                ws.onmessage = (e) => {
+                    if (e.data === 'reload') {
+                        console.log('[dev] Reloading...');
+                        location.reload();
+                    }
+                };
+                ws.onerror = () => {};
             }
-        };
-        ws.onerror = () => {}; // Silently ignore in production
-    } catch (e) {}
+        })
+        .catch(() => {});
 });
