@@ -1460,6 +1460,18 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		filename := filepath.Base(fileHeader.Filename)
 		destPath := filepath.Join(targetDir, filename)
 
+		// Avoid overwriting existing files by appending a number suffix
+		if _, err := os.Stat(destPath); err == nil {
+			ext := filepath.Ext(filename)
+			base := filename[:len(filename)-len(ext)]
+			for i := 1; ; i++ {
+				destPath = filepath.Join(targetDir, fmt.Sprintf("%s (%d)%s", base, i, ext))
+				if _, err := os.Stat(destPath); os.IsNotExist(err) {
+					break
+				}
+			}
+		}
+
 		dest, err := os.Create(destPath)
 		if err != nil {
 			http.Error(w, "Failed to create file: "+err.Error(), http.StatusInternalServerError)
@@ -2252,7 +2264,7 @@ func (s *Server) handleMarkedDownload(w http.ResponseWriter, r *http.Request) {
 				ext := filepath.Ext(base)
 				name := strings.TrimSuffix(base, ext)
 				for i := 2; ; i++ {
-					zipPath = fmt.Sprintf("%s_%d%s", name, i, ext)
+					zipPath = fmt.Sprintf("%s (%d)%s", name, i, ext)
 					if !usedNames[zipPath] {
 						break
 					}

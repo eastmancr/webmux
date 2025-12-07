@@ -2813,7 +2813,10 @@ class TerminalMultiplexer {
 
         try {
             const response = await fetch(this.url('/api/upload'), { method: 'POST', body: formData });
-            if (!response.ok) throw new Error('Upload failed');
+            if (!response.ok) {
+                const text = await response.text();
+                throw new Error(`Upload failed (${response.status}): ${text}`);
+            }
 
             const result = await response.json();
             progressFill.style.width = '100%';
