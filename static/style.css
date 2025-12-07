@@ -2566,35 +2566,80 @@ body {
     margin: 0;
 }
 
-/* Server disconnection warning banner */
-.disconnection-warning {
+/* Server disconnection warning - border around viewport */
+.disconnection-border {
     position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2000;
+    --border-width: 4px;
+}
+
+/* Use pseudo-element for border that animates */
+.disconnection-border::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: var(--border-width) solid var(--danger);
+    opacity: 0;
+    transform: scale(1.02);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.disconnection-border.visible::before {
+    opacity: 1;
+    transform: scale(1);
+}
+
+/* Notch container - positions the label */
+.disconnection-notch {
+    position: fixed;
+    top: 4px; /* Match border width */
+    left: 50%;
+    transform: translateX(-50%) translateY(-100%);
+    pointer-events: none;
+    z-index: 2001;
+    transition: transform 0.3s ease;
+    display: flex;
+    align-items: flex-start;
+}
+
+.disconnection-notch.visible {
+    transform: translateX(-50%) translateY(0);
+}
+
+/* Inverted rounded corners using radial gradient */
+.disconnection-notch-tab-left,
+.disconnection-notch-tab-right {
+    width: 10px;
+    height: 10px;
+    flex-shrink: 0;
+}
+
+.disconnection-notch-tab-left {
+    background: radial-gradient(circle at 0% 100%, transparent 10px, var(--danger) 10px);
+}
+
+.disconnection-notch-tab-right {
+    background: radial-gradient(circle at 100% 100%, transparent 10px, var(--danger) 10px);
+}
+
+/* The actual notch label */
+.disconnection-notch-inner {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
-    padding: 10px 20px;
+    gap: 8px;
+    padding: 6px 14px 8px;
     background: var(--danger);
     color: var(--bg-primary);
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
-    z-index: 2000;
-    animation: slide-down 0.2s ease-out;
+    border-radius: 0 0 10px 10px;
+    white-space: nowrap;
 }
 
-@keyframes slide-down {
-    from {
-        transform: translateY(-100%);
-    }
-    to {
-        transform: translateY(0);
-    }
-}
-
-.disconnection-warning svg {
+.disconnection-notch-inner svg {
     flex-shrink: 0;
 }
 

@@ -205,23 +205,54 @@ class TerminalMultiplexer {
     }
 
     showDisconnectionWarning() {
-        // Remove existing warning if any
-        this.hideDisconnectionWarning();
+        // Create border element if it doesn't exist
+        if (!document.getElementById('disconnection-border')) {
+            const border = document.createElement('div');
+            border.id = 'disconnection-border';
+            border.className = 'disconnection-border';
+            document.body.appendChild(border);
+        }
 
-        const warning = document.createElement('div');
-        warning.id = 'disconnection-warning';
-        warning.className = 'disconnection-warning';
-        warning.innerHTML = `
-            <svg viewBox="0 0 24 24" width="20" height="20">
-                <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
-            </svg>
-            <span>Server disconnected. Some actions are unavailable.</span>
-        `;
-        document.body.appendChild(warning);
+        // Create notch element if it doesn't exist
+        if (!document.getElementById('disconnection-notch')) {
+            const notch = document.createElement('div');
+            notch.id = 'disconnection-notch';
+            notch.className = 'disconnection-notch';
+            notch.innerHTML = `
+                <div class="disconnection-notch-tab-left"></div>
+                <div class="disconnection-notch-inner">
+                    <svg viewBox="0 0 24 24" width="18" height="18">
+                        <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
+                    </svg>
+                    <span>Server disconnected</span>
+                </div>
+                <div class="disconnection-notch-tab-right"></div>
+            `;
+            document.body.appendChild(notch);
+        }
+
+        // Trigger animation by adding visible class after browser paints initial state
+        // Double rAF ensures the elements are rendered before we trigger the transition
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                document.getElementById('disconnection-border')?.classList.add('visible');
+                document.getElementById('disconnection-notch')?.classList.add('visible');
+            });
+        });
     }
 
     hideDisconnectionWarning() {
-        document.getElementById('disconnection-warning')?.remove();
+        const border = document.getElementById('disconnection-border');
+        const notch = document.getElementById('disconnection-notch');
+
+        if (border) border.classList.remove('visible');
+        if (notch) notch.classList.remove('visible');
+
+        // Remove elements after transition
+        setTimeout(() => {
+            border?.remove();
+            notch?.remove();
+        }, 300);
     }
 
     // ============ State Persistence ============
