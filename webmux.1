@@ -24,28 +24,31 @@ Shell to spawn in new terminal sessions. Default: \fB$SHELL\fR environment varia
 Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
 
 .SH CLI HELPER
-Inside webmux terminals, the \fB$wm\fR variable points to the CLI helper binary:
+Inside webmux terminals, the \fBwm\fR command is available as a shell function:
 .TP
-.B $wm info
+.B wm info
 Show server information (port, sessions, paths).
 .TP
-.B $wm ls
+.B wm ls
 List all active sessions.
 .TP
-.B $wm new \fR[\fIname\fR]
+.B wm new \fR[\fIname\fR]
 Create a new session with optional name.
 .TP
-.B $wm close \fR\fIid\fR
+.B wm close \fR\fIid\fR
 Close a session by ID.
 .TP
-.B $wm rename \fR\fIid\fR \fIname\fR
+.B wm rename \fR\fIid\fR \fIname\fR
 Rename a session.
 .TP
-.B $wm upload \fR\fIfile\fR...
+.B wm upload \fR\fIfile\fR...
 Upload files to the server.
 .TP
-.B $wm scratch \fR[\fItext\fR]
+.B wm scratch \fR[\fItext\fR]
 Get or set scratch pad content. Use \fB-\fR to read from stdin, \fBclear\fR to clear.
+.TP
+.B wm mark \fR[\fIfile\fR...]
+List or mark files for download. Use \fBunmark\fR to remove, \fBclear\fR to clear all.
 
 .SH FILES
 .TP
@@ -70,7 +73,7 @@ Group up to 4 terminals in resizable split layouts.
 Upload files via drag-and-drop or file picker. Download files by browsing the server filesystem.
 .TP
 .B Scratch Pad
-Exchange text between CLI and browser. Send from terminal with \fB$wm scratch\fR, edit in browser.
+Exchange text between CLI and browser. Send from terminal with \fBwm scratch\fR, edit in browser.
 .TP
 .B Theming
 Customizable UI and terminal colors using Base24 color schemes. Settings are persisted to disk.
@@ -95,10 +98,13 @@ Use zsh as the default shell:
 .SH ENVIRONMENT
 .TP
 .B WEBMUX_PORT
-Set automatically in webmux terminals. Used by \fB$wm\fR to connect to the server.
+Set automatically in webmux terminals. Used by the \fBwm\fR command to connect to the server.
 .TP
-.B wm
-Set automatically in webmux terminals. Path to the CLI helper binary.
+.B WEBMUX_SESSION
+Set automatically in webmux terminals. The current session ID.
+.TP
+.B WEBMUX_INIT
+Set automatically in webmux terminals. Path to the shell init script.
 
 .SH REQUIREMENTS
 .B webmux

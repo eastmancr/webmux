@@ -65,7 +65,7 @@ body {
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: row;
-    transition: all var(--transition-speed) ease;
+    transition: width var(--transition-speed) ease, min-width var(--transition-speed) ease;
     overflow: hidden;
 }
 
@@ -2621,7 +2621,7 @@ body.server-disconnected .sidebar-actions .btn {
         z-index: 50;
         height: 100%;
     }
-    
+
     .sidebar.collapsed {
         transform: translateX(-100%);
     }

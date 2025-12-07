@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -171,7 +172,8 @@ func xdgDataHome() string {
 }
 
 // xdgStateHome returns XDG_STATE_HOME or ~/.local/state
-func xdgStateHome() string {
+// _ for now to silence unused function warning
+func _() string {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
 		return dir
 	}
@@ -328,6 +330,13 @@ func SaveSettings(settings *Settings) error {
 	return os.WriteFile(path, data, 0644)
 }
 
+// Display-related environment variables that can be forwarded to sessions
+// These are connection variables that allow GUI apps to connect to the display server
+var displayEnvVars = []string{
+	"DISPLAY",
+	"WAYLAND_DISPLAY",
+}
+
 // SessionManager handles multiple ttyd sessions
 type SessionManager struct {
 	sessions        map[string]*Session
@@ -391,6 +400,23 @@ func NewSessionManager(startPort int, shell, workDir, serverPort string) *Sessio
 		}
 	}
 
+	// Create shell init script that defines the wm function
+	// This will be sourced via ENV (POSIX shells) or BASH_ENV (bash)
+	if sm.wmBinDir != "" {
+		wmPath := filepath.Join(sm.wmBinDir, "wm")
+		initPath := filepath.Join(sm.wmBinDir, "init.sh")
+		// Generate the init script content (same as `wm init` output)
+		initContent := fmt.Sprintf(`# webmux shell init
+_wm_bin=%q
+wm() {
+  "$_wm_bin" "$@"
+}
+`, wmPath)
+		if err := os.WriteFile(initPath, []byte(initContent), 0644); err != nil {
+			log.Printf("Warning: could not write init script: %v", err)
+		}
+	}
+
 	return sm
 }
 
@@ -410,9 +436,9 @@ func (sm *SessionManager) sessionEnvArgs() []string {
 	// Add WEBMUX_PORT so wm CLI knows which server to talk to
 	args = append(args, "-e", "WEBMUX_PORT="+sm.serverPort)
 
-	// Set $wm to the path of the wm binary - users can run "$wm info", "$wm ls", etc.
+	// Set _wm_bin env var to the path of the wm binary (used by shell wrapper)
 	if sm.wmBinDir != "" {
-		args = append(args, "-e", "wm="+filepath.Join(sm.wmBinDir, "wm"))
+		args = append(args, "-e", "_wm_bin="+filepath.Join(sm.wmBinDir, "wm"))
 	}
 
 	return args
@@ -441,10 +467,63 @@ func (sm *SessionManager) CreateSession(name string) (*Session, error) {
 	tmuxArgs = append(tmuxArgs, "new-session", "-d", "-s", tmuxSession, "-x", "200", "-y", "50")
 	// Add environment variables (-e must come after new-session)
 	tmuxArgs = append(tmuxArgs, sm.sessionEnvArgs()...)
+	// Add session ID so wm CLI knows which session it's in
+	tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_SESSION="+id)
+	// Clear display environment variables by default (clean terminal session)
+	// We set them to a dummy value rather than empty, because some shell init
+	// scripts check `[ -z "$DISPLAY" ]` to detect headless sessions and may
+	// try to start a display server if DISPLAY is empty
+	for _, key := range displayEnvVars {
+		tmuxArgs = append(tmuxArgs, "-e", key+"=none")
+	}
+	// Set WEBMUX_INIT to our init script path (defines wm function)
+	if sm.wmBinDir != "" {
+		initPath := filepath.Join(sm.wmBinDir, "init.sh")
+		tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_INIT="+initPath)
+	}
 	if sm.workDir != "" {
 		tmuxArgs = append(tmuxArgs, "-c", sm.workDir)
 	}
-	tmuxArgs = append(tmuxArgs, sm.shell)
+	// Determine how to inject our init based on shell type
+	shellBase := filepath.Base(sm.shell)
+	if sm.wmBinDir != "" {
+		initPath := filepath.Join(sm.wmBinDir, "init.sh")
+		switch shellBase {
+		case "bash":
+			// bash: use --rcfile to source our init, which also sources user's .bashrc
+			rcPath := filepath.Join(sm.wmBinDir, "bashrc")
+			rcContent := fmt.Sprintf(`[ -f ~/.bashrc ] && . ~/.bashrc
+. %s
+`, initPath)
+			os.WriteFile(rcPath, []byte(rcContent), 0644)
+			tmuxArgs = append(tmuxArgs, sm.shell, "--rcfile", rcPath)
+		case "zsh":
+			// zsh: use ZDOTDIR with custom rc files that source user's config then our init
+			zdotdir := filepath.Join(sm.wmBinDir, "zsh")
+			os.MkdirAll(zdotdir, 0755)
+			// Create .zshenv that sources user's .zshenv (but keeps our ZDOTDIR)
+			zshenvContent := `[ -f "$HOME/.zshenv" ] && . "$HOME/.zshenv"
+`
+			os.WriteFile(filepath.Join(zdotdir, ".zshenv"), []byte(zshenvContent), 0644)
+			// Create .zprofile that sources user's .zprofile
+			zprofileContent := `[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile"
+`
+			os.WriteFile(filepath.Join(zdotdir, ".zprofile"), []byte(zprofileContent), 0644)
+			// Create .zshrc that sources user's .zshrc then our init
+			zshrcContent := fmt.Sprintf(`[ -f "$HOME/.zshrc" ] && . "$HOME/.zshrc"
+. %s
+`, initPath)
+			os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrcContent), 0644)
+			tmuxArgs = append(tmuxArgs, "-e", "ZDOTDIR="+zdotdir)
+			tmuxArgs = append(tmuxArgs, sm.shell)
+		default:
+			// Other shells: set ENV for POSIX compliance
+			tmuxArgs = append(tmuxArgs, "-e", "ENV="+initPath)
+			tmuxArgs = append(tmuxArgs, sm.shell)
+		}
+	} else {
+		tmuxArgs = append(tmuxArgs, sm.shell)
+	}
 
 	tmuxCmd := exec.Command("tmux", tmuxArgs...)
 	tmuxCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -634,9 +713,6 @@ func (sm *SessionManager) monitorSession(session *Session) {
 					s.ttydCmd.Process.Kill()
 				}
 				sm.deleteSession(session.ID)
-			}
-			if len(sm.sessions) == 0 {
-				sm.resetCounters()
 			}
 			if len(sm.sessions) == 0 {
 				sm.resetCounters()
@@ -1145,14 +1221,7 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 
 	// Add any groups not in order
 	for _, g := range validGroups {
-		found := false
-		for _, gid := range validOrder {
-			if gid == g.ID {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(validOrder, g.ID) {
 			validOrder = append(validOrder, g.ID)
 		}
 	}
@@ -1449,7 +1518,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 	if info.IsDir() {
 		// Download directory as zip
-		s.downloadDirAsZip(w, filePath, info)
+		s.downloadDirAsZip(w, filePath)
 		return
 	}
 
@@ -1462,7 +1531,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 // downloadDirAsZip streams a directory as a zip file
-func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string, info os.FileInfo) {
+func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string) {
 	zipName := filepath.Base(dirPath) + ".zip"
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", zipName))
 	w.Header().Set("Content-Type", "application/zip")
@@ -1486,7 +1555,7 @@ func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string, info os
 					Name:   relPath + "/",
 					Method: zip.Store,
 				}
-				header.SetModTime(fi.ModTime())
+				header.Modified = fi.ModTime()
 				zw.CreateHeader(header)
 			}
 			return nil
@@ -1507,7 +1576,7 @@ func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string, info os
 			Name:   relPath,
 			Method: zip.Deflate,
 		}
-		header.SetModTime(fi.ModTime())
+		header.Modified = fi.ModTime()
 
 		zf, err := zw.CreateHeader(header)
 		if err != nil {
@@ -1555,7 +1624,7 @@ const ttydBodyScript = `<script>
         if (window.term && window.term.terminal) {
             clearInterval(checkTerm);
             var terminal = window.term.terminal;
-            
+
             // Register OSC 52 handler for copy (used by tmux set-clipboard)
             if (terminal.parser && terminal.parser.registerOscHandler) {
                 terminal.parser.registerOscHandler(52, function(data) {
@@ -2111,7 +2180,7 @@ func (s *Server) handleMarkedDownload(w http.ResponseWriter, r *http.Request) {
 			Name:   zipPath,
 			Method: zip.Deflate,
 		}
-		header.SetModTime(info.ModTime())
+		header.Modified = info.ModTime()
 
 		zf, err := zw.CreateHeader(header)
 		if err != nil {
@@ -2144,7 +2213,7 @@ func (s *Server) handleMarkedDownload(w http.ResponseWriter, r *http.Request) {
 						Name:   zipPath + "/",
 						Method: zip.Store,
 					}
-					header.SetModTime(info.ModTime())
+					header.Modified = info.ModTime()
 					_, err := zw.CreateHeader(header)
 					if err != nil {
 						log.Printf("Failed to create dir entry %s: %v", zipPath, err)
@@ -2219,14 +2288,7 @@ func (s *Server) handleMarkedDownload(w http.ResponseWriter, r *http.Request) {
 	s.markedMu.Lock()
 	newFiles := make([]MarkedFile, 0)
 	for _, f := range s.markedFiles {
-		found := false
-		for _, p := range addedPaths {
-			if f.Path == p {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if !slices.Contains(addedPaths, f.Path) {
 			newFiles = append(newFiles, f)
 		}
 	}
@@ -2326,7 +2388,7 @@ func main() {
 	// Static files (dev mode handled by build tag)
 	mux.Handle("/", InitDevMode(mux, server))
 
-	log.Printf("Starting server on :%s", *port)
+	log.Printf("Starting server on http://localhost:%s", *port)
 	log.Printf("Working directory: %s", workDir)
 	log.Printf("Upload directory: %s", *uploadDir)
 	log.Printf("Default shell: %s", *shell)

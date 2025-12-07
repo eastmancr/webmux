@@ -36,22 +36,22 @@ The optional `DIRECTORY` argument sets the starting directory for new terminal s
 
 ## CLI Helper
 
-Inside webmux terminals, use `$wm` to interact with the server:
+Inside webmux terminals, use `wm` to interact with the server:
 
 ```sh
-$wm info                  # show server info
-$wm ls                    # list sessions  
-$wm new [name]            # create session
-$wm close <id>            # close session
-$wm rename <id> <name>    # rename session
-$wm upload <file>...      # upload files
-$wm scratch [text]        # get/set scratch pad
-$wm scratch -             # send stdin to scratch pad
-$wm scratch clear         # clear scratch pad
-$wm mark                  # list marked files
-$wm mark <file|dir>...    # mark files/directories for download
-$wm mark unmark <path>    # unmark a file/directory
-$wm mark clear            # clear all marked files
+wm info                  # show server info
+wm ls                    # list sessions  
+wm new [name]            # create session
+wm close <id>            # close session
+wm rename <id> <name>    # rename session
+wm upload <file>...      # upload files
+wm scratch [text]        # get/set scratch pad
+wm scratch -             # send stdin to scratch pad
+wm scratch clear         # clear scratch pad
+wm mark                  # list marked files
+wm mark <file|dir>...    # mark files/directories for download
+wm mark unmark <path>    # unmark a file/directory
+wm mark clear            # clear all marked files
 ```
 
 ## Features

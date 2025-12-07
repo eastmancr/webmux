@@ -68,6 +68,8 @@ func main() {
 		err = cmdScratch(host, args)
 	case "mark":
 		err = cmdMark(host, args)
+	case "init":
+		err = cmdInit()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -102,12 +104,14 @@ Commands:
   mark <file>...     Mark files for download
   mark unmark <file> Unmark a file
   mark clear         Clear all marked files
+  init               Output shell code that defines the wm wrapper function
 
 Environment:
-  WEBMUX_PORT        Server port (default: 8080, set automatically)
+  WEBMUX_PORT        Server port (set automatically in webmux terminals)
+  WEBMUX_SESSION     Current session ID (set automatically in webmux terminals)
   WEBMUX_HOST        Full server address (overrides WEBMUX_PORT if set)
 
-In webmux terminals, use $wm to run commands (e.g., $wm ls, $wm scratch hello)
+In webmux terminals, use wm to run commands (e.g., wm ls, wm scratch hello)
 
 `)
 }
@@ -544,6 +548,26 @@ func cmdMark(host string, args []string) error {
 		}
 		return nil
 	}
+}
+
+// cmdInit outputs shell code to set up the wm wrapper function
+// This is automatically injected by webmux; users don't need to call this manually
+func cmdInit() error {
+	// Get the path to the wm binary from the environment
+	wmBin := os.Getenv("_wm_bin")
+	if wmBin == "" {
+		// Fall back to finding ourselves
+		wmBin, _ = os.Executable()
+	}
+
+	// Output POSIX-compatible shell function that wraps the wm binary
+	fmt.Printf(`# webmux shell wrapper
+_wm_bin=%q
+wm() {
+  "$_wm_bin" "$@"
+}
+`, wmBin)
+	return nil
 }
 
 // Multipart helper

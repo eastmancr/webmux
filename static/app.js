@@ -22,30 +22,30 @@ class TerminalMultiplexer {
     constructor() {
         // Sessions: individual terminal sessions from the backend
         this.sessions = new Map();
-        
+
         // Groups: visual groupings of sessions (1-4 sessions per group)
         // Structure: { id, name, sessionIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
         this.groups = new Map();
-        
+
         // Ordered list of group IDs (for sidebar ordering)
         this.groupOrder = [];
-        
+
         // Track which group is active
         this.activeGroupId = null;
-        
+
         // Track custom names (to know whether to show process name)
         this.customNames = new Set();
-        
+
         // Drag state for sidebar
         this.draggedSessionId = null;
         this.draggedGroupId = null;
-        
+
         // Group counter for unique IDs
         this.groupCounter = 0;
 
         // Track popped out windows: sessionId -> Window object
         this.popoutWindows = new Map();
-        
+
         // Sidebar collapsed state
         this.sidebarCollapsed = false;
 
@@ -95,80 +95,80 @@ class TerminalMultiplexer {
         this.bindElements();
         this.bindEvents();
         this.setupTerminalDragTarget();
-        
+
         // Check server connection first
         const connected = await this.checkServerConnection();
         this.setServerConnected(connected);
-        
+
         if (connected) {
             await this.loadSettings();
             await this.loadServerInfo();
             await this.loadUIState(); // Load saved UI state from server before loading sessions
             await this.loadSessions();
         }
-        
+
         if (this.groups.size === 0) {
             document.getElementById('no-session').classList.remove('hidden');
         }
-        
+
         // Apply saved sidebar state
         if (this.sidebarCollapsed) {
             this.sidebar.classList.add('collapsed');
             this.startIconFadeTimer();
         }
-        
+
         // Start polling for dead sessions (also checks connection)
         this.startSessionHealthCheck();
-        
+
         // Save state periodically and on changes
         this.startAutoSave();
-        
+
         // Connect to scratch pad SSE
         this.connectScratchEvents();
-        
+
         // Connect to marked files SSE
         this.connectMarkedEvents();
     }
-    
+
     startSessionHealthCheck() {
         // Check for dead sessions every 500ms
         setInterval(() => this.checkSessionHealth(), 500);
     }
-    
+
     // ============ Server Connection ============
-    
+
     async checkServerConnection() {
         try {
             // Create abort controller for timeout
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
-            
+
             const response = await fetch(this.url('/api/info'), { 
                 method: 'GET',
                 signal: controller.signal
             });
-            
+
             clearTimeout(timeoutId);
             return response.ok;
         } catch (error) {
             return false;
         }
     }
-    
+
     setServerConnected(connected) {
         // Skip if state hasn't changed
         if (connected === this.serverConnected) {
             return;
         }
-        
+
         this.serverConnected = connected;
-        
+
         // Update UI to reflect connection state
         document.body.classList.toggle('server-disconnected', !connected);
-        
+
         // Update button states
         this.updateActionButtonStates();
-        
+
         // Show/hide disconnection warning
         if (!connected) {
             this.showDisconnectionWarning();
@@ -178,10 +178,10 @@ class TerminalMultiplexer {
             this.loadUIState().then(() => this.loadSessions());
         }
     }
-    
+
     updateActionButtonStates() {
         const disabled = !this.serverConnected;
-        
+
         // Disable buttons that require server connection
         const serverButtons = [
             this.newSessionBtn,
@@ -189,25 +189,25 @@ class TerminalMultiplexer {
             this.openUploadBtn,
             this.openDownloadBtn,
         ];
-        
+
         serverButtons.forEach(btn => {
             if (btn) {
                 btn.disabled = disabled;
                 btn.classList.toggle('disabled', disabled);
             }
         });
-        
+
         // Update sidebar action buttons
         this.sessionList?.querySelectorAll('.action-btn').forEach(btn => {
             btn.disabled = disabled;
             btn.classList.toggle('disabled', disabled);
         });
     }
-    
+
     showDisconnectionWarning() {
         // Remove existing warning if any
         this.hideDisconnectionWarning();
-        
+
         const warning = document.createElement('div');
         warning.id = 'disconnection-warning';
         warning.className = 'disconnection-warning';
@@ -219,20 +219,20 @@ class TerminalMultiplexer {
         `;
         document.body.appendChild(warning);
     }
-    
+
     hideDisconnectionWarning() {
         document.getElementById('disconnection-warning')?.remove();
     }
-    
+
     // ============ State Persistence ============
-    
+
     startAutoSave() {
         // Save state every 5 seconds
         setInterval(() => this.saveUIState(), 5000);
         // Also save on page unload
         window.addEventListener('beforeunload', () => this.saveUIState());
     }
-    
+
     async saveUIState() {
         const state = {
             groupOrder: this.groupOrder,
@@ -250,7 +250,7 @@ class TerminalMultiplexer {
             customNames: Array.from(this.customNames),
             groupCounter: this.groupCounter
         };
-        
+
         try {
             // Save to server (authoritative source)
             await fetch(this.url('/api/ui-state'), {
@@ -262,7 +262,7 @@ class TerminalMultiplexer {
             console.warn('Failed to save UI state to server:', e);
         }
     }
-    
+
     async loadUIState() {
         // Clear legacy localStorage state (now stored on server)
         try {
@@ -270,46 +270,78 @@ class TerminalMultiplexer {
         } catch (e) {
             // Ignore localStorage errors
         }
-        
+
         try {
             const response = await fetch(this.url('/api/ui-state'));
             if (!response.ok) return;
-            
+
             const state = await response.json();
-            
+
             // Validate state structure
             if (!state || typeof state !== 'object') return;
             if (state.groups && !Array.isArray(state.groups)) return;
             if (state.groupOrder && !Array.isArray(state.groupOrder)) return;
-            
-            // Restore state - already validated by server
+
+            // Deep validation of groups
+            if (state.groups) {
+                state.groups = state.groups.filter(g => {
+                    if (!g || typeof g !== 'object') return false;
+                    if (typeof g.id !== 'string') return false;
+                    if (!Array.isArray(g.sessionIds)) return false;
+                    // Reset invalid layout values
+                    if (g.layout && !['single', 'horizontal', 'vertical', 'grid'].includes(g.layout)) {
+                        g.layout = 'single';
+                    }
+                    // Reset invalid expandedQuadrant values
+                    if (g.expandedQuadrant !== undefined && 
+                        g.expandedQuadrant !== null &&
+                        !['top', 'bottom', 'left', 'right'].includes(g.expandedQuadrant)) {
+                        g.expandedQuadrant = null;
+                    }
+                    return true;
+                });
+            }
+
+            // Validate groupOrder contains only strings
+            if (state.groupOrder) {
+                state.groupOrder = state.groupOrder.filter(id => typeof id === 'string');
+            }
+
+            // Validate groupCounter is a safe positive integer
+            if (typeof state.groupCounter !== 'number' || 
+                !Number.isSafeInteger(state.groupCounter) || 
+                state.groupCounter < 0) {
+                state.groupCounter = 0;
+            }
+
+            // Restore state
             this.savedState = state;
-            this.sidebarCollapsed = state.sidebarCollapsed || false;
-            this.groupCounter = state.groupCounter || 0;
-            this.customNames = new Set(state.customNames || []);
+            this.sidebarCollapsed = !!state.sidebarCollapsed;
+            this.groupCounter = state.groupCounter;
+            this.customNames = new Set(Array.isArray(state.customNames) ? state.customNames.filter(n => typeof n === 'string') : []);
         } catch (e) {
             console.warn('Failed to load UI state from server:', e);
         }
     }
-    
+
     async checkSessionHealth() {
         try {
             const response = await fetch(this.url('/api/sessions'));
-            
+
             // Update connection status on successful response
             if (!this.serverConnected) {
                 this.setServerConnected(true);
             }
-            
+
             const sessions = await response.json();
-            
+
             // Build a map of server sessions and update session data
             const serverSessionIds = new Set();
             let needsRefresh = false;
-            
+
             for (const session of sessions) {
                 serverSessionIds.add(session.id);
-                
+
                 // Update session data (including currentProcess)
                 const existing = this.sessions.get(session.id);
                 if (existing && existing.currentProcess !== session.currentProcess) {
@@ -317,12 +349,12 @@ class TerminalMultiplexer {
                     needsRefresh = true;
                 }
             }
-            
+
             // Refresh sidebar if process names changed
             if (needsRefresh) {
                 this.refreshSidebar();
             }
-            
+
             // Find and clean up sessions that no longer exist on server
             const currentSessionIds = Array.from(this.sessions.keys());
             for (const sessionId of currentSessionIds) {
@@ -338,53 +370,53 @@ class TerminalMultiplexer {
             }
         }
     }
-    
+
     refreshSidebar() {
         // Re-render all groups in the sidebar
         for (const [groupId, group] of this.groups) {
             this.updateGroupInSidebar(group);
         }
     }
-    
+
     handleSessionDied(sessionId) {
         // Guard: only process if we still have this session
         if (!this.sessions.has(sessionId)) {
             return;
         }
-        
+
         this.sessions.delete(sessionId);
         this.customNames.delete(sessionId);
-        
+
         // Close popout window if exists
         const popoutWindow = this.popoutWindows.get(sessionId);
         if (popoutWindow && !popoutWindow.closed) {
             popoutWindow.close();
         }
         this.popoutWindows.delete(sessionId);
-        
+
         // Remove the terminal container from DOM
         this.removeSessionContainer(sessionId);
-        
+
         // Remove from any group that contains it
         for (const [groupId, group] of this.groups) {
             const sessionIndex = group.sessionIds.indexOf(sessionId);
             if (sessionIndex === -1) continue;
-            
+
             // Find which pane this session was in (for selecting next in visual order)
             const cm = group.cellMapping || group.sessionIds.map((_, i) => i);
             const paneIndex = cm.indexOf(sessionIndex);
-            
+
             if (!this.removeSessionFromGroup(group, sessionId)) break;
-            
+
             if (group.sessionIds.length === 0) {
                 // Find the index of this group before removing it
                 const groupIndex = this.groupOrder.indexOf(groupId);
-                
+
                 // Remove empty group
                 this.groups.delete(groupId);
                 this.groupOrder = this.groupOrder.filter(id => id !== groupId);
                 document.getElementById(`group-${groupId}`)?.remove();
-                
+
                 if (this.activeGroupId === groupId) {
                     this.activeGroupId = null;
                     // Select the next group in order, or previous if we closed the last one
@@ -427,7 +459,7 @@ class TerminalMultiplexer {
         this.createFirstBtn = document.getElementById('create-first-session');
         this.terminalsContainer = document.getElementById('terminals');
         this.noSessionEl = document.getElementById('no-session');
-        
+
         // Modals
         this.uploadModal = document.getElementById('upload-modal');
         this.openUploadBtn = document.getElementById('open-upload');
@@ -444,12 +476,12 @@ class TerminalMultiplexer {
         this.fileList = document.getElementById('file-list');
         this.fileCountEl = document.getElementById('file-count');
         this.fileHeader = document.querySelector('.file-header');
-        
+
         // File browser state
         this.currentFiles = [];
         this.fileSortBy = 'name';
         this.fileSortAsc = true;
-        
+
         // Marked files
         this.markedSidekick = document.getElementById('marked-sidekick');
         this.markedList = document.getElementById('marked-list');
@@ -457,7 +489,7 @@ class TerminalMultiplexer {
         this.downloadAllMarkedBtn = document.getElementById('download-all-marked');
         this.markedFiles = [];
         this.markedEventSource = null;
-        
+
         // File info popup
         this.fileInfoPopup = document.getElementById('file-info-popup');
         this.fileInfoName = document.getElementById('file-info-name');
@@ -469,10 +501,10 @@ class TerminalMultiplexer {
         this.fileInfoCloseBtn = document.querySelector('.file-info-close');
         this.fileInfoIcon = document.querySelector('.file-info-icon');
         this.currentFileInfo = null; // Store current file data for actions
-        
+
         // Inline rename state
         this.renamingSessionId = null;
-        
+
         // Settings modal
         this.settingsModal = document.getElementById('settings-modal');
         this.settingsSaveBtn = document.getElementById('settings-save');
@@ -480,11 +512,11 @@ class TerminalMultiplexer {
         this.settingsImportBtn = document.getElementById('settings-import');
         this.settingsExportBtn = document.getElementById('settings-export');
         this.settings = null; // Will be loaded from server
-        
+
         // Keybinds modal
         this.keybindsModal = document.getElementById('keybinds-modal');
         this.openKeybindsBtn = document.getElementById('open-keybinds');
-        
+
         // Scratch pad toggle
         this.toggleScratchBtn = document.getElementById('toggle-scratch');
     }
@@ -492,7 +524,7 @@ class TerminalMultiplexer {
     bindEvents() {
         // Sidebar toggle
         this.toggleSidebarBtn.addEventListener('click', () => this.toggleSidebar());
-        
+
         // Icon bar fade behavior when sidebar is collapsed
         let iconFadeTimeout = null;
         this.startIconFadeTimer = () => {
@@ -516,23 +548,23 @@ class TerminalMultiplexer {
                 this.startIconFadeTimer();
             }
         });
-        
+
         // Settings button
         this.openSettingsBtn.addEventListener('click', () => {
             this.openSettingsModal();
         });
-        
+
         // Keybinds button
         this.openKeybindsBtn.addEventListener('click', () => {
             this.openModal(this.keybindsModal);
         });
-        
+
         // Scratch pad toggle button
         this.toggleScratchBtn.addEventListener('click', () => {
             this.toggleScratchPad();
             this.updateScratchButtonState();
         });
-        
+
         // Global keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             // Ctrl+/ to open keybinds modal
@@ -541,13 +573,13 @@ class TerminalMultiplexer {
                 this.openModal(this.keybindsModal);
             }
         });
-        
+
         // Settings modal events
         this.settingsSaveBtn.addEventListener('click', () => this.saveSettings());
         this.settingsResetBtn.addEventListener('click', () => this.resetSettings());
         this.settingsImportBtn.addEventListener('click', () => this.importSettings());
         this.settingsExportBtn.addEventListener('click', () => this.exportSettings());
-        
+
         // Settings tab switching
         this.settingsModal.querySelectorAll('.settings-tab').forEach(tab => {
             tab.addEventListener('click', () => {
@@ -558,22 +590,22 @@ class TerminalMultiplexer {
                 this.settingsModal.querySelector(`[data-panel="${tabName}"]`).classList.add('active');
             });
         });
-        
+
         // Color input live preview - sync color picker and hex input
         this.settingsModal.querySelectorAll('input[type="color"]').forEach(colorInput => {
             const setting = colorInput.dataset.setting;
             const hexInput = this.settingsModal.querySelector(`[data-setting-hex="${setting}"]`);
-            
+
             colorInput.addEventListener('input', () => {
                 if (hexInput) hexInput.value = colorInput.value;
                 this.previewSettings();
             });
         });
-        
+
         this.settingsModal.querySelectorAll('input[data-setting-hex]').forEach(hexInput => {
             const setting = hexInput.dataset.settingHex;
             const colorInput = this.settingsModal.querySelector(`[data-setting="${setting}"]`);
-            
+
             hexInput.addEventListener('input', () => {
                 let val = hexInput.value;
                 // Auto-add # if missing
@@ -601,7 +633,7 @@ class TerminalMultiplexer {
             this.fileInput.click();
         });
         this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
-        
+
         // Drag and drop for file upload
         this.dropZone.addEventListener('dragover', (e) => {
             e.preventDefault();
@@ -625,7 +657,7 @@ class TerminalMultiplexer {
         this.currentPathInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') this.browsePath(this.currentPathInput.value);
         });
-        
+
         // File browser column header sorting
         this.fileHeader.querySelectorAll('.sortable').forEach(col => {
             col.addEventListener('click', () => {
@@ -712,20 +744,20 @@ class TerminalMultiplexer {
         try {
             const response = await fetch(this.url('/api/sessions'));
             const serverSessions = await response.json();
-            
+
             // Clear existing state before loading
             this.sessions.clear();
             this.groups.clear();
             this.groupOrder = [];
             this.sessionList.innerHTML = '';
-            
+
             // Build map of server sessions
             const serverSessionMap = new Map();
             for (const session of serverSessions) {
                 serverSessionMap.set(session.id, session);
                 this.sessions.set(session.id, session);
             }
-            
+
             // Try to restore saved state from server
             if (this.savedState && this.savedState.groups && this.savedState.groups.length > 0) {
                 this.reconcileWithSavedState(serverSessionMap);
@@ -746,7 +778,7 @@ class TerminalMultiplexer {
                     if (firstGroupId) this.activateGroup(firstGroupId);
                 }
             }
-            
+
             // Clear saved state after reconciliation
             this.savedState = null;
         } catch (error) {
@@ -758,15 +790,15 @@ class TerminalMultiplexer {
         const savedGroups = this.savedState.groups || [];
         const savedOrder = this.savedState.groupOrder || [];
         const usedSessionIds = new Set();
-        
+
         // Restore groups, filtering out dead sessions
         for (const savedGroup of savedGroups) {
             const validSessionIds = savedGroup.sessionIds.filter(id => serverSessionMap.has(id));
-            
+
             if (validSessionIds.length === 0) continue;
-            
+
             validSessionIds.forEach(id => usedSessionIds.add(id));
-            
+
             // Recreate group with saved properties
             const sameSessionCount = validSessionIds.length === savedGroup.sessionIds.length;
             const group = {
@@ -778,26 +810,26 @@ class TerminalMultiplexer {
                 splitRatio: sameSessionCount ? savedGroup.splitRatio : this.getDefaultSplitRatio(validSessionIds.length),
                 cellMapping: sameSessionCount ? savedGroup.cellMapping : null
             };
-            
+
             this.groups.set(group.id, group);
-            
+
             // Update groupCounter if needed
             const match = group.id.match(/^group-(\d+)$/);
             if (match) {
                 this.groupCounter = Math.max(this.groupCounter, parseInt(match[1]));
             }
         }
-        
+
         // Restore group order (filtering out deleted groups)
         this.groupOrder = savedOrder.filter(id => this.groups.has(id));
-        
+
         // Add any new groups not in saved order
         for (const groupId of this.groups.keys()) {
             if (!this.groupOrder.includes(groupId)) {
                 this.groupOrder.push(groupId);
             }
         }
-        
+
         // Create groups for any sessions not in saved state (new sessions)
         for (const [sessionId, session] of serverSessionMap) {
             if (!usedSessionIds.has(sessionId)) {
@@ -805,7 +837,7 @@ class TerminalMultiplexer {
                 this.groupOrder.push(group.id);
             }
         }
-        
+
         // Render sidebar in order
         for (const groupId of this.groupOrder) {
             const group = this.groups.get(groupId);
@@ -845,9 +877,9 @@ class TerminalMultiplexer {
     removeSessionFromGroup(group, sessionId) {
         const idx = group.sessionIds.indexOf(sessionId);
         if (idx === -1) return false;
-        
+
         group.sessionIds.splice(idx, 1);
-        
+
         // Update cellMapping: remove the session's pane and adjust remaining indices
         if (group.cellMapping) {
             const paneIdx = group.cellMapping.indexOf(idx);
@@ -856,7 +888,7 @@ class TerminalMultiplexer {
                 .map(sessionIdx => sessionIdx > idx ? sessionIdx - 1 : sessionIdx);
             group.cellMapping = newMapping.length > 0 ? newMapping : null;
         }
-        
+
         return true;
     }
 
@@ -864,7 +896,7 @@ class TerminalMultiplexer {
         const count = group.sessionIds.length;
         group.layout = this.getDefaultLayout(count);
         group.splitRatio = this.getDefaultSplitRatio(count);
-        
+
         // Reset expandedQuadrant for 3-pane if not already set
         if (count === 3 && !group.expandedQuadrant) {
             group.expandedQuadrant = 'bottom';
@@ -916,13 +948,13 @@ class TerminalMultiplexer {
             if (!response.ok) throw new Error('Failed to create session');
 
             const session = await response.json();
-            
+
             // Check for duplicate session ID (shouldn't happen, but guard against it)
             if (this.sessions.has(session.id)) {
                 console.warn(`Session ${session.id} already exists, skipping duplicate`);
                 return null;
             }
-            
+
             this.sessions.set(session.id, session);
             return session;
         } catch (error) {
@@ -937,26 +969,26 @@ class TerminalMultiplexer {
             await fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' });
             this.sessions.delete(sessionId);
             this.customNames.delete(sessionId);
-            
+
             // Close popout window if exists
             const popoutWindow = this.popoutWindows.get(sessionId);
             if (popoutWindow && !popoutWindow.closed) {
                 popoutWindow.close();
             }
             this.popoutWindows.delete(sessionId);
-            
+
             this.removeSessionContainer(sessionId);
-            
+
             for (const [groupId, group] of this.groups) {
                 const sessionIndex = group.sessionIds.indexOf(sessionId);
                 if (sessionIndex === -1) continue;
-                
+
                 // Find which pane this session was in (for selecting next in visual order)
                 const cm = group.cellMapping || group.sessionIds.map((_, i) => i);
                 const paneIndex = cm.indexOf(sessionIndex);
-                
+
                 if (!this.removeSessionFromGroup(group, sessionId)) break;
-                
+
                 if (group.sessionIds.length === 0) {
                     this.closeGroup(groupId);
                 } else {
@@ -991,14 +1023,14 @@ class TerminalMultiplexer {
             fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' }).catch(() => {});
             this.sessions.delete(sessionId);
             this.customNames.delete(sessionId);
-            
+
             // Close popout window if exists
             const popoutWindow = this.popoutWindows.get(sessionId);
             if (popoutWindow && !popoutWindow.closed) {
                 popoutWindow.close();
             }
             this.popoutWindows.delete(sessionId);
-            
+
             this.removeSessionContainer(sessionId);
         }
 
@@ -1019,7 +1051,7 @@ class TerminalMultiplexer {
                 this.clearIconFade?.();
             }
         }
-        
+
         this.saveUIState();
     }
 
@@ -1028,13 +1060,13 @@ class TerminalMultiplexer {
         if (!group || group.sessionIds.length <= 1) return;
 
         if (!this.removeSessionFromGroup(group, sessionId)) return;
-        
+
         this.updateGroupLayout(group);
         this.updateGroupInSidebar(group);
 
         const newGroup = this.createGroup([sessionId]);
         this.addGroupToSidebar(newGroup);
-        
+
         this.activateGroup(newGroup.id);
     }
 
@@ -1043,7 +1075,7 @@ class TerminalMultiplexer {
         if (!group || group.sessionIds.length <= 1) return;
 
         const sessionIds = [...group.sessionIds];
-        
+
         this.groups.delete(groupId);
         document.getElementById(`group-${groupId}`)?.remove();
 
@@ -1067,7 +1099,7 @@ class TerminalMultiplexer {
         container.id = `group-${group.id}`;
         container.className = 'group-container';
         container.innerHTML = this.renderGroupSidebarHTML(group);
-        
+
         this.bindGroupEvents(container, group);
         this.sessionList.appendChild(container);
     }
@@ -1075,12 +1107,12 @@ class TerminalMultiplexer {
     updateGroupInSidebar(group) {
         const container = document.getElementById(`group-${group.id}`);
         if (!container) return;
-        
+
         // Don't re-render if we're in the middle of renaming
         if (this.renamingSessionId && group.sessionIds.includes(this.renamingSessionId)) {
             return;
         }
-        
+
         container.innerHTML = this.renderGroupSidebarHTML(group);
         this.bindGroupEvents(container, group);
     }
@@ -1100,20 +1132,20 @@ class TerminalMultiplexer {
             }
             this.updateGroupLayout(group);
         }
-        
+
         const isMulti = validSessionIds.length > 1;
-        
+
         if (!isMulti) {
             const session = this.sessions.get(validSessionIds[0]);
             const displayName = this.getSessionDisplayName(session);
             const processName = this.getSessionProcessDisplay(session);
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
             const isRenaming = this.renamingSessionId === session?.id;
-            
+
             const nameHtml = isRenaming
                 ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-session-id="${session?.id}">`
                 : `<span class="name">${this.escapeHtml(displayName)}${processHtml}</span>`;
-            
+
             return `
                 <div class="session-item ${this.activeGroupId === group.id ? 'active' : ''}" 
                      data-group-id="${group.id}" data-session-id="${session?.id}" draggable="${!isRenaming}">
@@ -1227,7 +1259,7 @@ class TerminalMultiplexer {
                     this.activateGroup(group.id, sessionId);
                 }
             });
-            
+
             item.addEventListener('mouseenter', () => {
                 const sessionId = item.dataset.sessionId;
                 this.highlightTerminalInGroup(sessionId, true);
@@ -1254,20 +1286,20 @@ class TerminalMultiplexer {
                 this.clearSidebarDropIndicators();
             });
         });
-        
+
         container.addEventListener('dragover', (e) => {
             if (!this.draggedSessionId && !this.draggedGroupId) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             this.updateSidebarDropIndicator(container, e);
         });
-        
+
         container.addEventListener('dragleave', (e) => {
             if (!container.contains(e.relatedTarget)) {
                 container.classList.remove('drop-above', 'drop-below');
             }
         });
-        
+
         container.addEventListener('drop', (e) => {
             e.preventDefault();
             this.handleSidebarDrop(container, group.id, e);
@@ -1319,7 +1351,7 @@ class TerminalMultiplexer {
         if (renameInput) {
             renameInput.focus();
             renameInput.select();
-            
+
             renameInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
@@ -1330,7 +1362,7 @@ class TerminalMultiplexer {
                 }
                 e.stopPropagation();
             });
-            
+
             renameInput.addEventListener('blur', () => {
                 // Small delay to allow click events to process first
                 setTimeout(() => {
@@ -1339,7 +1371,7 @@ class TerminalMultiplexer {
                     }
                 }, 100);
             });
-            
+
             renameInput.addEventListener('click', (e) => {
                 e.stopPropagation();
             });
@@ -1374,9 +1406,9 @@ class TerminalMultiplexer {
     startInlineRename(sessionId) {
         const session = this.sessions.get(sessionId);
         if (!session) return;
-        
+
         this.renamingSessionId = sessionId;
-        
+
         // Find the group containing this session and re-render
         for (const group of this.groups.values()) {
             if (group.sessionIds.includes(sessionId)) {
@@ -1392,10 +1424,10 @@ class TerminalMultiplexer {
 
     async finishInlineRename(newName) {
         if (!this.renamingSessionId) return;
-        
+
         const sessionId = this.renamingSessionId;
         this.renamingSessionId = null;
-        
+
         if (newName) {
             try {
                 await fetch(this.url(`/api/sessions/${sessionId}`), {
@@ -1413,7 +1445,7 @@ class TerminalMultiplexer {
                 console.error('Failed to rename session:', error);
             }
         }
-        
+
         // Re-render the sidebar item
         for (const group of this.groups.values()) {
             if (group.sessionIds.includes(sessionId)) {
@@ -1425,10 +1457,10 @@ class TerminalMultiplexer {
 
     cancelInlineRename() {
         if (!this.renamingSessionId) return;
-        
+
         const sessionId = this.renamingSessionId;
         this.renamingSessionId = null;
-        
+
         // Re-render without the input
         for (const group of this.groups.values()) {
             if (group.sessionIds.includes(sessionId)) {
@@ -1470,7 +1502,7 @@ class TerminalMultiplexer {
         if (popoutWindow) {
             this.popoutWindows.set(sessionId, popoutWindow);
             container.classList.add('popped-out');
-            
+
             const checkClosed = setInterval(() => {
                 if (popoutWindow.closed) {
                     clearInterval(checkClosed);
@@ -1491,7 +1523,7 @@ class TerminalMultiplexer {
         this.popoutWindows.delete(sessionId);
 
         container.classList.remove('popped-out');
-        
+
         const iframe = container.querySelector('iframe');
         if (iframe) {
             // Reset to the correct terminal URL (not whatever the iframe might have navigated to)
@@ -1518,7 +1550,7 @@ class TerminalMultiplexer {
         this.activeGroupId = groupId;
         this.updateTerminalLayout();
         this.noSessionEl.classList.add('hidden');
-        
+
         // Focus the specified session, or the first one if not specified
         const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId) 
             ? focusSessionId 
@@ -1529,19 +1561,19 @@ class TerminalMultiplexer {
     focusTerminal(sessionId) {
         const container = document.getElementById(`terminal-${sessionId}`);
         if (!container) return;
-        
+
         // Don't focus if popped out
         if (container.classList.contains('popped-out')) return;
-        
+
         const iframe = container.querySelector('iframe');
         if (!iframe) return;
-        
+
         // Delay to ensure layout is complete after tab switch
         setTimeout(() => {
             try {
                 // Blur active element in parent document first
                 document.activeElement?.blur();
-                
+
                 // Focus the iframe's window, then the xterm textarea
                 iframe.contentWindow?.focus();
                 iframe.contentDocument?.querySelector('.xterm-helper-textarea')?.focus();
@@ -1557,7 +1589,7 @@ class TerminalMultiplexer {
         container.id = `terminal-${session.id}`;
         container.className = 'terminal-container loading';
         container.dataset.sessionId = session.id;
-        
+
         // Loading overlay shown while terminal connects
         const loadingOverlay = document.createElement('div');
         loadingOverlay.className = 'terminal-loading';
@@ -1565,12 +1597,12 @@ class TerminalMultiplexer {
             <div class="terminal-loading-spinner"></div>
             <p>Connecting...</p>
         `;
-        
+
         const iframe = document.createElement('iframe');
         iframe.src = this.url(`/t/${session.id}/`);
         iframe.className = 'terminal-iframe';
         iframe.allow = 'clipboard-read; clipboard-write';
-        
+
         // Listen for iframe navigation (happens when session dies and ttyd redirects)
         // Only trigger on subsequent loads (not the initial load)
         let initialLoad = true;
@@ -1584,14 +1616,14 @@ class TerminalMultiplexer {
             // iframe reloaded - session likely died, check immediately
             this.checkSessionHealth();
         });
-        
+
         // Also listen for errors to show loading failed
         iframe.addEventListener('error', () => {
             if (initialLoad) {
                 loadingOverlay.querySelector('p').textContent = 'Failed to connect';
             }
         });
-        
+
         const placeholder = document.createElement('div');
         placeholder.className = 'popout-placeholder hidden';
         placeholder.innerHTML = `
@@ -1601,21 +1633,21 @@ class TerminalMultiplexer {
             <p>Terminal popped out</p>
             <button class="btn btn-secondary pop-back-in" data-session-id="${session.id}">Pop back in</button>
         `;
-        
+
         placeholder.querySelector('.pop-back-in').addEventListener('click', () => {
             this.popInSession(session.id);
         });
-        
+
         // Focus this terminal when clicking on the container (gaps/borders)
         container.addEventListener('click', () => {
             this.focusTerminal(session.id);
         });
-        
+
         container.appendChild(loadingOverlay);
         container.appendChild(iframe);
         container.appendChild(placeholder);
         this.terminalsContainer.appendChild(container);
-        
+
         return container;
     }
 
@@ -1639,64 +1671,64 @@ class TerminalMultiplexer {
 
     updateTerminalLayout(keepControlVisible = false) {
         const activeGroup = this.groups.get(this.activeGroupId);
-        
+
         document.querySelectorAll('.terminal-container').forEach(el => {
             el.classList.remove('visible', 'pane-0', 'pane-1', 'pane-2', 'pane-3', 'expanded', 'expanded-top', 'expanded-left');
             el.style.gridArea = '';
         });
-        
+
         document.querySelectorAll('.split-divider').forEach(el => el.remove());
         document.getElementById('divider-control')?.remove();
         this.ensureResizeOverlay();
-        
+
         if (!activeGroup) {
             this.terminalsContainer.className = 'layout-single';
             this.terminalsContainer.style.gridTemplateColumns = '';
             this.terminalsContainer.style.gridTemplateRows = '';
             return;
         }
-        
+
         const sessionCount = activeGroup.sessionIds.length;
         const layout = activeGroup.layout;
         const ratio = activeGroup.splitRatio || this.getDefaultSplitRatio(sessionCount);
-        
+
         // For 3-pane, add modifier class for expansion direction
         let containerClass = `layout-${layout}`;
         const expandDir = activeGroup.expandedQuadrant; // 'bottom', 'top', 'left', 'right' or legacy number
-        
+
         if (sessionCount === 3 && layout === 'grid') {
             // Convert legacy numeric values
             let dir = expandDir;
             if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
             if (dir === 1) dir = 'right';
-            
+
             if (dir === 'top') containerClass += ' top-wide';
             else if (dir === 'left') containerClass += ' left-wide';
         }
-        
+
         this.terminalsContainer.className = containerClass;
         this.applyGridTemplate(layout, ratio, sessionCount);
-        
+
         // Force reflow to ensure grid template is applied before adding dividers
         this.terminalsContainer.offsetHeight;
-        
+
         // cellMapping maps pane positions to session indices
         // If not set, use identity mapping (session 0 -> pane 0, etc.)
         const cellMapping = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
-        
+
         activeGroup.sessionIds.forEach((sessionId, sessionIndex) => {
             const container = this.getSessionContainer(sessionId);
             if (container) {
                 // Find which pane this session should occupy
                 const paneIndex = cellMapping.indexOf(sessionIndex);
                 container.classList.add('visible', `pane-${paneIndex}`);
-                
+
                 if (sessionCount === 3) {
                     // Convert legacy numeric values
                     let dir = expandDir;
                     if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
                     if (dir === 1) dir = 'right';
-                    
+
                     // Pane 0 is expanded for top-wide and left-wide layouts
                     // Pane 1 is expanded for right layout
                     // Pane 2 is expanded for bottom layout
@@ -1712,7 +1744,7 @@ class TerminalMultiplexer {
                 }
             }
         });
-        
+
         this.createDividers(layout, sessionCount, expandDir, keepControlVisible);
     }
 
@@ -1726,7 +1758,7 @@ class TerminalMultiplexer {
 
     applyGridTemplate(layout, ratio, sessionCount) {
         const gap = 'var(--split-gap)';
-        
+
         switch (layout) {
             case 'single':
                 this.terminalsContainer.style.gridTemplateColumns = '1fr';
@@ -1753,7 +1785,7 @@ class TerminalMultiplexer {
 
     createDividers(layout, sessionCount, expandedQuadrant = 2, keepControlVisible = false) {
         if (layout === 'single') return;
-        
+
         if (layout === 'horizontal') {
             const divider = document.createElement('div');
             divider.className = 'split-divider split-divider-h';
@@ -1776,7 +1808,7 @@ class TerminalMultiplexer {
             this.createDividerControl('2-pane', null, keepControlVisible);
         } else if (layout === 'grid') {
             const is3Pane = sessionCount === 3;
-            
+
             const hDivider = document.createElement('div');
             hDivider.className = 'split-divider split-divider-h';
             hDivider.style.gridColumn = '2';
@@ -1784,7 +1816,7 @@ class TerminalMultiplexer {
             let dir = expandedQuadrant;
             if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
             if (dir === 1) dir = 'right';
-            
+
             // In 3-pane: h-divider spans based on expansion direction
             // bottom/top: h-divider only in one row (small panes row)
             // left/right: h-divider spans all rows
@@ -1794,7 +1826,7 @@ class TerminalMultiplexer {
             hDivider.dataset.index = '0';
             this.terminalsContainer.appendChild(hDivider);
             this.bindDividerEvents(hDivider);
-            
+
             const vDivider = document.createElement('div');
             vDivider.className = 'split-divider split-divider-v';
             // In 3-pane: v-divider spans based on expansion direction
@@ -1806,29 +1838,29 @@ class TerminalMultiplexer {
             vDivider.dataset.index = '1';
             this.terminalsContainer.appendChild(vDivider);
             this.bindDividerEvents(vDivider);
-            
+
             this.createDividerControl(is3Pane ? '3-pane' : '4-pane', expandedQuadrant, keepControlVisible);
         }
     }
-    
+
     createDividerControl(mode, expandedQuadrant = 2, showImmediately = false) {
         // Remove existing control
         document.getElementById('divider-control')?.remove();
-        
+
         const activeGroup = this.groups.get(this.activeGroupId);
         if (!activeGroup || activeGroup.sessionIds.length < 2) return;
-        
+
         const control = document.createElement('div');
         control.id = 'divider-control';
         control.className = 'divider-control';
-        
+
         // Add layout class for CSS taper direction
         if (mode === '2-pane') {
             control.classList.add(`layout-${activeGroup.layout}`);
         } else {
             control.classList.add('at-crux');
         }
-        
+
         if (mode === '2-pane') {
             // Simple rotate button for 2-pane
             control.innerHTML = `
@@ -1841,24 +1873,24 @@ class TerminalMultiplexer {
                 e.stopPropagation();
                 this.handleDividerControlAction('rotate-cw');
             });
-            
+
             this.terminalsContainer.appendChild(control);
             this.positionDividerControl();
             return;
         }
-        
+
         // For 3-pane, add class to indicate which tapers to hide
         // Convert legacy numeric values
         let dir = expandedQuadrant;
         if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
         if (dir === 1) dir = 'right';
-        
+
         if (mode === '3-pane') {
             control.classList.add(`expand-${dir}`);
         }
-        
+
         let menuHTML = '';
-        
+
         if (mode === '3-pane') {
             // 3-pane: Top/Bottom stacked on top half, Left/Right side-by-side on bottom
             menuHTML = `
@@ -1900,7 +1932,7 @@ class TerminalMultiplexer {
                 </button>
             `;
         }
-        
+
         control.innerHTML = `
             <div class="divider-control-indicator">
                 <span class="inner-dot"></span>
@@ -1917,9 +1949,9 @@ class TerminalMultiplexer {
                 ${menuHTML}
             </div>
         `;
-        
+
         const menu = control.querySelector('.divider-control-menu');
-        
+
         menu.querySelectorAll('button').forEach(menuBtn => {
             menuBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
@@ -1927,54 +1959,54 @@ class TerminalMultiplexer {
                 this.handleDividerControlAction(action);
             });
         });
-        
+
         this.terminalsContainer.appendChild(control);
         this.positionDividerControl(showImmediately);
     }
-    
+
     pinDividerControl() {
         const control = document.getElementById('divider-control');
         if (!control) return;
-        
+
         control.classList.add('pinned');
-        
+
         // Clear any existing unpin timeout
         if (this._unpinTimeout) clearTimeout(this._unpinTimeout);
-        
+
         // Set up mouseenter to keep it pinned, mouseleave to start unpin timer
         const onMouseEnter = () => {
             if (this._unpinTimeout) clearTimeout(this._unpinTimeout);
         };
-        
+
         const onMouseLeave = () => {
             this._unpinTimeout = setTimeout(() => {
                 control.classList.remove('pinned');
             }, 300);
         };
-        
+
         control.addEventListener('mouseenter', onMouseEnter);
         control.addEventListener('mouseleave', onMouseLeave);
     }
-    
+
     positionDividerControl(showImmediately = false) {
         const control = document.getElementById('divider-control');
         if (!control) return;
-        
+
         const activeGroup = this.groups.get(this.activeGroupId);
         if (!activeGroup) return;
-        
+
         const layout = activeGroup.layout;
         const ratio = activeGroup.splitRatio || [0.5, 0.5];
         const rect = this.terminalsContainer.getBoundingClientRect();
-        
+
         // If container isn't laid out yet, retry after a frame
         if (rect.width === 0 || rect.height === 0) {
             requestAnimationFrame(() => this.positionDividerControl(showImmediately));
             return;
         }
-        
+
         let x, y;
-        
+
         if (layout === 'horizontal') {
             x = rect.width * ratio[0];
             y = rect.height / 2;
@@ -1986,11 +2018,11 @@ class TerminalMultiplexer {
             x = rect.width * ratio[0];
             y = rect.height * ratio[1];
         }
-        
+
         control.style.left = `${x}px`;
         control.style.top = `${y}px`;
         control.style.transform = 'translate(-50%, -50%)';
-        
+
         // Show control after positioning (immediately if user just interacted)
         if (showImmediately) {
             control.classList.add('visible');
@@ -1998,16 +2030,16 @@ class TerminalMultiplexer {
             requestAnimationFrame(() => control.classList.add('visible'));
         }
     }
-    
+
     handleDividerControlAction(action) {
         const activeGroup = this.groups.get(this.activeGroupId);
         if (!activeGroup) return;
-        
+
         const count = activeGroup.sessionIds.length;
         // cellMapping maps pane positions to session indices
         // Default is identity: [0,1,2,3] meaning session 0 in pane 0, etc.
         const cm = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
-        
+
         switch (action) {
             // 2-pane rotation
             case 'rotate-cw':
@@ -2024,14 +2056,14 @@ class TerminalMultiplexer {
                     activeGroup.cellMapping = [cm[2], cm[0], cm[3], cm[1]];
                 }
                 break;
-                
+
             case 'rotate-ccw':
                 if (count === 4) {
                     // Rotate counter-clockwise: [0,1,2,3] -> [1,3,0,2]
                     activeGroup.cellMapping = [cm[1], cm[3], cm[0], cm[2]];
                 }
                 break;
-            
+
             // 3-pane layout changes - remap so terminals only move cardinally
             // 
             // Each 3-pane layout has one wide pane and two small panes.
@@ -2050,7 +2082,7 @@ class TerminalMultiplexer {
                 if (count === 3) {
                     const newDir = action.replace('expand-', '');
                     const oldDir = activeGroup.expandedQuadrant || 'bottom';
-                    
+
                     if (newDir !== oldDir) {
                         // Precomputed transition table for cardinal movement
                         // transitions[oldDir][newDir] = new cellMapping indices
@@ -2096,14 +2128,14 @@ class TerminalMultiplexer {
                                 left:   [0, 1, 2], // TL→wideL, wideR→TR, BL→BR
                             },
                         };
-                        
+
                         const t = transitions[oldDir][newDir];
                         activeGroup.cellMapping = [cm[t[0]], cm[t[1]], cm[t[2]]];
                     }
                     activeGroup.expandedQuadrant = newDir;
                 }
                 break;
-            
+
             // 4-pane flips
             case 'flip-h':
                 if (count === 4) {
@@ -2111,7 +2143,7 @@ class TerminalMultiplexer {
                     activeGroup.cellMapping = [cm[1], cm[0], cm[3], cm[2]];
                 }
                 break;
-                
+
             case 'flip-v':
                 if (count === 4) {
                     // Flip vertically: swap rows [0,1,2,3] -> [2,3,0,1]
@@ -2119,7 +2151,7 @@ class TerminalMultiplexer {
                 }
                 break;
         }
-        
+
         this.updateTerminalLayout(true); // keepControlVisible = true
         this.pinDividerControl(); // Keep menu open after action
         this.updateGroupInSidebar(activeGroup);
@@ -2136,32 +2168,32 @@ class TerminalMultiplexer {
     startResize(divider, e) {
         const activeGroup = this.groups.get(this.activeGroupId);
         if (!activeGroup) return;
-        
+
         const axis = divider.dataset.axis;
         const index = parseInt(divider.dataset.index);
         const overlay = document.getElementById('resize-overlay');
-        
+
         overlay.classList.add('active', axis === 'horizontal' ? 'col-resize' : 'row-resize');
         divider.classList.add('dragging');
-        
+
         const containerRect = this.terminalsContainer.getBoundingClientRect();
         const totalSize = axis === 'horizontal' ? containerRect.width : containerRect.height;
-        
+
         // Hide control during resize
         const control = document.getElementById('divider-control');
         if (control) control.classList.remove('visible');
-        
+
         const onMouseMove = (moveEvent) => {
             const currentPos = axis === 'horizontal' ? moveEvent.clientX : moveEvent.clientY;
             const containerStart = axis === 'horizontal' ? containerRect.left : containerRect.top;
-            
+
             let newRatio = (currentPos - containerStart) / totalSize;
             newRatio = Math.max(0.1, Math.min(0.9, newRatio));
-            
+
             activeGroup.splitRatio[index] = newRatio;
             this.applyGridTemplate(activeGroup.layout, activeGroup.splitRatio, activeGroup.sessionIds.length);
         };
-        
+
         const onMouseUp = () => {
             overlay.classList.remove('active', 'col-resize', 'row-resize');
             divider.classList.remove('dragging');
@@ -2171,7 +2203,7 @@ class TerminalMultiplexer {
             this.positionDividerControl();
             this.saveUIState();
         };
-        
+
         document.addEventListener('mousemove', onMouseMove);
         document.addEventListener('mouseup', onMouseUp);
     }
@@ -2186,7 +2218,7 @@ class TerminalMultiplexer {
                 }
             }, 0);
         });
-        
+
         document.addEventListener('dragend', () => {
             this.hideDragOverlay();
         });
@@ -2194,24 +2226,24 @@ class TerminalMultiplexer {
 
     showDragOverlay() {
         const activeGroup = this.groups.get(this.activeGroupId);
-        
+
         if (!activeGroup || activeGroup.sessionIds.length >= 4) {
             return;
         }
-        
+
         if (this.draggedSessionId && activeGroup.sessionIds.includes(this.draggedSessionId)) {
             return;
         }
-        
+
         let overlay = document.getElementById('drag-capture-overlay');
         if (!overlay) {
             overlay = document.createElement('div');
             overlay.id = 'drag-capture-overlay';
             this.terminalsContainer.appendChild(overlay);
         }
-        
+
         overlay.innerHTML = this.generateDropZones(activeGroup);
-        
+
         overlay.querySelectorAll('.drop-zone').forEach(zone => {
             zone.addEventListener('dragenter', () => zone.classList.add('drag-over'));
             zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
@@ -2226,21 +2258,21 @@ class TerminalMultiplexer {
                 }
             });
         });
-        
+
         activeGroup.sessionIds.forEach(sessionId => {
             const container = this.getSessionContainer(sessionId);
             if (container) {
                 container.classList.add('drop-target');
             }
         });
-        
+
         overlay.style.display = 'block';
     }
 
     generateDropZones(activeGroup) {
         const count = activeGroup.sessionIds.length;
         const ratio = activeGroup.splitRatio || [0.5, 0.5];
-        
+
         // Get label for a pane position (using cellMapping to find the session)
         const cm = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
         const getLabel = (paneIdx) => {
@@ -2249,11 +2281,11 @@ class TerminalMultiplexer {
             const session = this.sessions.get(sessionId);
             return session ? session.name : `Terminal ${paneIdx + 1}`;
         };
-        
+
         if (count === 0) {
             return `<div class="drop-zone drop-full" data-position="center" data-index="0">Drop here</div>`;
         }
-        
+
         if (count === 1) {
             return `
                 <div class="drop-zone drop-edge drop-top" data-position="top" data-index="0">Above "${getLabel(0)}"</div>
@@ -2262,7 +2294,7 @@ class TerminalMultiplexer {
                 <div class="drop-zone drop-edge drop-right" data-position="right" data-index="1">Right of "${getLabel(0)}"</div>
             `;
         }
-        
+
         if (count === 2) {
             const layout = activeGroup.layout;
             const r = ratio[0];
@@ -2293,20 +2325,20 @@ class TerminalMultiplexer {
                 `;
             }
         }
-        
+
         if (count === 3) {
             const colPct = ratio[0] * 100;
             const rowPct = ratio[1] * 100;
-            
+
             // Get current expansion direction
             let expandDir = activeGroup.expandedQuadrant;
             if (expandDir === 2 || expandDir === undefined || expandDir === null) expandDir = 'bottom';
             if (expandDir === 1) expandDir = 'right';
-            
+
             // Create 4 drop zones for all quadrants
             // Label based on which part of the wide pane or which small pane
             const zones = [];
-            
+
             // Quadrant positions: top-left, top-right, bottom-left, bottom-right
             const quadrants = [
                 { pos: 'top-left', style: `left: 0; top: 0; width: ${colPct}%; height: ${rowPct}%;` },
@@ -2314,13 +2346,13 @@ class TerminalMultiplexer {
                 { pos: 'bottom-left', style: `left: 0; top: ${rowPct}%; width: ${colPct}%; height: ${100 - rowPct}%;` },
                 { pos: 'bottom-right', style: `left: ${colPct}%; top: ${rowPct}%; width: ${100 - colPct}%; height: ${100 - rowPct}%;` }
             ];
-            
+
             // Determine which quadrants are part of the wide pane vs small panes
             // bottom-wide: wide spans bottom-left + bottom-right, smalls are top-left, top-right
             // top-wide: wide spans top-left + top-right, smalls are bottom-left, bottom-right
             // right-wide: wide spans top-right + bottom-right, smalls are top-left, bottom-left
             // left-wide: wide spans top-left + bottom-left, smalls are top-right, bottom-right
-            
+
             let wideQuads, smallQuads;
             if (expandDir === 'bottom') {
                 wideQuads = ['bottom-left', 'bottom-right'];
@@ -2335,16 +2367,16 @@ class TerminalMultiplexer {
                 wideQuads = ['top-left', 'bottom-left'];
                 smallQuads = ['top-right', 'bottom-right'];
             }
-            
+
             for (const q of quadrants) {
                 const isWide = wideQuads.includes(q.pos);
                 const label = isWide ? `Split wide (${q.pos.replace('-', ' ')})` : `Replace ${q.pos.replace('-', ' ')}`;
                 zones.push(`<div class="drop-zone drop-quad" style="${q.style}" data-position="${q.pos}" data-expand-dir="${expandDir}">${label}</div>`);
             }
-            
+
             return zones.join('');
         }
-        
+
         return '';
     }
 
@@ -2356,7 +2388,7 @@ class TerminalMultiplexer {
                 zone.classList.remove('drag-over');
             });
         }
-        
+
         document.querySelectorAll('.terminal-container.drop-target').forEach(el => {
             el.classList.remove('drop-target');
         });
@@ -2367,9 +2399,9 @@ class TerminalMultiplexer {
     updateSidebarDropIndicator(container, e) {
         const rect = container.getBoundingClientRect();
         const midY = rect.top + rect.height / 2;
-        
+
         this.clearSidebarDropIndicators();
-        
+
         if (e.clientY < midY) {
             container.classList.add('drop-above');
         } else {
@@ -2385,10 +2417,10 @@ class TerminalMultiplexer {
 
     handleSidebarDrop(container, targetGroupId, e) {
         this.clearSidebarDropIndicators();
-        
+
         const rect = container.getBoundingClientRect();
         const dropAbove = e.clientY < rect.top + rect.height / 2;
-        
+
         let sourceGroupId = this.draggedGroupId;
         if (this.draggedSessionId) {
             for (const [gid, g] of this.groups) {
@@ -2398,32 +2430,32 @@ class TerminalMultiplexer {
                 }
             }
         }
-        
+
         if (!sourceGroupId || sourceGroupId === targetGroupId) return;
-        
+
         this.reorderGroup(sourceGroupId, targetGroupId, dropAbove);
     }
 
     reorderGroup(sourceGroupId, targetGroupId, dropAbove) {
         const sourceIdx = this.groupOrder.indexOf(sourceGroupId);
         const targetIdx = this.groupOrder.indexOf(targetGroupId);
-        
+
         if (sourceIdx === -1 || targetIdx === -1) return;
-        
+
         this.groupOrder.splice(sourceIdx, 1);
-        
+
         let newIdx = this.groupOrder.indexOf(targetGroupId);
         if (!dropAbove) newIdx++;
-        
+
         this.groupOrder.splice(newIdx, 0, sourceGroupId);
-        
+
         this.rerenderSidebarOrder();
         this.saveUIState();
     }
 
     rerenderSidebarOrder() {
         const sessionList = this.sessionList;
-        
+
         for (const groupId of this.groupOrder) {
             const container = document.getElementById(`group-${groupId}`);
             if (container) {
@@ -2459,7 +2491,7 @@ class TerminalMultiplexer {
         }
 
         const currentCount = activeGroup.sessionIds.length;
-        
+
         if (currentCount === 0 || position === 'center') {
             activeGroup.sessionIds.push(draggedSessionId);
             activeGroup.layout = 'single';
@@ -2483,11 +2515,11 @@ class TerminalMultiplexer {
             // sessionIds stays in insertion order, cellMapping determines visual positions
             const currentLayout = activeGroup.layout;
             const cm = activeGroup.cellMapping || [0, 1]; // current cell mapping
-            
+
             // New session is always appended (index 2)
             activeGroup.sessionIds.push(draggedSessionId);
             const newIdx = 2;
-            
+
             if (position.startsWith('split-')) {
                 // Parse position: split-{above|below|left|right}-{targetIdx}
                 const parts = position.split('-');
@@ -2495,13 +2527,13 @@ class TerminalMultiplexer {
                 const targetPaneIdx = parseInt(parts[2]); // which pane to split (0 or 1)
                 const targetSessionIdx = cm[targetPaneIdx]; // session index in that pane
                 const otherSessionIdx = cm[1 - targetPaneIdx]; // the other session
-                
+
                 // 3-pane cell positions:
                 // bottom-wide: [pane0=top-left, pane1=top-right, pane2=wide-bottom]
                 // top-wide: [pane0=wide-top, pane1=bottom-left, pane2=bottom-right]
                 // right-wide: [pane0=top-left, pane1=wide-right, pane2=bottom-left]
                 // left-wide: [pane0=wide-left, pane1=top-right, pane2=bottom-right]
-                
+
                 if (currentLayout === 'horizontal') {
                     // Horizontal: pane0=left, pane1=right -> splitting creates vertical stack on one side
                     if (targetPaneIdx === 0) {
@@ -2554,37 +2586,37 @@ class TerminalMultiplexer {
                 activeGroup.cellMapping = [0, 1, 2];
                 activeGroup.expandedQuadrant = 'bottom';
             }
-            
+
             activeGroup.layout = 'grid';
             activeGroup.splitRatio = [0.5, 0.5];
         } else if (currentCount === 3) {
             // 3->4 pane transition
             // User drops into one of four quadrants
             // sessionIds stays in insertion order, cellMapping determines visual positions
-            
+
             // Append new session (always at index 3)
             activeGroup.sessionIds.push(draggedSessionId);
             const newIdx = 3;
-            
+
             // Get current cell mapping (maps pane position -> session index)
             const cm = activeGroup.cellMapping || [0, 1, 2];
-            
+
             let expandDir = activeGroup.expandedQuadrant;
             if (expandDir === 2 || expandDir === undefined || expandDir === null) expandDir = 'bottom';
             if (expandDir === 1) expandDir = 'right';
-            
+
             // 3-pane cell positions by expandDir:
             // bottom-wide: [pane0=top-left, pane1=top-right, pane2=wide-bottom]
             // top-wide: [pane0=wide-top, pane1=bottom-left, pane2=bottom-right]
             // right-wide: [pane0=top-left, pane1=wide-right, pane2=bottom-left]
             // left-wide: [pane0=wide-left, pane1=top-right, pane2=bottom-right]
-            
+
             // 4-pane target: [pane0=top-left, pane1=top-right, pane2=bottom-left, pane3=bottom-right]
-            
+
             const targetQuad = position; // top-left, top-right, bottom-left, bottom-right
             const quadToPane = { 'top-left': 0, 'top-right': 1, 'bottom-left': 2, 'bottom-right': 3 };
             const targetPane = quadToPane[targetQuad];
-            
+
             // Determine which quadrants the wide pane occupies in 3-pane layout
             let wideQuads, widePaneIdx;
             if (expandDir === 'bottom') {
@@ -2600,21 +2632,21 @@ class TerminalMultiplexer {
                 wideQuads = ['top-left', 'bottom-left'];
                 widePaneIdx = 0;
             }
-            
+
             const wideSessionIdx = cm[widePaneIdx];
             const isDropOnWide = wideQuads.includes(targetQuad);
-            
+
             // Build new 4-pane cellMapping
             let newCm = [null, null, null, null];
-            
+
             if (isDropOnWide) {
                 // Splitting the wide pane - new terminal goes to target, wide stays in other half
                 const otherWideQuad = wideQuads.find(q => q !== targetQuad);
                 const otherWidePane = quadToPane[otherWideQuad];
-                
+
                 newCm[targetPane] = newIdx;
                 newCm[otherWidePane] = wideSessionIdx;
-                
+
                 // Place the two small terminals in their current visual spots
                 if (expandDir === 'bottom') {
                     newCm[0] = cm[0]; // top-left stays
@@ -2641,16 +2673,16 @@ class TerminalMultiplexer {
                         ? wideQuads.find(q => q.includes('bottom'))
                         : wideQuads.find(q => q.includes('top'));
                 }
-                
+
                 const wideNewPane = quadToPane[wideNewQuad];
                 const otherWideQuad = wideQuads.find(q => q !== wideNewQuad);
                 const otherWidePane = quadToPane[otherWideQuad];
-                
+
                 // New terminal at target
                 newCm[targetPane] = newIdx;
                 // Wide terminal moves
                 newCm[wideNewPane] = wideSessionIdx;
-                
+
                 // Get current small pane positions
                 let small1Pane, small2Pane, small1Quad, small2Quad;
                 if (expandDir === 'bottom') {
@@ -2666,7 +2698,7 @@ class TerminalMultiplexer {
                     small1Pane = 1; small1Quad = 'top-right';
                     small2Pane = 2; small2Quad = 'bottom-right';
                 }
-                
+
                 // Small that was at target moves to freed wide spot
                 // Other small stays where it was
                 if (targetQuad === small1Quad) {
@@ -2677,12 +2709,12 @@ class TerminalMultiplexer {
                     newCm[quadToPane[small1Quad]] = cm[small1Pane];
                 }
             }
-            
+
             activeGroup.cellMapping = newCm;
             activeGroup.layout = 'grid';
             activeGroup.expandedQuadrant = null; // 4-pane has no expanded quadrant
         }
-        
+
         this.updateGroupInSidebar(activeGroup);
         this.updateTerminalLayout();
         this.hideDragOverlay();
@@ -2736,7 +2768,7 @@ class TerminalMultiplexer {
     async uploadFiles(files) {
         const formData = new FormData();
         for (const file of files) formData.append('files', file);
-        
+
         const directory = this.uploadDirectory.value.trim();
         if (directory) formData.append('directory', directory);
 
@@ -2744,7 +2776,7 @@ class TerminalMultiplexer {
         this.uploadResults.classList.add('hidden');
         const progressFill = this.uploadProgress.querySelector('.progress-fill');
         const progressText = this.uploadProgress.querySelector('.progress-text');
-        
+
         progressFill.style.width = '0%';
         progressText.textContent = 'Uploading...';
 
@@ -2755,7 +2787,7 @@ class TerminalMultiplexer {
             const result = await response.json();
             progressFill.style.width = '100%';
             progressText.textContent = 'Complete!';
-            
+
             this.uploadResults.classList.remove('hidden');
             this.uploadResults.innerHTML = `
                 <p>Successfully uploaded ${result.count} file(s):</p>
@@ -2788,7 +2820,7 @@ class TerminalMultiplexer {
             this.fileCountEl.textContent = '';
         }
     }
-    
+
     updateSortIndicators() {
         this.fileHeader.querySelectorAll('.sortable').forEach(col => {
             const isActive = col.dataset.sort === this.fileSortBy;
@@ -2802,7 +2834,7 @@ class TerminalMultiplexer {
         const parentDir = files.filter(f => f.name === '..');
         const dirs = files.filter(f => f.isDir && f.name !== '..');
         const regularFiles = files.filter(f => !f.isDir);
-        
+
         // Sort function based on current sort settings
         const sortFn = (a, b) => {
             let cmp = 0;
@@ -2820,11 +2852,11 @@ class TerminalMultiplexer {
             }
             return this.fileSortAsc ? cmp : -cmp;
         };
-        
+
         // Sort directories and files separately
         dirs.sort(sortFn);
         regularFiles.sort(sortFn);
-        
+
         // Return: parent first, then directories, then files
         return [...parentDir, ...dirs, ...regularFiles];
     }
@@ -2832,12 +2864,12 @@ class TerminalMultiplexer {
     renderFileList() {
         const files = this.sortFiles(this.currentFiles);
         const markedPaths = new Set(this.markedFiles.map(f => f.path));
-        
+
         // Update file count
         const dirCount = files.filter(f => f.isDir && f.name !== '..').length;
         const fileCount = files.filter(f => !f.isDir).length;
         this.fileCountEl.textContent = `${dirCount} folder${dirCount !== 1 ? 's' : ''}, ${fileCount} file${fileCount !== 1 ? 's' : ''}`;
-        
+
         this.fileList.innerHTML = files.map(file => {
             const isMarked = markedPaths.has(file.path);
             const isParent = file.name === '..';
@@ -2882,7 +2914,7 @@ class TerminalMultiplexer {
             const isDir = item.dataset.isDir === 'true';
             const isRegular = item.dataset.isRegular === 'true';
             const canMark = isDir || isRegular;
-            
+
             // Get file data for this item
             const file = files.find(f => f.path === path);
 
@@ -2920,18 +2952,18 @@ class TerminalMultiplexer {
                 });
             }
         });
-        
+
         // Re-constrain sidekick height after file list renders (modal height may have changed)
         if (!this.markedSidekick.classList.contains('hidden')) {
             requestAnimationFrame(() => this.constrainSidekickHeight());
         }
     }
-    
+
     formatDate(timestamp) {
         const date = new Date(timestamp * 1000);
         const now = new Date();
         const diffDays = Math.floor((now - date) / (1000 * 60 * 60 * 24));
-        
+
         if (diffDays === 0) {
             return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         } else if (diffDays < 7) {
@@ -2959,7 +2991,7 @@ class TerminalMultiplexer {
 
     showFileInfoPopup(file, event) {
         this.currentFileInfo = file;
-        
+
         // Update popup content
         this.fileInfoName.textContent = file.name;
         this.fileInfoPath.textContent = file.path;
@@ -2967,26 +2999,26 @@ class TerminalMultiplexer {
         this.fileInfoModified.textContent = file.modTime 
             ? new Date(file.modTime * 1000).toLocaleString() 
             : '—';
-        
+
         // Update icon for directory
         const isDir = file.isDir;
         this.fileInfoPopup.classList.toggle('directory', isDir);
         this.fileInfoIcon.innerHTML = isDir
             ? '<path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>'
             : '<path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>';
-        
+
         // Position popup near the clicked item
         const rect = event.currentTarget.getBoundingClientRect();
         const popup = this.fileInfoPopup;
-        
+
         // Show popup to measure dimensions
         popup.classList.remove('hidden');
         const popupRect = popup.getBoundingClientRect();
-        
+
         // Position to the right of the item, or left if not enough space
         let left = rect.right + 8;
         let top = rect.top;
-        
+
         // Keep within viewport
         if (left + popupRect.width > window.innerWidth - 16) {
             left = rect.left - popupRect.width - 8;
@@ -2995,7 +3027,7 @@ class TerminalMultiplexer {
             top = window.innerHeight - popupRect.height - 16;
         }
         if (top < 16) top = 16;
-        
+
         popup.style.left = `${left}px`;
         popup.style.top = `${top}px`;
     }
@@ -3009,7 +3041,7 @@ class TerminalMultiplexer {
         if (!this.currentFileInfo) return;
         const btn = this.fileInfoCopyBtn;
         const originalHTML = btn.innerHTML;
-        
+
         navigator.clipboard.writeText(this.currentFileInfo.path).then(() => {
             // Show success state
             btn.innerHTML = `
@@ -3019,7 +3051,7 @@ class TerminalMultiplexer {
                 Copied!
             `;
             btn.classList.add('success');
-            
+
             // Reset after delay then close
             setTimeout(() => {
                 btn.innerHTML = originalHTML;
@@ -3038,19 +3070,19 @@ class TerminalMultiplexer {
             const response = await fetch(this.url('/api/scratch'));
             const data = await response.json();
             const currentText = data.text || '';
-            
+
             // Append path on new line
             const newText = currentText 
                 ? currentText + '\n' + this.currentFileInfo.path 
                 : this.currentFileInfo.path;
-            
+
             // Save back
             await fetch(this.url('/api/scratch'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ text: newText })
             });
-            
+
             this.showToast('Path added to scratch pad');
             this.hideFileInfoPopup();
         } catch (err) {
@@ -3077,7 +3109,7 @@ class TerminalMultiplexer {
             const response = await fetch(this.url('/api/info'));
             const info = await response.json();
             this.serverInfo = info;
-            
+
             // Set upload directory placeholder
             if (this.uploadDirectory && info.uploadDir) {
                 this.uploadDirectory.placeholder = info.uploadDir;
@@ -3172,12 +3204,22 @@ class TerminalMultiplexer {
 
     getSettingsFromInputs() {
         const settings = { ui: {}, terminal: {} };
-        
+        const hexPattern = /^#[0-9A-Fa-f]{6}$/;
+
         this.settingsModal.querySelectorAll('[data-setting]').forEach(input => {
             const [category, key] = input.dataset.setting.split('.');
-            settings[category][key] = input.value;
+            const value = input.value;
+
+            // Validate hex color format
+            if (hexPattern.test(value)) {
+                settings[category][key] = value;
+            } else {
+                // Fall back to default for invalid values
+                const defaults = this.getDefaultSettings();
+                settings[category][key] = defaults[category]?.[key] || '#000000';
+            }
         });
-        
+
         return settings;
     }
 
@@ -3188,16 +3230,16 @@ class TerminalMultiplexer {
 
     async saveSettings() {
         const settings = this.getSettingsFromInputs();
-        
+
         try {
             const response = await fetch(this.url('/api/settings'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(settings)
             });
-            
+
             if (!response.ok) throw new Error('Failed to save settings');
-            
+
             this.settings = settings;
             this.closeModal(this.settingsModal);
             this.toastSuccess('Settings saved');
@@ -3209,7 +3251,7 @@ class TerminalMultiplexer {
 
     async resetSettings() {
         const defaults = this.getDefaultSettings();
-        
+
         // Update inputs
         for (const [key, value] of Object.entries(defaults.ui)) {
             const colorInput = this.settingsModal.querySelector(`[data-setting="ui.${key}"]`);
@@ -3223,7 +3265,7 @@ class TerminalMultiplexer {
             if (colorInput) colorInput.value = value;
             if (hexInput) hexInput.value = value;
         }
-        
+
         // Preview the reset
         this.previewSettings();
     }
@@ -3231,14 +3273,14 @@ class TerminalMultiplexer {
     async exportSettings() {
         const settings = this.getSettingsFromInputs();
         const activeTab = this.settingsModal.querySelector('.settings-tab.active').dataset.tab;
-        
+
         let yaml;
         if (activeTab === 'terminal') {
             yaml = this.terminalToBase24Yaml(settings.terminal);
         } else {
             yaml = this.uiToYaml(settings.ui);
         }
-        
+
         try {
             await navigator.clipboard.writeText(yaml);
             // Visual feedback only - no toast for UI actions
@@ -3260,20 +3302,20 @@ class TerminalMultiplexer {
             'scheme: "Exported Theme"',
             'author: "Terminal Multiplexer"'
         ];
-        
+
         // Base24 keys in order
         const keys = [
             'base00', 'base01', 'base02', 'base03', 'base04', 'base05', 'base06', 'base07',
             'base08', 'base09', 'base0A', 'base0B', 'base0C', 'base0D', 'base0E', 'base0F',
             'base10', 'base11', 'base12', 'base13', 'base14', 'base15', 'base16', 'base17'
         ];
-        
+
         for (const key of keys) {
             const value = terminal[key] || '#000000';
             // Remove # prefix for Base24 format
             lines.push(`${key}: "${value.replace('#', '')}"`);
         }
-        
+
         return lines.join('\n');
     }
 
@@ -3282,11 +3324,11 @@ class TerminalMultiplexer {
             'scheme: "UI Theme"',
             'author: "Terminal Multiplexer"'
         ];
-        
+
         for (const [key, value] of Object.entries(ui)) {
             lines.push(`${key}: "${value.replace('#', '')}"`);
         }
-        
+
         return lines.join('\n');
     }
 
@@ -3297,10 +3339,10 @@ class TerminalMultiplexer {
                 this.toastWarning('Clipboard is empty');
                 return;
             }
-            
+
             const parsed = this.parseYaml(text);
             const activeTab = this.settingsModal.querySelector('.settings-tab.active').dataset.tab;
-            
+
             // Validate before applying
             if (activeTab === 'terminal') {
                 if (!this.validateBase24Theme(parsed)) {
@@ -3315,9 +3357,9 @@ class TerminalMultiplexer {
                 }
                 this.importUITheme(parsed);
             }
-            
+
             this.previewSettings();
-            
+
             // Visual feedback only - no toast for UI actions
             const originalText = this.settingsImportBtn.textContent;
             this.settingsImportBtn.textContent = 'Imported!';
@@ -3348,14 +3390,14 @@ class TerminalMultiplexer {
         // Simple YAML parser for key: "value" format
         const result = {};
         const lines = text.split('\n');
-        
+
         for (const line of lines) {
             const match = line.match(/^(\w+):\s*"?([^"]*)"?\s*$/);
             if (match) {
                 result[match[1]] = match[2];
             }
         }
-        
+
         return result;
     }
 
@@ -3365,12 +3407,12 @@ class TerminalMultiplexer {
             'base08', 'base09', 'base0A', 'base0B', 'base0C', 'base0D', 'base0E', 'base0F',
             'base10', 'base11', 'base12', 'base13', 'base14', 'base15', 'base16', 'base17'
         ];
-        
+
         for (const key of keys) {
             if (parsed[key]) {
                 let value = parsed[key];
                 if (!value.startsWith('#')) value = '#' + value;
-                
+
                 const colorInput = this.settingsModal.querySelector(`[data-setting="terminal.${key}"]`);
                 const hexInput = this.settingsModal.querySelector(`[data-setting-hex="terminal.${key}"]`);
                 if (colorInput) colorInput.value = value;
@@ -3381,12 +3423,12 @@ class TerminalMultiplexer {
 
     importUITheme(parsed) {
         const uiKeys = ['bgPrimary', 'bgSecondary', 'bgTertiary', 'textPrimary', 'textSecondary', 'textMuted', 'accent', 'accentHover', 'border'];
-        
+
         for (const key of uiKeys) {
             if (parsed[key]) {
                 let value = parsed[key];
                 if (!value.startsWith('#')) value = '#' + value;
-                
+
                 const colorInput = this.settingsModal.querySelector(`[data-setting="ui.${key}"]`);
                 const hexInput = this.settingsModal.querySelector(`[data-setting-hex="ui.${key}"]`);
                 if (colorInput) colorInput.value = value;
@@ -3499,7 +3541,7 @@ class TerminalMultiplexer {
 
         const iconBtn = pad.querySelector('.scratch-pad-icon-btn');
         const textarea = pad.querySelector('.scratch-pad-content');
-        
+
         // Copy button (icon transforms on hover)
         iconBtn.addEventListener('click', async () => {
             try {
@@ -3522,7 +3564,6 @@ class TerminalMultiplexer {
 
         // Insert at the top
         container.insertBefore(pad, container.firstChild);
-        textarea.focus();
 
         this.updateScratchButtonState();
         return pad;
@@ -3553,15 +3594,28 @@ class TerminalMultiplexer {
         return pad;
     }
 
-    toggleScratchPad(text = '') {
+    async toggleScratchPad(text = null) {
         const container = document.getElementById('toast-container');
         const pad = container?.querySelector('.scratch-pad');
-        
+
         if (pad) {
             // Already visible - hide it
             this.hideScratchPad();
         } else {
-            // Not visible - show it with text (or empty)
+            // Not visible - fetch current content if no text provided
+            if (text === null) {
+                try {
+                    const response = await fetch(this.url('/api/scratch'));
+                    if (response.ok) {
+                        const data = await response.json();
+                        text = data.text || '';
+                    } else {
+                        text = '';
+                    }
+                } catch (e) {
+                    text = '';
+                }
+            }
             this.showScratchPad(text);
         }
     }
@@ -3578,52 +3632,66 @@ class TerminalMultiplexer {
     }
 
     connectScratchEvents() {
-        // Connect to SSE for scratch pad updates from CLI
-        const es = new EventSource(this.url('/api/scratch/events'));
-        
-        es.onmessage = (e) => {
-            try {
-                const data = JSON.parse(e.data);
-                const currentText = this.getScratchPadText();
-                
-                switch (data.type) {
-                    case 'init':
-                        // Initial connection - don't show unless there's content
-                        // (user can toggle it open manually)
-                        break;
-                    
-                    case 'toggle':
-                        // Toggle visibility
-                        this.toggleScratchPad(data.text);
-                        break;
-                    
-                    case 'clear':
-                        // Clear and close
-                        this.hideScratchPad();
-                        break;
-                    
-                    case 'text':
-                    default:
-                        // Update text - only if different and not our own edit
-                        if (data.text !== currentText && data.text !== this._lastSyncedText) {
-                            if (data.text) {
-                                this.showScratchPad(data.text);
-                            } else {
-                                this.hideScratchPad();
+        // Connect to SSE for scratch pad updates from CLI with exponential backoff
+        let retryDelay = 1000;
+        const maxRetryDelay = 30000;
+
+        const connect = () => {
+            const es = new EventSource(this.url('/api/scratch/events'));
+
+            es.onopen = () => {
+                retryDelay = 1000; // Reset on successful connection
+            };
+
+            es.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    const currentText = this.getScratchPadText();
+
+                    switch (data.type) {
+                        case 'init':
+                            // Initial connection - don't show unless there's content
+                            // (user can toggle it open manually)
+                            break;
+
+                        case 'toggle':
+                            // Toggle visibility
+                            this.toggleScratchPad(data.text);
+                            break;
+
+                        case 'clear':
+                            // Clear and close
+                            this.hideScratchPad();
+                            break;
+
+                        case 'text':
+                        default:
+                            // Update text - only if different and not our own edit
+                            if (data.text !== currentText && data.text !== this._lastSyncedText) {
+                                if (data.text) {
+                                    this.showScratchPad(data.text);
+                                } else {
+                                    this.hideScratchPad();
+                                }
                             }
-                        }
-                        break;
+                            break;
+                    }
+                } catch (err) {
+                    console.error('Failed to parse scratch event:', err);
                 }
-            } catch (err) {
-                console.error('Failed to parse scratch event:', err);
-            }
+            };
+
+            es.onerror = () => {
+                es.close();
+                // Exponential backoff reconnect
+                setTimeout(connect, retryDelay);
+                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
+            };
+
+            this.scratchEventSource = es;
         };
-        
-        es.onerror = () => {
-            // Silently reconnect - SSE will auto-reconnect
-        };
-        
-        this.scratchEventSource = es;
+
+        connect();
     }
 
     // Sync scratch pad text to server when user edits
@@ -3643,23 +3711,38 @@ class TerminalMultiplexer {
     // ============ Marked Files ============
 
     connectMarkedEvents() {
-        const es = new EventSource(this.url('/api/marked/events'));
-        
-        es.onmessage = (e) => {
-            try {
-                const data = JSON.parse(e.data);
-                this.markedFiles = data.files || [];
-                this.updateMarkedUI();
-            } catch (err) {
-                console.error('Failed to parse marked event:', err);
-            }
+        // Connect to SSE for marked files updates with exponential backoff
+        let retryDelay = 1000;
+        const maxRetryDelay = 30000;
+
+        const connect = () => {
+            const es = new EventSource(this.url('/api/marked/events'));
+
+            es.onopen = () => {
+                retryDelay = 1000; // Reset on successful connection
+            };
+
+            es.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    this.markedFiles = data.files || [];
+                    this.updateMarkedUI();
+                } catch (err) {
+                    console.error('Failed to parse marked event:', err);
+                }
+            };
+
+            es.onerror = () => {
+                es.close();
+                // Exponential backoff reconnect
+                setTimeout(connect, retryDelay);
+                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
+            };
+
+            this.markedEventSource = es;
         };
-        
-        es.onerror = () => {
-            // Silently reconnect - SSE will auto-reconnect
-        };
-        
-        this.markedEventSource = es;
+
+        connect();
     }
 
     async markFile(path) {
@@ -3699,7 +3782,7 @@ class TerminalMultiplexer {
 
     async downloadMarkedFiles() {
         if (this.markedFiles.length === 0) return;
-        
+
         // Trigger download
         window.open(this.url('/api/marked/download'), '_blank');
     }
@@ -3723,10 +3806,10 @@ class TerminalMultiplexer {
 
         // Update sidekick list
         this.renderMarkedList();
-        
+
         // Update marked toast
         this.updateMarkedToast();
-        
+
         // Update mark buttons in file browser if visible
         this.updateMarkButtons();
     }
@@ -3771,12 +3854,12 @@ class TerminalMultiplexer {
         // Bind events
         this.markedList.querySelectorAll('.marked-item').forEach(item => {
             const path = item.dataset.path;
-            
+
             item.querySelector('.download-one').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.downloadSingleMarked(path);
             });
-            
+
             item.querySelector('.unmark').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.unmarkFile(path);
@@ -3787,7 +3870,7 @@ class TerminalMultiplexer {
     updateMarkedToast() {
         const container = document.getElementById('toast-container');
         let toast = container.querySelector('.marked-toast');
-        
+
         if (this.markedFiles.length === 0) {
             // Remove toast if no files
             if (toast) {
@@ -3814,11 +3897,11 @@ class TerminalMultiplexer {
                 </div>
                 <button class="marked-toast-action">Download</button>
             `;
-            
+
             toast.querySelector('.marked-toast-action').addEventListener('click', () => {
                 this.downloadMarkedFiles();
             });
-            
+
             container.appendChild(toast);
         }
 
@@ -3831,7 +3914,7 @@ class TerminalMultiplexer {
     updateMarkButtons() {
         // Update mark buttons in the file list to show marked state
         const markedPaths = new Set(this.markedFiles.map(f => f.path));
-        
+
         this.fileList.querySelectorAll('.file-item').forEach(item => {
             const path = item.dataset.path;
             const isDir = item.dataset.isDir === 'true';
@@ -3839,7 +3922,7 @@ class TerminalMultiplexer {
             if (markBtn) {
                 // Skip disabled folder buttons
                 if (markBtn.classList.contains('disabled')) return;
-                
+
                 const isMarked = markedPaths.has(path);
                 markBtn.classList.toggle('marked', isMarked);
                 markBtn.title = isMarked ? 'Unmark' : 'Mark for download';
@@ -3855,18 +3938,12 @@ class TerminalMultiplexer {
     isFileMarked(path) {
         return this.markedFiles.some(f => f.path === path);
     }
-
-    escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
 }
 
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new TerminalMultiplexer();
-    
+
     // Dev mode live reload - only attempt if endpoint exists
     // Uses HEAD request to probe; avoids WebSocket errors in production
     fetch(window.app.url('/api/dev-reload'), { method: 'HEAD' })
