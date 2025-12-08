@@ -17,9 +17,7 @@ pkg/
 .DS_Store
 Thumbs.db
 
-# Temporary or dev only files
+# Temporary files
 *.tmp
 *.bak
 *.broken
-session*.md
-remove-blank-lines.sh
