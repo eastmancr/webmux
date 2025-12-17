@@ -43,7 +43,7 @@ check:
 	go build -o /dev/null ./cmd/wm
 
 # Prepare package directory for makepkg
-pkg:
+pkg: build
 	rm -f $(PKG)/*.tar.gz || true
 	mkdir -p $(PKG)
 	tar czf $(PKG)/$(BINARY)-$(VERSION).tar.gz \
