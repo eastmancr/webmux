@@ -2659,6 +2659,95 @@ body.server-disconnected .sidebar-actions .btn {
     pointer-events: none;
 }
 
+/* Keybar - special keys toolbar */
+.keybar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.keybar::-webkit-scrollbar {
+    display: none;
+}
+
+.keybar.hidden {
+    display: none;
+}
+
+.keybar-divider {
+    width: 1px;
+    height: 20px;
+    background: var(--border);
+    margin: 0 4px;
+    flex-shrink: 0;
+}
+
+.keybar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all var(--transition-speed);
+    flex-shrink: 0;
+}
+
+.keybar-btn:hover {
+    background: var(--border);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.keybar-btn:active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--bg-primary);
+    transform: scale(0.95);
+}
+
+.key-label {
+    font-weight: 500;
+}
+
+/* Mobile: keybar positioned above keyboard */
+@media (max-width: 768px) {
+    .keybar {
+        position: sticky;
+        bottom: 0;
+        z-index: 10;
+        padding: 8px 12px;
+    }
+
+    .keybar-btn {
+        padding: 10px 14px;
+        font-size: 13px;
+        min-height: 40px;
+    }
+}
+
+/* Touch device adjustments */
+@media (pointer: coarse) {
+    .keybar-btn {
+        padding: 10px 14px;
+        font-size: 13px;
+        min-height: 40px;
+    }
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .sidebar {

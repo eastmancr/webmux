@@ -109,6 +109,8 @@ class TerminalMultiplexer {
 
         if (this.groups.size === 0) {
             document.getElementById('no-session').classList.remove('hidden');
+            document.getElementById('keybar').classList.add('hidden');
+            document.getElementById('toggle-keybar').classList.remove('active');
         }
 
         // Apply saved sidebar state
@@ -453,14 +455,16 @@ class TerminalMultiplexer {
                     // Select the next group in order, or previous if we closed the last one
                     const nextGroupIndex = Math.min(groupIndex, this.groupOrder.length - 1);
                     const nextGroupId = this.groupOrder[nextGroupIndex];
-                    if (nextGroupId) {
-                        this.activateGroup(nextGroupId);
-                    } else {
-                        this.updateTerminalLayout();
-                        this.noSessionEl.classList.remove('hidden');
-                        // Keep expand button visible when no sessions
-                        this.clearIconFade?.();
-                    }
+            if (nextGroupId) {
+                this.activateGroup(nextGroupId);
+            } else {
+                this.updateTerminalLayout();
+                this.noSessionEl.classList.remove('hidden');
+                this.keybar.classList.add('hidden');
+                this.keybarToggle.classList.remove('active');
+                // Keep expand button visible when no sessions
+                this.clearIconFade?.();
+            }
                 }
             } else {
                 this.updateGroupLayout(group);
@@ -550,6 +554,11 @@ class TerminalMultiplexer {
 
         // Scratch pad toggle
         this.toggleScratchBtn = document.getElementById('toggle-scratch');
+
+        // Keybar (special keys toolbar)
+        this.keybar = document.getElementById('keybar');
+        this.keybarToggle = document.getElementById('toggle-keybar');
+        this.keybarUserHidden = false; // Track if user manually hid the keybar
     }
 
     bindEvents() {
@@ -767,6 +776,31 @@ class TerminalMultiplexer {
             this.hideDragOverlay();
             document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
         });
+
+        // Keybar button clicks - send keys to active session
+        // Use mousedown + preventDefault to avoid stealing focus from terminal
+        this.keybar.querySelectorAll('.keybar-btn').forEach(btn => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // Prevent focus change
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keys = btn.dataset.keys;
+                if (keys) {
+                    this.sendKeysToActiveSession({ keys: [keys] });
+                }
+            });
+        });
+
+        // Keybar toggle (in sidebar)
+        this.keybarToggle.addEventListener('click', () => {
+            // Only toggle if there are active sessions
+            if (this.groups.size > 0) {
+                this.keybarUserHidden = !this.keybarUserHidden;
+                this.keybar.classList.toggle('hidden', this.keybarUserHidden);
+                this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
+            }
+        });
     }
 
     // ============ Group & Session Management ============
@@ -964,7 +998,7 @@ class TerminalMultiplexer {
             const group = this.createGroup([session.id]);
             this.addGroupToSidebar(group);
             this.activateGroup(group.id);
-            this.noSessionEl.classList.add('hidden');
+            // noSessionEl and keybar are handled by activateGroup
         }
     }
 
@@ -1043,6 +1077,44 @@ class TerminalMultiplexer {
         }
     }
 
+    // Send keys to a session via the terminal key API
+    // payload can be:
+    //   - Simple: { keys: ['C-c', 'C-d'] }
+    //   - Extended: { sequence: [{type: 'key', value: 'C-c'}, {type: 'text', value: 'hello\n'}] }
+    async sendKeysToSession(sessionId, payload) {
+        try {
+            const response = await fetch(this.url(`/api/sessions/${sessionId}/keys`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Failed to send keys');
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Failed to send keys:', error);
+            return false;
+        }
+    }
+
+    // Send keys to the currently active session
+    async sendKeysToActiveSession(payload) {
+        const activeGroup = this.groups.get(this.activeGroupId);
+        if (!activeGroup || activeGroup.sessionIds.length === 0) {
+            console.warn('No active session to send keys to');
+            return false;
+        }
+
+        // Send to the first session in the active group
+        // TODO: Track which pane is "focused" within a split group
+        const activeSessionId = activeGroup.sessionIds[0];
+        return this.sendKeysToSession(activeSessionId, payload);
+    }
+
     closeGroup(groupId) {
         const group = this.groups.get(groupId);
         if (!group) return;
@@ -1079,6 +1151,8 @@ class TerminalMultiplexer {
             } else {
                 this.updateTerminalLayout();
                 this.noSessionEl.classList.remove('hidden');
+                this.keybar.classList.add('hidden');
+                this.keybarToggle.classList.remove('active');
                 this.clearIconFade?.();
             }
         }
@@ -1581,6 +1655,9 @@ class TerminalMultiplexer {
         this.activeGroupId = groupId;
         this.updateTerminalLayout();
         this.noSessionEl.classList.add('hidden');
+        // Show keybar unless user manually hid it
+        this.keybar.classList.toggle('hidden', this.keybarUserHidden);
+        this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
 
         // Focus the specified session, or the first one if not specified
         const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId) 

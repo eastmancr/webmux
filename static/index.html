@@ -28,6 +28,11 @@
                     </svg>
                 </button>
                 <div class="sidebar-icons-spacer"></div>
+                <button id="toggle-keybar" class="icon-btn" title="Toggle special keys bar">
+                    <svg viewBox="0 0 24 24" width="20" height="20">
+                        <path fill="currentColor" d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/>
+                    </svg>
+                </button>
                 <button id="open-keybinds" class="icon-btn" title="Keyboard shortcuts (Ctrl+/)">
                     <svg viewBox="0 0 24 24" width="20" height="20">
                         <path fill="currentColor" d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/>
@@ -76,6 +81,36 @@
             <div id="terminals">
                 <!-- Terminal panes will be created here -->
             </div>
+
+            <!-- Keybar for special keys -->
+            <div id="keybar" class="keybar hidden">
+                <button class="keybar-btn" data-keys="C-c" title="Ctrl-C: Interrupt (SIGINT)">
+                    <span class="key-label">Ctrl-C</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-d" title="Ctrl-D: EOF / Exit">
+                    <span class="key-label">Ctrl-D</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-z" title="Ctrl-Z: Suspend (SIGTSTP)">
+                    <span class="key-label">Ctrl-Z</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-\\" title="Ctrl-\\: Quit (SIGQUIT)">
+                    <span class="key-label">Ctrl-\</span>
+                </button>
+                <span class="keybar-divider"></span>
+                <button class="keybar-btn" data-keys="C-l" title="Ctrl-L: Clear screen">
+                    <span class="key-label">Ctrl-L</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-r" title="Ctrl-R: Reverse search history">
+                    <span class="key-label">Ctrl-R</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-u" title="Ctrl-U: Clear line">
+                    <span class="key-label">Ctrl-U</span>
+                </button>
+                <button class="keybar-btn" data-keys="C-w" title="Ctrl-W: Delete word">
+                    <span class="key-label">Ctrl-W</span>
+                </button>
+            </div>
+
             <div id="no-session" class="no-session">
                 <p>No terminal session active</p>
                 <button id="create-first-session" class="btn btn-primary">Create Terminal</button>
@@ -585,6 +620,26 @@
                     <div class="keybind-row">
                         <span class="keybind-desc">Scroll down</span>
                         <span class="keybind-keys"><kbd>Shift</kbd>+<kbd>PgDn</kbd></span>
+                    </div>
+                </div>
+                <div class="keybinds-section">
+                    <h4>Special Keys (Keybar)</h4>
+                    <p class="keybind-note" style="margin-bottom: 8px;">Use the keybar at the bottom of the terminal to send special keys without browser conflicts.</p>
+                    <div class="keybind-row">
+                        <span class="keybind-desc">Interrupt (SIGINT)</span>
+                        <span class="keybind-keys"><kbd>Ctrl-C</kbd></span>
+                    </div>
+                    <div class="keybind-row">
+                        <span class="keybind-desc">EOF / Exit</span>
+                        <span class="keybind-keys"><kbd>Ctrl-D</kbd></span>
+                    </div>
+                    <div class="keybind-row">
+                        <span class="keybind-desc">Suspend (SIGTSTP)</span>
+                        <span class="keybind-keys"><kbd>Ctrl-Z</kbd></span>
+                    </div>
+                    <div class="keybind-row">
+                        <span class="keybind-desc">Reverse history search</span>
+                        <span class="keybind-keys"><kbd>Ctrl-R</kbd></span>
                     </div>
                 </div>
             </div>
