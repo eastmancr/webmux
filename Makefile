@@ -3,6 +3,7 @@
 BINARY := webmux
 WM := wm
 WM_EMBEDDED := static/wm
+PKG := pkg
 VERSION := $(shell grep pkgver= PKGBUILD | cut -d= -f2)
 
 .PHONY: all build dev clean run run-dev check pkg
@@ -26,6 +27,7 @@ dev: $(WM_EMBEDDED)
 # Clean build artifacts
 clean:
 	rm -f $(BINARY) $(WM) $(WM_EMBEDDED)
+	rm -rf $(PKG)
 
 # Run production binary
 run: build
@@ -42,9 +44,10 @@ check:
 
 # Prepare package directory for makepkg
 pkg:
-	mkdir -p pkg
-	tar czf pkg/$(BINARY)-$(VERSION).tar.gz \
+	rm -f $(PKG)/*.tar.gz || true
+	mkdir -p $(PKG)
+	tar czf $(PKG)/$(BINARY)-$(VERSION).tar.gz \
 		--transform 's,^,$(BINARY)-$(VERSION)/,' \
 		main.go dev.go nodev.go go.mod go.sum webmux.1 README.md LICENSE \
 		cmd/wm/main.go static/app.js static/index.html static/style.css static/tmux.conf static/favicon.ico
-	cp PKGBUILD pkg/
+	cp PKGBUILD $(PKG)/
