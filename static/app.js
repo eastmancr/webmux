@@ -220,10 +220,12 @@ class TerminalMultiplexer {
             const notch = document.createElement('div');
             notch.id = 'disconnection-notch';
             notch.className = 'disconnection-notch';
+            notch.setAttribute('role', 'alert');
+            notch.setAttribute('aria-live', 'assertive');
             notch.innerHTML = `
                 <div class="disconnection-notch-tab-left"></div>
                 <div class="disconnection-notch-inner">
-                    <svg viewBox="0 0 24 24" width="18" height="18">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/>
                     </svg>
                     <span>Server disconnected</span>
@@ -1253,24 +1255,25 @@ class TerminalMultiplexer {
 
             return `
                 <div class="session-item ${this.activeGroupId === group.id ? 'active' : ''}" 
-                     data-group-id="${group.id}" data-session-id="${session?.id}" draggable="${!isRenaming}">
-                    <svg class="icon" viewBox="0 0 24 24" width="18" height="18">
+                     data-group-id="${group.id}" data-session-id="${session?.id}" draggable="${!isRenaming}"
+                     role="button" aria-label="Terminal session: ${this.escapeHtml(displayName)}">
+                    <svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
                     </svg>
                     ${nameHtml}
                     <div class="actions">
-                        <button class="action-btn popout" title="Pop out" data-session-id="${session?.id}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn popout" title="Pop out" data-session-id="${session?.id}" aria-label="Pop out terminal">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
                             </svg>
                         </button>
-                        <button class="action-btn rename" title="Rename" data-session-id="${session?.id}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn rename" title="Rename" data-session-id="${session?.id}" aria-label="Rename terminal">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25z"/>
                             </svg>
                         </button>
-                        <button class="action-btn close" title="Close" data-group-id="${group.id}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn close" title="Close" data-group-id="${group.id}" aria-label="Close terminal">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                             </svg>
                         </button>
@@ -1285,24 +1288,25 @@ class TerminalMultiplexer {
             const processName = this.getSessionProcessDisplay(session);
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
             return `
-                <div class="session-item sub-item" data-session-id="${sid}" data-group-id="${group.id}" draggable="true">
-                    <svg class="icon" viewBox="0 0 24 24" width="16" height="16">
+                <div class="session-item sub-item" data-session-id="${sid}" data-group-id="${group.id}" draggable="true"
+                     role="button" aria-label="Terminal session: ${this.escapeHtml(displayName)}">
+                    <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                         <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
                     </svg>
                     <span class="name">${this.escapeHtml(displayName)}${processHtml}</span>
                     <div class="actions">
-                        <button class="action-btn popout" title="Pop out" data-session-id="${sid}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn popout" title="Pop out" data-session-id="${sid}" aria-label="Pop out terminal">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
                             </svg>
                         </button>
-                        <button class="action-btn breakout" title="Break out from split" data-session-id="${sid}" data-group-id="${group.id}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn breakout" title="Break out from split" data-session-id="${sid}" data-group-id="${group.id}" aria-label="Break out from split">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M4 4h7V2H4a2 2 0 0 0-2 2v7h2V4zm6 12l-4 4h3v2H2v-7h2v3l4-4 2 2zm8-6l4-4v3h2V2h-7v2h3l-4 4 2 2z"/>
                             </svg>
                         </button>
-                        <button class="action-btn close" title="Close" data-session-id="${sid}">
-                            <svg viewBox="0 0 24 24" width="14" height="14">
+                        <button class="action-btn close" title="Close" data-session-id="${sid}" aria-label="Close terminal">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                             </svg>
                         </button>
@@ -1312,19 +1316,20 @@ class TerminalMultiplexer {
         }).join('');
 
         return `
-            <div class="group-header compact ${this.activeGroupId === group.id ? 'active' : ''}" data-group-id="${group.id}" draggable="true">
-                <svg class="icon" viewBox="0 0 24 24" width="14" height="14">
+            <div class="group-header compact ${this.activeGroupId === group.id ? 'active' : ''}" data-group-id="${group.id}" draggable="true"
+                 role="button" aria-label="Terminal group: ${this.escapeHtml(group.name)}">
+                <svg class="icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M3 5v14h18V5H3zm8 12H5v-5h6v5zm0-7H5V5h6v5zm8 7h-6v-5h6v5zm0-7h-6V5h6v5z"/>
                 </svg>
                 <span class="name">Split</span>
                 <div class="actions">
-                    <button class="action-btn breakout-all" title="Break out all" data-group-id="${group.id}">
-                        <svg viewBox="0 0 24 24" width="12" height="12">
+                    <button class="action-btn breakout-all" title="Break out all" data-group-id="${group.id}" aria-label="Break out all terminals">
+                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
                             <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
                         </svg>
                     </button>
-                    <button class="action-btn close" title="Close all" data-group-id="${group.id}">
-                        <svg viewBox="0 0 24 24" width="12" height="12">
+                    <button class="action-btn close" title="Close all" data-group-id="${group.id}" aria-label="Close all terminals in group">
+                        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
                             <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                         </svg>
                     </button>
@@ -1701,14 +1706,17 @@ class TerminalMultiplexer {
         // Loading overlay shown while terminal connects
         const loadingOverlay = document.createElement('div');
         loadingOverlay.className = 'terminal-loading';
+        loadingOverlay.setAttribute('role', 'status');
+        loadingOverlay.setAttribute('aria-live', 'polite');
         loadingOverlay.innerHTML = `
-            <div class="terminal-loading-spinner"></div>
+            <div class="terminal-loading-spinner" aria-hidden="true"></div>
             <p>Connecting...</p>
         `;
 
         const iframe = document.createElement('iframe');
         iframe.src = this.url(`/t/${session.id}/`);
         iframe.className = 'terminal-iframe';
+        iframe.title = `Terminal session: ${session.name}`;
         iframe.allow = 'clipboard-read; clipboard-write';
 
         // Listen for iframe navigation (happens when session dies and ttyd redirects)
@@ -1734,12 +1742,13 @@ class TerminalMultiplexer {
 
         const placeholder = document.createElement('div');
         placeholder.className = 'popout-placeholder hidden';
+        placeholder.setAttribute('role', 'status');
         placeholder.innerHTML = `
-            <svg viewBox="0 0 24 24" width="48" height="48">
+            <svg viewBox="0 0 24 24" width="48" height="48" aria-hidden="true">
                 <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
             </svg>
             <p>Terminal popped out</p>
-            <button class="btn btn-secondary pop-back-in" data-session-id="${session.id}">Pop back in</button>
+            <button class="btn btn-secondary pop-back-in" data-session-id="${session.id}" aria-label="Pop terminal back into browser window">Pop back in</button>
         `;
 
         placeholder.querySelector('.pop-back-in').addEventListener('click', () => {
@@ -1972,9 +1981,9 @@ class TerminalMultiplexer {
         if (mode === '2-pane') {
             // Simple rotate button for 2-pane
             control.innerHTML = `
-                <button class="divider-control-btn" title="Rotate layout">
+                <button class="divider-control-btn" title="Rotate layout" aria-label="Rotate layout">
                     <span class="inner-dot"></span>
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
                 </button>
             `;
             control.querySelector('.divider-control-btn').addEventListener('click', (e) => {
@@ -2002,40 +2011,40 @@ class TerminalMultiplexer {
         if (mode === '3-pane') {
             // 3-pane: Top/Bottom stacked on top half, Left/Right side-by-side on bottom
             menuHTML = `
-                <button data-action="expand-top" title="Top cell wide">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h18v8H3V3zm0 10h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>
+                <button data-action="expand-top" title="Top cell wide" aria-label="Expand top cell">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h18v8H3V3zm0 10h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>
                     <span>Top</span>
                 </button>
-                <button data-action="expand-bottom" title="Bottom cell wide">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v8H3V3zm0 10h18v8H3v-8zm10-10h8v8h-8V3z"/></svg>
+                <button data-action="expand-bottom" title="Bottom cell wide" aria-label="Expand bottom cell">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v8H3V3zm0 10h18v8H3v-8zm10-10h8v8h-8V3z"/></svg>
                     <span>Bottom</span>
                 </button>
-                <button data-action="expand-left" title="Left cell wide">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 3h8v18H3V3zm10 0h8v8h-8V3zm0 10h8v8h-8v-8z"/></svg>
+                <button data-action="expand-left" title="Left cell wide" aria-label="Expand left cell">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 3h8v18H3V3zm10 0h8v8h-8V3zm0 10h8v8h-8v-8z"/></svg>
                     <span>Left</span>
                 </button>
-                <button data-action="expand-right" title="Right cell wide">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M13 3h8v18h-8V3zM3 3h8v8H3V3zm0 10h8v8H3v-8z"/></svg>
+                <button data-action="expand-right" title="Right cell wide" aria-label="Expand right cell">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M13 3h8v18h-8V3zM3 3h8v8H3V3zm0 10h8v8H3v-8z"/></svg>
                     <span>Right</span>
                 </button>
             `;
         } else if (mode === '4-pane') {
             // 4-pane: 2x2 grid with CCW/CW on top, FlipH/FlipV on bottom
             menuHTML = `
-                <button data-action="rotate-ccw" title="Rotate counter-clockwise">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
+                <button data-action="rotate-ccw" title="Rotate counter-clockwise" aria-label="Rotate counter-clockwise">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>
                     <span>CCW</span>
                 </button>
-                <button data-action="rotate-cw" title="Rotate clockwise">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
+                <button data-action="rotate-cw" title="Rotate clockwise" aria-label="Rotate clockwise">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 3.58-8 8-8z"/></svg>
                     <span>CW</span>
                 </button>
-                <button data-action="flip-h" title="Flip horizontally">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M11 3v18h2V3h-2zM3 3h6v8H3V3zm0 10h6v8H3v-8zm12-10h6v8h-6V3zm0 10h6v8h-6v-8z"/></svg>
+                <button data-action="flip-h" title="Flip horizontally" aria-label="Flip horizontally">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 3v18h2V3h-2zM3 3h6v8H3V3zm0 10h6v8H3v-8zm12-10h6v8h-6V3zm0 10h6v8h-6v-8z"/></svg>
                     <span>Flip H</span>
                 </button>
-                <button data-action="flip-v" title="Flip vertically">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 11h18v2H3v-2zM3 3h8v6H3V3zm10 0h8v6h-8V3zM3 15h8v6H3v-6zm10 0h8v6h-8v-6z"/></svg>
+                <button data-action="flip-v" title="Flip vertically" aria-label="Flip vertically">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 11h18v2H3v-2zM3 3h8v6H3V3zm10 0h8v6h-8V3zM3 15h8v6H3v-6zm10 0h8v6h-8v-6z"/></svg>
                     <span>Flip V</span>
                 </button>
             `;
@@ -2391,15 +2400,15 @@ class TerminalMultiplexer {
         };
 
         if (count === 0) {
-            return `<div class="drop-zone drop-full" data-position="center" data-index="0">Drop here</div>`;
+            return `<div class="drop-zone drop-full" data-position="center" data-index="0" role="button" aria-label="Drop here to create first terminal">Drop here</div>`;
         }
 
         if (count === 1) {
             return `
-                <div class="drop-zone drop-edge drop-top" data-position="top" data-index="0">Above "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-bottom" data-position="bottom" data-index="1">Below "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-left" data-position="left" data-index="0">Left of "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-right" data-position="right" data-index="1">Right of "${getLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-top" data-position="top" data-index="0" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(0))}">Above "${getLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-bottom" data-position="bottom" data-index="1" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(0))}">Below "${getLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-left" data-position="left" data-index="0" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(0))}">Left of "${getLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-right" data-position="right" data-index="1" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(0))}">Right of "${getLabel(0)}"</div>
             `;
         }
 
@@ -2415,10 +2424,10 @@ class TerminalMultiplexer {
                 // Dropping on right side: left becomes wide (left-wide)
                 const leftPct = r * 100;
                 return `
-                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: ${leftPct}%; height: 50%;" data-position="split-above-0" data-split-target="0">Above "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 0; top: 50%; width: ${leftPct}%; height: 50%;" data-position="split-below-0" data-split-target="0">Below "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 0; width: ${100 - leftPct}%; height: 50%;" data-position="split-above-1" data-split-target="1">Above "${getLabel(1)}"</div>
-                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 50%; width: ${100 - leftPct}%; height: 50%;" data-position="split-below-1" data-split-target="1">Below "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: ${leftPct}%; height: 50%;" data-position="split-above-0" data-split-target="0" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(0))}">Above "${getLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 50%; width: ${leftPct}%; height: 50%;" data-position="split-below-0" data-split-target="0" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(0))}">Below "${getLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 0; width: ${100 - leftPct}%; height: 50%;" data-position="split-above-1" data-split-target="1" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(1))}">Above "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 50%; width: ${100 - leftPct}%; height: 50%;" data-position="split-below-1" data-split-target="1" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(1))}">Below "${getLabel(1)}"</div>
                 `;
             } else {
                 // Two panes stacked [top=0, bottom=1]
@@ -2426,10 +2435,10 @@ class TerminalMultiplexer {
                 // Dropping on bottom side: top becomes wide (top-wide)
                 const topPct = r * 100;
                 return `
-                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: 50%; height: ${topPct}%;" data-position="split-left-0" data-split-target="0">Left of "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 50%; top: 0; width: 50%; height: ${topPct}%;" data-position="split-right-0" data-split-target="0">Right of "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 0; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-left-1" data-split-target="1">Left of "${getLabel(1)}"</div>
-                    <div class="drop-zone drop-half" style="left: 50%; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-right-1" data-split-target="1">Right of "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: 50%; height: ${topPct}%;" data-position="split-left-0" data-split-target="0" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(0))}">Left of "${getLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 50%; top: 0; width: 50%; height: ${topPct}%;" data-position="split-right-0" data-split-target="0" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(0))}">Right of "${getLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-left-1" data-split-target="1" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(1))}">Left of "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 50%; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-right-1" data-split-target="1" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(1))}">Right of "${getLabel(1)}"</div>
                 `;
             }
         }
@@ -2479,7 +2488,7 @@ class TerminalMultiplexer {
             for (const q of quadrants) {
                 const isWide = wideQuads.includes(q.pos);
                 const label = isWide ? `Split wide (${q.pos.replace('-', ' ')})` : `Replace ${q.pos.replace('-', ' ')}`;
-                zones.push(`<div class="drop-zone drop-quad" style="${q.style}" data-position="${q.pos}" data-expand-dir="${expandDir}">${label}</div>`);
+                zones.push(`<div class="drop-zone drop-quad" style="${q.style}" data-position="${q.pos}" data-expand-dir="${expandDir}" role="button" aria-label="${this.escapeHtml(label)}">${label}</div>`);
             }
 
             return zones.join('');
@@ -2993,25 +3002,27 @@ class TerminalMultiplexer {
             const markBtn = isParent ? '' : `
                 <button class="action-btn mark-btn ${isMarked ? 'marked' : ''} ${!canMark ? 'disabled' : ''}" 
                         title="${!canMark ? 'Cannot mark this file type' : (isMarked ? 'Unmark' : 'Mark for download')}"
+                        aria-label="${isMarked ? 'Unmark' : 'Mark'} ${this.escapeHtml(file.name)} for download"
                         ${!canMark ? 'disabled' : ''}>
-                    <svg viewBox="0 0 24 24" width="16" height="16">${markIcon}</svg>
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">${markIcon}</svg>
                 </button>
             `;
             return `
-            <div class="file-item ${file.isDir ? 'directory' : ''}" data-path="${this.escapeHtml(file.path)}" data-is-dir="${file.isDir}" data-is-regular="${!!file.isRegular}">
+            <div class="file-item ${file.isDir ? 'directory' : ''}" data-path="${this.escapeHtml(file.path)}" data-is-dir="${file.isDir}" data-is-regular="${!!file.isRegular}"
+                 role="row" aria-label="${file.isDir ? 'Directory' : 'File'}: ${this.escapeHtml(file.name)}">
                 ${markBtn}
-                <svg class="icon" viewBox="0 0 24 24" width="18" height="18">
+                <svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                     ${file.isDir 
                         ? '<path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>'
                         : '<path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>'}
                 </svg>
-                <span class="name">${this.escapeHtml(file.name)}</span>
-                <span class="size">${file.isDir ? (isParent ? '—' : `${file.size} item${file.size !== 1 ? 's' : ''}`) : this.formatSize(file.size)}</span>
-                <span class="modified">${file.modTime ? this.formatDate(file.modTime) : '—'}</span>
-                <span class="actions">
+                <span class="name" role="gridcell">${this.escapeHtml(file.name)}</span>
+                <span class="size" role="gridcell">${file.isDir ? (isParent ? '—' : `${file.size} item${file.size !== 1 ? 's' : ''}`) : this.formatSize(file.size)}</span>
+                <span class="modified" role="gridcell">${file.modTime ? this.formatDate(file.modTime) : '—'}</span>
+                <span class="actions" role="gridcell">
                     ${(file.isRegular || file.isDir) && !isParent ? `
-                        <button class="action-btn download-btn" title="${file.isDir ? 'Download as zip' : 'Download'}">
-                            <svg viewBox="0 0 24 24" width="16" height="16">
+                        <button class="action-btn download-btn" title="${file.isDir ? 'Download as zip' : 'Download'}" aria-label="Download ${this.escapeHtml(file.name)}">
+                            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                                 <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
                             </svg>
                         </button>
@@ -3567,8 +3578,8 @@ class TerminalMultiplexer {
         toast.innerHTML = `
             <span class="toast-icon">${icons[type] || icons.info}</span>
             <span class="toast-message">${message}</span>
-            <button class="toast-close" title="Dismiss">
-                <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            <button class="toast-close" title="Dismiss" aria-label="Dismiss notification">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
             </button>
         `;
 
@@ -3629,22 +3640,24 @@ class TerminalMultiplexer {
         // Create new scratch pad
         pad = document.createElement('div');
         pad.className = 'scratch-pad';
+        pad.setAttribute('role', 'complementary');
+        pad.setAttribute('aria-label', 'Scratch pad');
         pad.innerHTML = `
             <div class="scratch-pad-header">
-                <button class="scratch-pad-icon-btn" title="Copy to clipboard">
-                    <svg class="icon-default" viewBox="0 0 24 24">
+                <button class="scratch-pad-icon-btn" title="Copy to clipboard" aria-label="Copy scratch pad content">
+                    <svg class="icon-default" viewBox="0 0 24 24" aria-hidden="true">
                         <path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zm-2-2H7v-2h10v2zm0-4H7v-2h10v2zm0-4H7V7h10v2z"/>
                     </svg>
-                    <svg class="icon-copy" viewBox="0 0 24 24">
+                    <svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true">
                         <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                     </svg>
                 </button>
                 <span class="scratch-pad-title">Scratch Pad</span>
-                <button class="scratch-pad-close" title="Close">
-                    <svg viewBox="0 0 24 24"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                <button class="scratch-pad-close" title="Close" aria-label="Close scratch pad">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
                 </button>
             </div>
-            <textarea class="scratch-pad-content" placeholder="Paste or type text here...">${this.escapeHtml(text)}</textarea>
+            <textarea class="scratch-pad-content" placeholder="Paste or type text here..." aria-label="Scratch pad content">${this.escapeHtml(text)}</textarea>
         `;
 
         const closeBtn = pad.querySelector('.scratch-pad-close');
@@ -3999,14 +4012,14 @@ class TerminalMultiplexer {
             toast = document.createElement('div');
             toast.className = 'marked-toast';
             toast.innerHTML = `
-                <svg class="marked-toast-icon" viewBox="0 0 24 24" width="20" height="20">
+                <svg class="marked-toast-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                     <path fill="currentColor" d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2z"/>
                 </svg>
                 <div class="marked-toast-content">
                     <div class="marked-toast-count"></div>
                     <div class="marked-toast-latest"></div>
                 </div>
-                <button class="marked-toast-action">Download</button>
+                <button class="marked-toast-action" aria-label="Download marked files">Download</button>
             `;
 
             toast.querySelector('.marked-toast-action').addEventListener('click', () => {

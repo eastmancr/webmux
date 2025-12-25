@@ -9,32 +9,32 @@
 <body>
     <div id="app">
         <!-- Sidebar -->
-        <aside id="sidebar" class="sidebar">
+        <aside id="sidebar" class="sidebar" role="navigation" aria-label="Main sidebar">
             <!-- Icon bar (left strip) -->
-            <div class="sidebar-icons">
-                <button id="toggle-sidebar" class="icon-btn" title="Collapse sidebar">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
+            <div class="sidebar-icons" role="toolbar" aria-label="Quick actions">
+                <button id="toggle-sidebar" class="icon-btn" title="Collapse sidebar" aria-label="Toggle sidebar">
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                         <path fill="currentColor" d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
                     </svg>
                 </button>
-                <button id="open-settings" class="icon-btn" title="Settings">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
+                <button id="open-settings" class="icon-btn" title="Settings" aria-label="Open settings">
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                         <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
                     </svg>
                 </button>
-                <button id="toggle-scratch" class="icon-btn" title="Scratch Pad">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
+                <button id="toggle-scratch" class="icon-btn" title="Scratch Pad" aria-label="Toggle scratch pad">
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                         <path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zm-2-2H7v-2h10v2zm0-4H7v-2h10v2zm0-4H7V7h10v2z"/>
                     </svg>
                 </button>
-                <button id="toggle-keybar" class="icon-btn" title="Toggle special keys bar">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
+                <button id="toggle-keybar" class="icon-btn" title="Toggle special keys bar" aria-label="Toggle special keys bar">
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                         <path fill="currentColor" d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/>
                     </svg>
                 </button>
-                <div class="sidebar-icons-spacer"></div>
-                <button id="open-keybinds" class="icon-btn" title="Keyboard shortcuts (Ctrl+/)">
-                    <svg viewBox="0 0 24 24" width="20" height="20">
+                <div class="sidebar-icons-spacer" aria-hidden="true"></div>
+                <button id="open-keybinds" class="icon-btn" title="Keyboard shortcuts (Ctrl+/)" aria-label="Keyboard shortcuts">
+                    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                         <path fill="currentColor" d="M11 18h2v-2h-2v2zm1-16C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm0-14c-2.21 0-4 1.79-4 4h2c0-1.1.9-2 2-2s2 .9 2 2c0 2-3 1.75-3 5h2c0-2.25 3-2.5 3-5 0-2.21-1.79-4-4-4z"/>
                     </svg>
                 </button>
@@ -47,27 +47,27 @@
                 </div>
 
                 <div class="sidebar-actions">
-                    <button id="new-session" class="btn btn-primary">
-                        <svg viewBox="0 0 24 24" width="16" height="16">
+                    <button id="new-session" class="btn btn-primary" aria-label="New terminal session">
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                             <path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                         </svg>
                         New Terminal
                     </button>
                 </div>
 
-                <div id="session-list" class="session-list">
+                <div id="session-list" class="session-list" aria-label="Terminal session list">
                     <!-- Sessions will be populated here -->
                 </div>
 
-                <div class="sidebar-footer">
-                    <button id="open-upload" class="btn btn-secondary">
-                        <svg viewBox="0 0 24 24" width="16" height="16">
+                <div class="sidebar-footer" role="toolbar" aria-label="File actions">
+                    <button id="open-upload" class="btn btn-secondary" aria-label="Upload files">
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                             <path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/>
                         </svg>
                         Upload Files
                     </button>
-                    <button id="open-download" class="btn btn-secondary">
-                        <svg viewBox="0 0 24 24" width="16" height="16">
+                    <button id="open-download" class="btn btn-secondary" aria-label="Browse files">
+                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                             <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
                         </svg>
                         Browse Files
@@ -77,106 +77,106 @@
         </aside>
 
         <!-- Main terminal area -->
-        <main id="terminal-container">
+        <main id="terminal-container" aria-label="Terminal display area">
             <div id="terminals">
                 <!-- Terminal panes will be created here -->
             </div>
 
             <!-- Keybar for special keys -->
-            <div id="keybar" class="keybar hidden">
-                <button class="keybar-btn" data-keys="C-c" title="Ctrl-C: Interrupt (SIGINT)">
+            <div id="keybar" class="keybar hidden" role="toolbar" aria-label="Special keys">
+                <button class="keybar-btn" data-keys="C-c" title="Ctrl-C: Interrupt (SIGINT)" aria-label="Ctrl-C">
                     <span class="key-label">Ctrl-C</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-d" title="Ctrl-D: EOF / Exit">
+                <button class="keybar-btn" data-keys="C-d" title="Ctrl-D: EOF / Exit" aria-label="Ctrl-D">
                     <span class="key-label">Ctrl-D</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-z" title="Ctrl-Z: Suspend (SIGTSTP)">
+                <button class="keybar-btn" data-keys="C-z" title="Ctrl-Z: Suspend (SIGTSTP)" aria-label="Ctrl-Z">
                     <span class="key-label">Ctrl-Z</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-\\" title="Ctrl-\\: Quit (SIGQUIT)">
+                <button class="keybar-btn" data-keys="C-\\" title="Ctrl-\\: Quit (SIGQUIT)" aria-label="Ctrl-backslash">
                     <span class="key-label">Ctrl-\</span>
                 </button>
-                <span class="keybar-divider"></span>
-                <button class="keybar-btn" data-keys="C-l" title="Ctrl-L: Clear screen">
+                <span class="keybar-divider" aria-hidden="true"></span>
+                <button class="keybar-btn" data-keys="C-l" title="Ctrl-L: Clear screen" aria-label="Ctrl-L">
                     <span class="key-label">Ctrl-L</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-r" title="Ctrl-R: Reverse search history">
+                <button class="keybar-btn" data-keys="C-r" title="Ctrl-R: Reverse search history" aria-label="Ctrl-R">
                     <span class="key-label">Ctrl-R</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-u" title="Ctrl-U: Clear line">
+                <button class="keybar-btn" data-keys="C-u" title="Ctrl-U: Clear line" aria-label="Ctrl-U">
                     <span class="key-label">Ctrl-U</span>
                 </button>
-                <button class="keybar-btn" data-keys="C-w" title="Ctrl-W: Delete word">
+                <button class="keybar-btn" data-keys="C-w" title="Ctrl-W: Delete word" aria-label="Ctrl-W">
                     <span class="key-label">Ctrl-W</span>
                 </button>
             </div>
 
             <div id="no-session" class="no-session">
                 <p>No terminal session active</p>
-                <button id="create-first-session" class="btn btn-primary">Create Terminal</button>
+                <button id="create-first-session" class="btn btn-primary" aria-label="Create first terminal session">Create Terminal</button>
             </div>
         </main>
 
         <!-- Toast notifications -->
-        <div id="toast-container" class="toast-container"></div>
+        <div id="toast-container" class="toast-container" aria-live="polite" role="status"></div>
     </div>
 
     <!-- Upload Modal -->
-    <div id="upload-modal" class="modal hidden">
+    <div id="upload-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="upload-modal-title">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Upload Files</h3>
-                <button class="close-modal icon-btn" title="Close">
-                    <svg viewBox="0 0 24 24" width="18" height="18">
+                <h3 id="upload-modal-title">Upload Files</h3>
+                <button class="close-modal icon-btn" title="Close" aria-label="Close upload modal">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
             <div class="modal-body">
-                <div id="drop-zone" class="drop-zone">
-                    <svg viewBox="0 0 24 24" width="48" height="48">
+                <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Drop files here or click to browse">
+                    <svg viewBox="0 0 24 24" width="48" height="48" aria-hidden="true">
                         <path fill="currentColor" d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
                     </svg>
                     <p>Drag and drop files here</p>
-                    <p class="or">or</p>
-                    <input type="file" id="file-input" multiple hidden>
+                    <p class="or" aria-hidden="true">or</p>
+                    <input type="file" id="file-input" multiple hidden aria-label="Select files to upload">
                     <button id="browse-files" class="btn btn-secondary">Browse Files</button>
                 </div>
                 <div class="upload-options">
-                    <label>
+                    <label for="upload-directory">
                         Upload to directory:
-                        <input type="text" id="upload-directory">
                     </label>
+                    <input type="text" id="upload-directory" aria-label="Target directory for upload">
                 </div>
-                <div id="upload-progress" class="upload-progress hidden">
+                <div id="upload-progress" class="upload-progress hidden" role="progressbar" aria-valuemin="0" aria-valuemax="100">
                     <div class="progress-bar">
                         <div class="progress-fill"></div>
                     </div>
                     <p class="progress-text"></p>
                 </div>
-                <div id="upload-results" class="upload-results hidden"></div>
+                <div id="upload-results" class="upload-results hidden" aria-live="polite"></div>
             </div>
         </div>
     </div>
 
     <!-- Download/Browse Modal -->
-    <div id="download-modal" class="modal hidden">
+    <div id="download-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="download-modal-title">
         <!-- Marked Files Sidekick (peeks out from behind modal content) -->
-        <div id="marked-sidekick" class="marked-sidekick hidden">
+        <div id="marked-sidekick" class="marked-sidekick hidden" aria-label="Marked files for download">
             <div class="marked-header">
                 <h4>Marked</h4>
-                <button id="clear-marked" class="icon-btn" title="Clear all">
-                    <svg viewBox="0 0 24 24" width="16" height="16">
+                <button id="clear-marked" class="icon-btn" title="Clear all" aria-label="Clear all marked files">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                         <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
-            <div id="marked-list" class="marked-list">
+            <div id="marked-list" class="marked-list" aria-label="List of marked files">
                 <!-- Marked files will be listed here -->
             </div>
             <div class="marked-footer">
-                <button id="download-all-marked" class="btn btn-primary btn-sm">
-                    <svg viewBox="0 0 24 24" width="14" height="14">
+                <button id="download-all-marked" class="btn btn-primary btn-sm" aria-label="Download all marked files">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                         <path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
                     </svg>
                     Download All
@@ -185,60 +185,60 @@
         </div>
         <div class="modal-content modal-lg">
             <div class="modal-header">
-                <h3>Browse Files</h3>
-                <button class="close-modal icon-btn" title="Close">
-                    <svg viewBox="0 0 24 24" width="18" height="18">
+                <h3 id="download-modal-title">Browse Files</h3>
+                <button class="close-modal icon-btn" title="Close" aria-label="Close file browser">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
             <div class="modal-body">
                 <div class="path-bar">
-                    <input type="text" id="current-path" placeholder="/">
-                    <button id="go-path" class="btn btn-secondary">Go</button>
+                    <input type="text" id="current-path" placeholder="/" aria-label="Current directory path">
+                    <button id="go-path" class="btn btn-secondary" aria-label="Go to path">Go</button>
                 </div>
-                <div class="file-browser">
-                    <div class="file-header">
-                        <div class="col-name sortable" data-sort="name">
+                <div class="file-browser" role="grid" aria-label="File list">
+                    <div class="file-header" role="row">
+                        <div class="col-name sortable" data-sort="name" role="columnheader" aria-sort="ascending">
                             Name
-                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14">
+                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
                             </svg>
                         </div>
-                        <div class="col-size sortable" data-sort="size">
+                        <div class="col-size sortable" data-sort="size" role="columnheader">
                             Size
-                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14">
+                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
                             </svg>
                         </div>
-                        <div class="col-modified sortable" data-sort="date">
+                        <div class="col-modified sortable" data-sort="date" role="columnheader">
                             Modified
-                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14">
+                            <svg class="sort-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/>
                             </svg>
                         </div>
-                        <div class="col-actions"></div>
+                        <div class="col-actions" role="columnheader"></div>
                     </div>
-                    <div id="file-list" class="file-list">
+                    <div id="file-list" class="file-list" role="rowgroup">
                         <!-- Files will be listed here -->
                     </div>
                 </div>
                 <div class="file-status">
-                    <span id="file-count"></span>
+                    <span id="file-count" aria-live="polite"></span>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- File Info Popup -->
-    <div id="file-info-popup" class="file-info-popup hidden">
+    <div id="file-info-popup" class="file-info-popup hidden" role="complementary" aria-labelledby="file-info-name">
         <div class="file-info-header">
-            <svg class="file-info-icon" viewBox="0 0 24 24" width="20" height="20">
+            <svg class="file-info-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                 <path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
             </svg>
             <span id="file-info-name" class="file-info-name"></span>
-            <button class="file-info-close icon-btn" title="Close">
-                <svg viewBox="0 0 24 24" width="16" height="16">
+            <button class="file-info-close icon-btn" title="Close" aria-label="Close file info">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
                     <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                 </svg>
             </button>
@@ -258,14 +258,14 @@
             </div>
         </div>
         <div class="file-info-actions">
-            <button id="file-info-copy" class="btn btn-secondary btn-sm">
-                <svg viewBox="0 0 24 24" width="14" height="14">
+            <button id="file-info-copy" class="btn btn-secondary btn-sm" aria-label="Copy absolute file path">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
                 </svg>
                 Copy Path
             </button>
-            <button id="file-info-scratch" class="btn btn-secondary btn-sm">
-                <svg viewBox="0 0 24 24" width="14" height="14">
+            <button id="file-info-scratch" class="btn btn-secondary btn-sm" aria-label="Insert path to scratch pad">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
                 </svg>
                 To Scratch
@@ -274,49 +274,49 @@
     </div>
 
     <!-- Settings Modal -->
-    <div id="settings-modal" class="modal hidden">
+    <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
         <div class="modal-content modal-lg settings-modal">
             <div class="modal-header">
-                <h3>Settings</h3>
-                <button class="close-modal icon-btn" title="Close">
-                    <svg viewBox="0 0 24 24" width="18" height="18">
+                <h3 id="settings-modal-title">Settings</h3>
+                <button class="close-modal icon-btn" title="Close" aria-label="Close settings">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
             </div>
             <div class="modal-body">
                 <div class="settings-header">
-                    <div class="settings-tabs">
-                        <button class="settings-tab active" data-tab="ui">UI Colors</button>
-                        <button class="settings-tab" data-tab="terminal">Terminal Colors</button>
+                    <div class="settings-tabs" role="tablist">
+                        <button class="settings-tab active" data-tab="ui" role="tab" aria-selected="true" aria-controls="ui-settings-panel">UI Colors</button>
+                        <button class="settings-tab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="terminal-settings-panel">Terminal Colors</button>
                     </div>
                 </div>
 
                 <div class="settings-content">
                     <!-- UI Colors Tab -->
-                    <div class="settings-panel active" data-panel="ui">
+                    <div class="settings-panel active" data-panel="ui" id="ui-settings-panel" role="tabpanel" aria-labelledby="ui-settings-tab">
                         <div class="settings-section">
                             <h4>Background Colors</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>Primary</span>
+                                    <label for="ui-bgPrimary">Primary</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.bgPrimary">
-                                        <input type="text" data-setting-hex="ui.bgPrimary" maxlength="7">
+                                        <input type="color" id="ui-bgPrimary" data-setting="ui.bgPrimary" aria-label="Primary background color picker">
+                                        <input type="text" data-setting-hex="ui.bgPrimary" maxlength="7" aria-label="Primary background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Secondary</span>
+                                    <label for="ui-bgSecondary">Secondary</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.bgSecondary">
-                                        <input type="text" data-setting-hex="ui.bgSecondary" maxlength="7">
+                                        <input type="color" id="ui-bgSecondary" data-setting="ui.bgSecondary" aria-label="Secondary background color picker">
+                                        <input type="text" data-setting-hex="ui.bgSecondary" maxlength="7" aria-label="Secondary background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Tertiary</span>
+                                    <label for="ui-bgTertiary">Tertiary</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.bgTertiary">
-                                        <input type="text" data-setting-hex="ui.bgTertiary" maxlength="7">
+                                        <input type="color" id="ui-bgTertiary" data-setting="ui.bgTertiary" aria-label="Tertiary background color picker">
+                                        <input type="text" data-setting-hex="ui.bgTertiary" maxlength="7" aria-label="Tertiary background color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -325,24 +325,24 @@
                             <h4>Text Colors</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>Primary</span>
+                                    <label for="ui-textPrimary">Primary</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.textPrimary">
-                                        <input type="text" data-setting-hex="ui.textPrimary" maxlength="7">
+                                        <input type="color" id="ui-textPrimary" data-setting="ui.textPrimary" aria-label="Primary text color picker">
+                                        <input type="text" data-setting-hex="ui.textPrimary" maxlength="7" aria-label="Primary text color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Secondary</span>
+                                    <label for="ui-textSecondary">Secondary</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.textSecondary">
-                                        <input type="text" data-setting-hex="ui.textSecondary" maxlength="7">
+                                        <input type="color" id="ui-textSecondary" data-setting="ui.textSecondary" aria-label="Secondary text color picker">
+                                        <input type="text" data-setting-hex="ui.textSecondary" maxlength="7" aria-label="Secondary text color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Muted</span>
+                                    <label for="ui-textMuted">Muted</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.textMuted">
-                                        <input type="text" data-setting-hex="ui.textMuted" maxlength="7">
+                                        <input type="color" id="ui-textMuted" data-setting="ui.textMuted" aria-label="Muted text color picker">
+                                        <input type="text" data-setting-hex="ui.textMuted" maxlength="7" aria-label="Muted text color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -351,24 +351,24 @@
                             <h4>Accent & Border</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>Accent</span>
+                                    <label for="ui-accent">Accent</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.accent">
-                                        <input type="text" data-setting-hex="ui.accent" maxlength="7">
+                                        <input type="color" id="ui-accent" data-setting="ui.accent" aria-label="Accent color picker">
+                                        <input type="text" data-setting-hex="ui.accent" maxlength="7" aria-label="Accent color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Accent Hover</span>
+                                    <label for="ui-accentHover">Accent Hover</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.accentHover">
-                                        <input type="text" data-setting-hex="ui.accentHover" maxlength="7">
+                                        <input type="color" id="ui-accentHover" data-setting="ui.accentHover" aria-label="Accent hover color picker">
+                                        <input type="text" data-setting-hex="ui.accentHover" maxlength="7" aria-label="Accent hover color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>Border</span>
+                                    <label for="ui-border">Border</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="ui.border">
-                                        <input type="text" data-setting-hex="ui.border" maxlength="7">
+                                        <input type="color" id="ui-border" data-setting="ui.border" aria-label="Border color picker">
+                                        <input type="text" data-setting-hex="ui.border" maxlength="7" aria-label="Border color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -376,65 +376,65 @@
                     </div>
 
                     <!-- Terminal Colors Tab (Base24) -->
-                    <div class="settings-panel" data-panel="terminal">
+                    <div class="settings-panel" data-panel="terminal" id="terminal-settings-panel" role="tabpanel" aria-labelledby="terminal-settings-tab">
                         <p class="settings-note-inline">Colors apply to new sessions. Existing sessions keep their colors until restarted.</p>
                         <div class="settings-section">
                             <h4>Background & Foreground</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>base00 (Background)</span>
+                                    <label for="terminal-base00">base00 (Background)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base00">
-                                        <input type="text" data-setting-hex="terminal.base00" maxlength="7">
+                                        <input type="color" id="terminal-base00" data-setting="terminal.base00" aria-label="Terminal background color picker">
+                                        <input type="text" data-setting-hex="terminal.base00" maxlength="7" aria-label="Terminal background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base01 (Lighter BG)</span>
+                                    <label for="terminal-base01">base01 (Lighter BG)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base01">
-                                        <input type="text" data-setting-hex="terminal.base01" maxlength="7">
+                                        <input type="color" id="terminal-base01" data-setting="terminal.base01" aria-label="Terminal lighter background color picker">
+                                        <input type="text" data-setting-hex="terminal.base01" maxlength="7" aria-label="Terminal lighter background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base02 (Selection)</span>
+                                    <label for="terminal-base02">base02 (Selection)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base02">
-                                        <input type="text" data-setting-hex="terminal.base02" maxlength="7">
+                                        <input type="color" id="terminal-base02" data-setting="terminal.base02" aria-label="Terminal selection background color picker">
+                                        <input type="text" data-setting-hex="terminal.base02" maxlength="7" aria-label="Terminal selection background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base03 (Comments)</span>
+                                    <label for="terminal-base03">base03 (Comments)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base03">
-                                        <input type="text" data-setting-hex="terminal.base03" maxlength="7">
+                                        <input type="color" id="terminal-base03" data-setting="terminal.base03" aria-label="Terminal comments color picker">
+                                        <input type="text" data-setting-hex="terminal.base03" maxlength="7" aria-label="Terminal comments color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base04 (Dark FG)</span>
+                                    <label for="terminal-base04">base04 (Dark FG)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base04">
-                                        <input type="text" data-setting-hex="terminal.base04" maxlength="7">
+                                        <input type="color" id="terminal-base04" data-setting="terminal.base04" aria-label="Terminal dark foreground color picker">
+                                        <input type="text" data-setting-hex="terminal.base04" maxlength="7" aria-label="Terminal dark foreground color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base05 (Foreground)</span>
+                                    <label for="terminal-base05">base05 (Foreground)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base05">
-                                        <input type="text" data-setting-hex="terminal.base05" maxlength="7">
+                                        <input type="color" id="terminal-base05" data-setting="terminal.base05" aria-label="Terminal foreground color picker">
+                                        <input type="text" data-setting-hex="terminal.base05" maxlength="7" aria-label="Terminal foreground color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base06 (Light FG)</span>
+                                    <label for="terminal-base06">base06 (Light FG)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base06">
-                                        <input type="text" data-setting-hex="terminal.base06" maxlength="7">
+                                        <input type="color" id="terminal-base06" data-setting="terminal.base06" aria-label="Terminal light foreground color picker">
+                                        <input type="text" data-setting-hex="terminal.base06" maxlength="7" aria-label="Terminal light foreground color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base07 (Lightest)</span>
+                                    <label for="terminal-base07">base07 (Lightest)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base07">
-                                        <input type="text" data-setting-hex="terminal.base07" maxlength="7">
+                                        <input type="color" id="terminal-base07" data-setting="terminal.base07" aria-label="Terminal lightest foreground color picker">
+                                        <input type="text" data-setting-hex="terminal.base07" maxlength="7" aria-label="Terminal lightest foreground color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -443,59 +443,59 @@
                             <h4>Normal Colors</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>base08 (Red)</span>
+                                    <label for="terminal-base08">base08 (Red)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base08">
-                                        <input type="text" data-setting-hex="terminal.base08" maxlength="7">
+                                        <input type="color" id="terminal-base08" data-setting="terminal.base08" aria-label="Terminal red color picker">
+                                        <input type="text" data-setting-hex="terminal.base08" maxlength="7" aria-label="Terminal red color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base09 (Orange)</span>
+                                    <label for="terminal-base09">base09 (Orange)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base09">
-                                        <input type="text" data-setting-hex="terminal.base09" maxlength="7">
+                                        <input type="color" id="terminal-base09" data-setting="terminal.base09" aria-label="Terminal orange color picker">
+                                        <input type="text" data-setting-hex="terminal.base09" maxlength="7" aria-label="Terminal orange color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0A (Yellow)</span>
+                                    <label for="terminal-base0A">base0A (Yellow)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0A">
-                                        <input type="text" data-setting-hex="terminal.base0A" maxlength="7">
+                                        <input type="color" id="terminal-base0A" data-setting="terminal.base0A" aria-label="Terminal yellow color picker">
+                                        <input type="text" data-setting-hex="terminal.base0A" maxlength="7" aria-label="Terminal yellow color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0B (Green)</span>
+                                    <label for="terminal-base0B">base0B (Green)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0B">
-                                        <input type="text" data-setting-hex="terminal.base0B" maxlength="7">
+                                        <input type="color" id="terminal-base0B" data-setting="terminal.base0B" aria-label="Terminal green color picker">
+                                        <input type="text" data-setting-hex="terminal.base0B" maxlength="7" aria-label="Terminal green color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0C (Cyan)</span>
+                                    <label for="terminal-base0C">base0C (Cyan)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0C">
-                                        <input type="text" data-setting-hex="terminal.base0C" maxlength="7">
+                                        <input type="color" id="terminal-base0C" data-setting="terminal.base0C" aria-label="Terminal cyan color picker">
+                                        <input type="text" data-setting-hex="terminal.base0C" maxlength="7" aria-label="Terminal cyan color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0D (Blue)</span>
+                                    <label for="terminal-base0D">base0D (Blue)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0D">
-                                        <input type="text" data-setting-hex="terminal.base0D" maxlength="7">
+                                        <input type="color" id="terminal-base0D" data-setting="terminal.base0D" aria-label="Terminal blue color picker">
+                                        <input type="text" data-setting-hex="terminal.base0D" maxlength="7" aria-label="Terminal blue color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0E (Magenta)</span>
+                                    <label for="terminal-base0E">base0E (Magenta)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0E">
-                                        <input type="text" data-setting-hex="terminal.base0E" maxlength="7">
+                                        <input type="color" id="terminal-base0E" data-setting="terminal.base0E" aria-label="Terminal magenta color picker">
+                                        <input type="text" data-setting-hex="terminal.base0E" maxlength="7" aria-label="Terminal magenta color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base0F (Brown)</span>
+                                    <label for="terminal-base0F">base0F (Brown)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base0F">
-                                        <input type="text" data-setting-hex="terminal.base0F" maxlength="7">
+                                        <input type="color" id="terminal-base0F" data-setting="terminal.base0F" aria-label="Terminal brown color picker">
+                                        <input type="text" data-setting-hex="terminal.base0F" maxlength="7" aria-label="Terminal brown color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -504,59 +504,59 @@
                             <h4>Extended (Base24)</h4>
                             <div class="color-grid">
                                 <div class="color-input">
-                                    <span>base10 (Darker BG)</span>
+                                    <label for="terminal-base10">base10 (Darker BG)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base10">
-                                        <input type="text" data-setting-hex="terminal.base10" maxlength="7">
+                                        <input type="color" id="terminal-base10" data-setting="terminal.base10" aria-label="Terminal darker background color picker">
+                                        <input type="text" data-setting-hex="terminal.base10" maxlength="7" aria-label="Terminal darker background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base11 (Darkest BG)</span>
+                                    <label for="terminal-base11">base11 (Darkest BG)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base11">
-                                        <input type="text" data-setting-hex="terminal.base11" maxlength="7">
+                                        <input type="color" id="terminal-base11" data-setting="terminal.base11" aria-label="Terminal darkest background color picker">
+                                        <input type="text" data-setting-hex="terminal.base11" maxlength="7" aria-label="Terminal darkest background color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base12 (Bright Red)</span>
+                                    <label for="terminal-base12">base12 (Bright Red)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base12">
-                                        <input type="text" data-setting-hex="terminal.base12" maxlength="7">
+                                        <input type="color" id="terminal-base12" data-setting="terminal.base12" aria-label="Terminal bright red color picker">
+                                        <input type="text" data-setting-hex="terminal.base12" maxlength="7" aria-label="Terminal bright red color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base13 (Bright Yellow)</span>
+                                    <label for="terminal-base13">base13 (Bright Yellow)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base13">
-                                        <input type="text" data-setting-hex="terminal.base13" maxlength="7">
+                                        <input type="color" id="terminal-base13" data-setting="terminal.base13" aria-label="Terminal bright yellow color picker">
+                                        <input type="text" data-setting-hex="terminal.base13" maxlength="7" aria-label="Terminal bright yellow color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base14 (Bright Green)</span>
+                                    <label for="terminal-base14">base14 (Bright Green)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base14">
-                                        <input type="text" data-setting-hex="terminal.base14" maxlength="7">
+                                        <input type="color" id="terminal-base14" data-setting="terminal.base14" aria-label="Terminal bright green color picker">
+                                        <input type="text" data-setting-hex="terminal.base14" maxlength="7" aria-label="Terminal bright green color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base15 (Bright Cyan)</span>
+                                    <label for="terminal-base15">base15 (Bright Cyan)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base15">
-                                        <input type="text" data-setting-hex="terminal.base15" maxlength="7">
+                                        <input type="color" id="terminal-base15" data-setting="terminal.base15" aria-label="Terminal bright cyan color picker">
+                                        <input type="text" data-setting-hex="terminal.base15" maxlength="7" aria-label="Terminal bright cyan color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base16 (Bright Blue)</span>
+                                    <label for="terminal-base16">base16 (Bright Blue)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base16">
-                                        <input type="text" data-setting-hex="terminal.base16" maxlength="7">
+                                        <input type="color" id="terminal-base16" data-setting="terminal.base16" aria-label="Terminal bright blue color picker">
+                                        <input type="text" data-setting-hex="terminal.base16" maxlength="7" aria-label="Terminal bright blue color hex code">
                                     </div>
                                 </div>
                                 <div class="color-input">
-                                    <span>base17 (Bright Magenta)</span>
+                                    <label for="terminal-base17">base17 (Bright Magenta)</label>
                                     <div class="color-input-row">
-                                        <input type="color" data-setting="terminal.base17">
-                                        <input type="text" data-setting-hex="terminal.base17" maxlength="7">
+                                        <input type="color" id="terminal-base17" data-setting="terminal.base17" aria-label="Terminal bright magenta color picker">
+                                        <input type="text" data-setting-hex="terminal.base17" maxlength="7" aria-label="Terminal bright magenta color hex code">
                                     </div>
                                 </div>
                             </div>
@@ -566,11 +566,11 @@
 
                 <div class="settings-footer">
                     <div class="settings-actions">
-                        <div class="btn-group">
+                        <div class="btn-group" role="group" aria-label="Configuration import/export">
                             <button id="settings-import" class="btn btn-secondary">Paste</button>
                             <button id="settings-export" class="btn btn-secondary">Copy</button>
                         </div>
-                        <div class="btn-group">
+                        <div class="btn-group" role="group" aria-label="Settings actions">
                             <button id="settings-reset" class="btn btn-secondary">Reset</button>
                             <button id="settings-save" class="btn btn-primary">Save</button>
                         </div>
@@ -581,12 +581,12 @@
     </div>
 
     <!-- Keybinds Modal -->
-    <div id="keybinds-modal" class="modal hidden">
+    <div id="keybinds-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="keybinds-modal-title">
         <div class="modal-content modal-sm keybinds-modal">
             <div class="modal-header">
-                <h3>Keyboard Shortcuts</h3>
-                <button class="close-modal icon-btn" title="Close">
-                    <svg viewBox="0 0 24 24" width="18" height="18">
+                <h3 id="keybinds-modal-title">Keyboard Shortcuts</h3>
+                <button class="close-modal icon-btn" title="Close" aria-label="Close shortcuts">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                         <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                     </svg>
                 </button>
