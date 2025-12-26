@@ -47,6 +47,8 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+// SECTION: TYPES
+
 // Session represents a terminal session backed by tmux + ttyd
 type Session struct {
 	ID             string    `json:"id"`
@@ -109,6 +111,8 @@ type TerminalColors struct {
 	Base16 string `json:"base16"` // Bright Blue
 	Base17 string `json:"base17"` // Bright Magenta
 }
+
+// SECTION: SETTINGS
 
 // DefaultSettings returns the default settings
 func DefaultSettings() *Settings {
@@ -336,6 +340,8 @@ var displayEnvVars = []string{
 	"DISPLAY",
 	"WAYLAND_DISPLAY",
 }
+
+// SECTION: SESSIONS
 
 // SessionManager handles multiple ttyd sessions
 type SessionManager struct {
@@ -1057,6 +1063,8 @@ type UIState struct {
 	CustomNames      []string  `json:"customNames"` // session IDs with custom names
 }
 
+// SECTION: SERVER
+
 // Server holds the HTTP server and session manager
 type Server struct {
 	manager      *SessionManager
@@ -1101,6 +1109,8 @@ func NewServer(manager *SessionManager, uploadDir string) *Server {
 	}
 	return s
 }
+
+// SECTION: API
 
 // handleInfo returns server configuration info
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -1650,6 +1660,8 @@ func (s *Server) handleSessionKeys(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+// SECTION: FILES
+
 // handleUpload handles file uploads to the server
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1888,6 +1900,8 @@ const ttydBodyScript = `<script>
     }, 100);
 })();
 </script></body>`
+
+// SECTION: TERMINAL
 
 // handleTerminalProxy proxies all HTTP requests to the appropriate ttyd instance
 // Path format: /t/{sessionID}/...

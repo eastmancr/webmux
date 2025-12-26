@@ -152,6 +152,11 @@ body {
     min-width: 0;
 }
 
+/* Ensure sidebar panel is visible in mobile mode */
+body.mobile-mode .sidebar-panel {
+    display: flex;
+}
+
 .sidebar-header {
     display: flex;
     align-items: center;
@@ -2723,16 +2728,21 @@ body.server-disconnected .sidebar-actions .btn {
     font-weight: 500;
 }
 
-/* Mobile: keybar positioned above keyboard */
+/* Hide normal keybar on mobile - use mobile bottom toolbar instead */
+body.mobile-mode .keybar {
+    display: none !important;
+}
+
+/* Mobile: keybar positioned above keyboard (for non-mobile-mode small screens) */
 @media (max-width: 768px) {
-    .keybar {
+    body:not(.mobile-mode) .keybar {
         position: sticky;
         bottom: 0;
         z-index: 10;
         padding: 8px 12px;
     }
 
-    .keybar-btn {
+    body:not(.mobile-mode) .keybar-btn {
         padding: 10px 14px;
         font-size: 13px;
         min-height: 40px;
@@ -2746,6 +2756,791 @@ body.server-disconnected .sidebar-actions .btn {
         font-size: 13px;
         min-height: 40px;
     }
+
+    /* Ensure terminals are reasonably sized on touch devices */
+    .terminal-container {
+        min-width: 200px;
+        min-height: 150px;
+    }
+
+    .terminal-container iframe {
+        min-width: 200px;
+        min-height: 150px;
+    }
+}
+
+/* ============ Mobile UI ============ */
+
+/* Mobile scrim overlay */
+.mobile-scrim {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 300;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+
+body.mobile-drawer-open .mobile-scrim {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Debug: Make sure sidebar is above scrim */
+body.mobile-mode .sidebar {
+    z-index: 401;
+}
+
+
+
+body.mobile-mode .sidebar {
+    /* Ensure sidebar is visible and properly styled in mobile mode */
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+}
+
+body.mobile-mode .sidebar .sidebar-icons {
+    position: static;
+    width: 48px;
+    min-width: 48px;
+    border: none;
+    border-radius: 0;
+    padding: 12px 0;
+    box-shadow: none;
+    animation: none;
+    background: var(--bg-primary);
+    border-right: 1px solid var(--border);
+}
+
+/* In mobile mode, sidebar is never collapsed - always show full sidebar */
+body.mobile-mode .sidebar.collapsed {
+    width: 280px !important;
+    min-width: 280px !important;
+    border-right: 1px solid var(--border) !important;
+    transform: translateX(-100%);
+}
+
+body.mobile-mode .sidebar.collapsed .sidebar-icons {
+    position: static;
+    left: 0;
+    top: 0;
+    border: none;
+    border-radius: 0;
+    padding: 12px 0;
+    box-shadow: none;
+    animation: none;
+    opacity: 1;
+}
+
+body.mobile-mode .sidebar.collapsed .sidebar-icons-spacer,
+body.mobile-mode .sidebar.collapsed #open-keybinds {
+    display: block;
+}
+
+/* Mobile terminal container */
+body.mobile-mode #terminal-container {
+    margin-left: 0;
+}
+
+/* Mobile terminal iframes - make content larger and more readable */
+body.mobile-mode .terminal-container iframe {
+    /* Increase minimum size to prevent tiny terminals on mobile */
+    min-width: 200px;
+    min-height: 150px;
+    /* Ensure proper scaling on mobile */
+    transform: scale(1);
+    transform-origin: 0 0;
+}
+
+/* Mobile terminal font scaling */
+body.mobile-mode .terminal-container {
+    /* Ensure terminal containers have reasonable minimum sizes */
+    min-width: 200px;
+    min-height: 150px;
+}
+
+/* Adjust grid layouts for mobile - give more space to terminals */
+body.mobile-mode #terminals.layout-horizontal .terminal-container.pane-0,
+body.mobile-mode #terminals.layout-horizontal .terminal-container.pane-1 {
+    min-width: 200px;
+}
+
+body.mobile-mode #terminals.layout-vertical .terminal-container.pane-0,
+body.mobile-mode #terminals.layout-vertical .terminal-container.pane-1 {
+    min-height: 150px;
+}
+
+body.mobile-mode #terminals.layout-grid .terminal-container {
+    min-width: 200px;
+    min-height: 150px;
+}
+
+/* Mobile split adjustments - prevent overly small panes */
+body.mobile-mode .split-divider {
+    /* Make dividers slightly thicker on mobile for easier touch */
+    width: calc(var(--split-gap) + 2px);
+    height: calc(var(--split-gap) + 2px);
+}
+
+body.mobile-mode .split-divider-h {
+    width: calc(var(--split-gap) + 2px);
+}
+
+body.mobile-mode .split-divider-v {
+    height: calc(var(--split-gap) + 2px);
+}
+
+/* Mobile session actions - always visible */
+body.mobile-mode .session-item .actions,
+body.mobile-mode .group-header .actions {
+    display: flex !important;
+    position: static;
+    background: transparent;
+    padding: 0;
+    border-radius: 0;
+    right: auto;
+    margin-top: 4px;
+    justify-content: flex-end;
+}
+
+body.mobile-mode .session-item .action-btn,
+body.mobile-mode .group-header .action-btn {
+    padding: 8px;
+    min-width: 40px;
+    min-height: 40px;
+}
+
+/* Mobile split dividers - larger hit areas */
+body.mobile-mode .split-divider-h::before {
+    left: -12px;
+    right: -12px;
+}
+
+body.mobile-mode .split-divider-v::before {
+    top: -12px;
+    bottom: -12px;
+}
+
+/* Mobile bottom toolbar */
+.mobile-bottom-toolbar {
+    display: none;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 8px 12px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+    gap: 8px;
+    align-items: center;
+    min-height: 60px;
+    z-index: 200;
+}
+
+body.mobile-mode .mobile-bottom-toolbar {
+    display: flex;
+}
+
+/* Add padding to terminal container to account for fixed bottom toolbar */
+body.mobile-mode #terminal-container {
+    padding-bottom: 70px;
+}
+
+.mobile-toolbar-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.mobile-toolbar-left {
+    flex: 0 0 auto;
+}
+
+.mobile-toolbar-center {
+    flex: 1;
+    overflow: hidden;
+}
+
+.mobile-toolbar-right {
+    flex: 0 0 auto;
+}
+
+.mobile-toolbar-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    white-space: nowrap;
+    min-height: 44px;
+}
+
+.mobile-toolbar-btn:hover {
+    background: var(--border);
+    border-color: var(--accent);
+}
+
+.mobile-toolbar-btn:active {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+
+.mobile-session-name {
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.mobile-dropdown-icon {
+    flex-shrink: 0;
+    transition: transform 0.2s ease;
+    /* Arrow points left (toward sidebar) by default */
+    transform: rotate(90deg);
+}
+
+body.mobile-drawer-open .mobile-dropdown-icon {
+    /* Arrow points right (away from sidebar) when open */
+    transform: rotate(-90deg);
+}
+
+/* Mobile keybar in bottom toolbar */
+.mobile-keybar-scroll {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 4px 0;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+}
+
+.mobile-keybar-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.mobile-keybar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    white-space: nowrap;
+    min-height: 36px;
+    flex-shrink: 0;
+}
+
+.mobile-keybar-btn:hover {
+    background: var(--border);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.mobile-keybar-btn:active {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
+}
+
+.mobile-keybar-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    min-height: 36px;
+    flex-shrink: 0;
+}
+
+.mobile-keybar-more:hover {
+    background: var(--border);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* Mobile modals - full width/height */
+body.mobile-mode .modal {
+    align-items: flex-end;
+    padding: 0;
+}
+
+body.mobile-mode .modal-content {
+    width: 100% !important;
+    max-width: 100% !important;
+    height: 90vh;
+    max-height: 90vh;
+    border-radius: 12px 12px 0 0;
+    margin: 0;
+    overflow: hidden;
+}
+
+body.mobile-mode .modal-content.modal-lg {
+    max-width: 100% !important;
+}
+
+body.mobile-mode .modal-content.modal-sm {
+    max-width: 100% !important;
+}
+
+body.mobile-mode .modal-body {
+    overflow-x: hidden;
+    overflow-y: auto;
+}
+
+/* Fix file browser width on mobile */
+body.mobile-mode .file-browser {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+body.mobile-mode .file-list {
+    width: 100%;
+}
+
+body.mobile-mode .file-header {
+    width: 100%;
+    padding: 8px 12px;
+}
+
+/* Mobile file items - prevent wrapping */
+body.mobile-mode .file-item {
+    width: 100%;
+    flex-wrap: nowrap;
+    gap: 8px;
+    padding: 10px 12px;
+}
+
+/* Name column - flexible but with min-width */
+body.mobile-mode .file-item .name {
+    flex: 1 1 0;
+    min-width: 80px;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+body.mobile-mode .file-header .col-name {
+    flex: 1 1 0;
+    min-width: 80px;
+}
+
+/* Size column - fixed width, right-aligned */
+body.mobile-mode .file-item .size {
+    flex: 0 0 50px;
+    width: 50px;
+    font-size: 11px;
+    text-align: right;
+}
+
+body.mobile-mode .file-header .col-size {
+    flex: 0 0 50px;
+    width: 50px;
+    justify-content: flex-end;
+}
+
+/* Modified column - fixed width, right-aligned */
+body.mobile-mode .file-item .modified {
+    flex: 0 0 65px;
+    width: 65px;
+    font-size: 11px;
+    text-align: right;
+}
+
+body.mobile-mode .file-header .col-modified {
+    flex: 0 0 65px;
+    width: 65px;
+    justify-content: flex-end;
+}
+
+/* Actions column - fixed width */
+body.mobile-mode .file-item .actions {
+    flex: 0 0 56px;
+    width: 56px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 2px;
+}
+
+body.mobile-mode .file-header .col-actions {
+    flex: 0 0 56px;
+    width: 56px;
+}
+
+/* Show actions on mobile - always visible */
+body.mobile-mode .file-item .action-btn {
+    opacity: 1;
+    min-width: 26px;
+    min-height: 26px;
+    padding: 4px;
+}
+
+body.mobile-mode .file-item .action-btn.mark-btn {
+    opacity: 1;
+}
+
+body.mobile-mode .file-item .action-btn.download-btn {
+    opacity: 1;
+}
+
+/* Path bar on mobile */
+body.mobile-mode .path-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+body.mobile-mode .path-bar input {
+    min-width: 0;
+    flex: 1 1 200px;
+    font-size: 14px;
+}
+
+body.mobile-mode .path-bar .btn {
+    min-height: 40px;
+}
+
+/* Upload modal mobile fixes */
+body.mobile-mode #upload-modal .modal-body {
+    padding: 16px;
+}
+
+body.mobile-mode #upload-modal .drop-zone {
+    padding: 24px 16px;
+}
+
+body.mobile-mode #upload-modal .upload-options {
+    width: 100%;
+}
+
+body.mobile-mode #upload-modal .upload-options label {
+    width: 100%;
+}
+
+body.mobile-mode #upload-modal .upload-options input {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+/* Mobile modal buttons - larger tap targets */
+body.mobile-mode .btn {
+    min-height: 44px;
+    padding: 12px 16px;
+    font-size: 16px;
+}
+
+body.mobile-mode .action-btn,
+body.mobile-mode .icon-btn {
+    min-width: 44px;
+    min-height: 44px;
+}
+
+/* Mobile file browser */
+body.mobile-mode .file-item {
+    padding: 12px;
+    min-height: 44px;
+}
+
+body.mobile-mode .file-header {
+    padding: 12px;
+}
+
+body.mobile-mode .file-header .sortable {
+    min-height: 44px;
+    padding: 8px;
+}
+
+/* Hide desktop sidekick on mobile - use mobile marked bar instead */
+body.mobile-mode .marked-sidekick {
+    display: none !important;
+}
+
+/* Mobile Marked Files Bar - sticky at bottom of modal body */
+.mobile-marked-bar {
+    display: none;
+}
+
+body.mobile-mode .mobile-marked-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    position: sticky;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    margin: 0 -20px -20px -20px;
+    width: calc(100% + 40px);
+}
+
+body.mobile-mode .mobile-marked-bar.hidden {
+    display: none;
+}
+
+.mobile-marked-count {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+    flex-shrink: 0;
+}
+
+.mobile-marked-count:hover {
+    border-color: var(--accent);
+}
+
+.mobile-marked-count .count-number {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+.mobile-marked-count .expand-icon {
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+}
+
+.mobile-marked-count.expanded .expand-icon {
+    transform: rotate(180deg);
+}
+
+.mobile-download-btn {
+    flex: 1;
+    justify-content: center;
+    min-height: 40px;
+}
+
+/* Mobile Marked Files Drawer */
+.mobile-marked-drawer {
+    display: none;
+}
+
+body.mobile-mode .mobile-marked-drawer {
+    position: absolute;
+    bottom: 56px;
+    left: 20px;
+    right: 20px;
+    width: auto;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.3);
+    z-index: 9;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+body.mobile-mode .mobile-marked-drawer.hidden {
+    display: none;
+}
+
+body.mobile-mode .mobile-marked-drawer.visible {
+    display: flex;
+}
+
+.mobile-marked-drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+}
+
+.mobile-marked-drawer-header h4 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.mobile-marked-list {
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px;
+    max-height: 160px;
+}
+
+.mobile-marked-list .marked-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.mobile-marked-list .marked-item:active {
+    background: var(--bg-tertiary);
+}
+
+.mobile-marked-list .marked-item .icon {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    color: var(--text-muted);
+}
+
+.mobile-marked-list .marked-item.directory .icon {
+    color: var(--accent);
+}
+
+.mobile-marked-list .marked-item .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mobile-marked-list .marked-item .unmark-btn {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: 4px;
+}
+
+.mobile-marked-list .marked-item .unmark-btn:active {
+    background: var(--bg-tertiary);
+    color: var(--danger);
+}
+
+/* Adjust modal body positioning for mobile */
+body.mobile-mode #download-modal .modal-content {
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+}
+
+body.mobile-mode #download-modal .modal-body {
+    flex: 1;
+    overflow-y: auto;
+    position: relative;
+}
+
+/* Mobile marked files toggle button - hidden on mobile since sidekick is always visible */
+.mobile-marked-toggle {
+    display: none;
+}
+
+/* Hide desktop elements in mobile mode */
+body.mobile-mode .sidebar-icons-spacer {
+    display: block !important;
+}
+
+/* Responsive adjustments for small screens */
+@media (max-width: 480px) {
+    body.mobile-mode .sidebar {
+        width: 100%;
+    }
+    
+    body.mobile-mode .modal-content {
+        height: 100vh;
+        max-height: 100vh;
+    }
+
+    /* Extra adjustments for very small mobile screens */
+    body.mobile-mode .terminal-container {
+        min-width: 150px;
+        min-height: 120px;
+    }
+
+    body.mobile-mode .terminal-container iframe {
+        min-width: 150px;
+        min-height: 120px;
+    }
+
+    /* Make terminal panes larger on small screens */
+    body.mobile-mode #terminals.layout-grid .terminal-container {
+        min-width: 150px;
+        min-height: 120px;
+    }
+}
+
+/* ============ MOBILE SIDEBAR STYLES (Must come last to override) ============ */
+
+/* Mobile sidebar drawer - override all other sidebar styles */
+body.mobile-mode .sidebar {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    bottom: 0 !important;
+    width: 280px !important;
+    min-width: 280px !important;
+    z-index: 401 !important;
+    transform: translateX(-100%) !important;
+    transition: transform 0.3s ease !important;
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3) !important;
+    background: var(--bg-secondary) !important;
+    border-right: 1px solid var(--border) !important;
+    display: flex !important;
+}
+
+/* When drawer is open, show the sidebar */
+body.mobile-mode.mobile-drawer-open .sidebar {
+    transform: translateX(0) !important;
+}
+
+/* Override collapsed state in mobile mode */
+body.mobile-mode .sidebar.collapsed {
+    width: 280px !important;
+    min-width: 280px !important;
+    border-right: 1px solid var(--border) !important;
+    transform: translateX(-100%) !important;
+    display: flex !important;
+}
+
+body.mobile-mode.mobile-drawer-open .sidebar.collapsed {
+    transform: translateX(0) !important;
+}
+
+/* Ensure sidebar panel is visible */
+body.mobile-mode .sidebar-panel {
+    display: flex !important;
+    flex: 1 !important;
 }
 
 /* Responsive */

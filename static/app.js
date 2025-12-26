@@ -16,6 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+// SECTION: CORE
+
 // Terminal Multiplexer Application with Split Pane Support
 
 class TerminalMultiplexer {
@@ -55,6 +57,22 @@ class TerminalMultiplexer {
 
         // Base path for proxy support (detected from current URL)
         this.basePath = this.detectBasePath();
+
+        // Mobile mode detection
+        this.mobileMode = false;
+        this.mobileModeQuery = window.matchMedia('(max-width: 768px)');
+        this.coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+
+        // Mobile swipe navigation state
+        this.swipeState = {
+            isTracking: false,
+            startX: 0,
+            startY: 0,
+            currentX: 0,
+            currentY: 0,
+            threshold: 50, // Minimum horizontal distance for swipe
+            maxVerticalDeviation: 30 // Maximum vertical movement allowed
+        };
 
         this.init();
     }
@@ -96,6 +114,12 @@ class TerminalMultiplexer {
         this.bindEvents();
         this.setupTerminalDragTarget();
 
+        // Setup mobile mode detection
+        this.setupMobileModeDetection();
+
+        // Setup mobile swipe navigation
+        this.setupMobileSwipeNavigation();
+
         // Check server connection first
         const connected = await this.checkServerConnection();
         this.setServerConnected(connected);
@@ -135,6 +159,326 @@ class TerminalMultiplexer {
     startSessionHealthCheck() {
         // Check for dead sessions every 500ms
         setInterval(() => this.checkSessionHealth(), 500);
+    }
+
+    // SECTION: MOBILE
+
+    // ============ Mobile Mode Detection ============
+
+    setupMobileModeDetection() {
+        // Initial check
+        this.updateMobileMode();
+
+        // Listen for changes in media queries
+        this.mobileModeQuery.addEventListener('change', () => this.updateMobileMode());
+        this.coarsePointerQuery.addEventListener('change', () => this.updateMobileMode());
+    }
+
+    updateMobileMode() {
+        const isMobileViewport = this.mobileModeQuery.matches;
+        const hasCoarsePointer = this.coarsePointerQuery.matches;
+        const wasMobileMode = this.mobileMode;
+
+        // Mobile mode is activated when either condition is true
+        this.mobileMode = isMobileViewport || hasCoarsePointer;
+
+        // Update body class for CSS styling
+        document.body.classList.toggle('mobile-mode', this.mobileMode);
+
+        // Handle mobile mode transitions
+        if (this.mobileMode && !wasMobileMode) {
+            this.enterMobileMode();
+        } else if (!this.mobileMode && wasMobileMode) {
+            this.exitMobileMode();
+        }
+    }
+
+    enterMobileMode() {
+        console.log('[webmux] Entering mobile mode');
+        // Update mobile toolbar visibility
+        this.updateMobileToolbar();
+    }
+
+    exitMobileMode() {
+        console.log('[webmux] Exiting mobile mode');
+        // Clean up mobile-specific state
+        this.closeMobileDrawer();
+    }
+
+    // ============ Mobile Drawer ============
+
+    openMobileDrawer() {
+        document.body.classList.add('mobile-drawer-open');
+        // Create scrim if it doesn't exist
+        this.ensureMobileScrim();
+    }
+
+    closeMobileDrawer() {
+        document.body.classList.remove('mobile-drawer-open');
+        this.removeMobileScrim();
+    }
+
+    toggleMobileDrawer() {
+        if (document.body.classList.contains('mobile-drawer-open')) {
+            this.closeMobileDrawer();
+        } else {
+            this.openMobileDrawer();
+        }
+    }
+
+    ensureMobileScrim() {
+        if (!document.getElementById('mobile-scrim')) {
+            const scrim = document.createElement('div');
+            scrim.id = 'mobile-scrim';
+            scrim.className = 'mobile-scrim';
+            scrim.addEventListener('click', () => this.closeMobileDrawer());
+            document.body.appendChild(scrim);
+        }
+    }
+
+    removeMobileScrim() {
+        const scrim = document.getElementById('mobile-scrim');
+        if (scrim) {
+            scrim.remove();
+        }
+    }
+
+    // ============ Mobile Toolbar ============
+
+    updateMobileToolbar() {
+        if (!this.mobileMode) {
+            // Hide mobile toolbar when not in mobile mode
+            if (this.mobileBottomToolbar) {
+                this.mobileBottomToolbar.classList.add('hidden');
+            }
+            return;
+        }
+
+        // Always show mobile toolbar in mobile mode
+        if (this.mobileBottomToolbar) {
+            this.mobileBottomToolbar.classList.remove('hidden');
+        }
+
+        const activeGroup = this.groups.get(this.activeGroupId);
+        if (activeGroup && this.mobileSessionName) {
+            // Update session name display
+            if (activeGroup.sessionIds.length === 1) {
+                const session = this.sessions.get(activeGroup.sessionIds[0]);
+                this.mobileSessionName.textContent = session ? session.name : 'Terminal';
+            } else {
+                this.mobileSessionName.textContent = activeGroup.name || `Split (${activeGroup.sessionIds.length})`;
+            }
+        } else if (this.mobileSessionName) {
+            // No active session
+            this.mobileSessionName.textContent = 'Sessions';
+        }
+    }
+
+    showMobileSessionPicker() {
+        // Open the mobile drawer to show the session list
+        this.openMobileDrawer();
+    }
+
+    // ============ Mobile Swipe Navigation ============
+
+    setupMobileSwipeNavigation() {
+        // Only setup swipe navigation if we have the mobile toolbar
+        if (!this.mobileBottomToolbar) return;
+
+        // Track touch events on the mobile toolbar
+        this.mobileBottomToolbar.addEventListener('touchstart', (e) => this.handleSwipeStart(e), { passive: true });
+        this.mobileBottomToolbar.addEventListener('touchmove', (e) => this.handleSwipeMove(e), { passive: true });
+        this.mobileBottomToolbar.addEventListener('touchend', (e) => this.handleSwipeEnd(e));
+
+        // Also track mouse events for testing on desktop
+        this.mobileBottomToolbar.addEventListener('mousedown', (e) => this.handleSwipeStart(e));
+        document.addEventListener('mousemove', (e) => this.handleSwipeMove(e));
+        document.addEventListener('mouseup', (e) => this.handleSwipeEnd(e));
+    }
+
+    handleSwipeStart(e) {
+        if (!this.mobileMode || this.groupOrder.length <= 1) return;
+
+        this.swipeState.isTracking = true;
+        this.swipeState.startX = this.getClientX(e);
+        this.swipeState.startY = this.getClientY(e);
+        this.swipeState.currentX = this.swipeState.startX;
+        this.swipeState.currentY = this.swipeState.startY;
+    }
+
+    handleSwipeMove(e) {
+        if (!this.swipeState.isTracking) return;
+
+        this.swipeState.currentX = this.getClientX(e);
+        this.swipeState.currentY = this.getClientY(e);
+    }
+
+    handleSwipeEnd(e) {
+        if (!this.swipeState.isTracking) return;
+
+        const deltaX = this.swipeState.currentX - this.swipeState.startX;
+        const deltaY = Math.abs(this.swipeState.currentY - this.swipeState.startY);
+
+        this.swipeState.isTracking = false;
+
+        // Check if this is a valid horizontal swipe
+        if (Math.abs(deltaX) >= this.swipeState.threshold && deltaY <= this.swipeState.maxVerticalDeviation) {
+            if (deltaX > 0) {
+                // Swipe right - previous group
+                this.navigateGroup(-1);
+            } else {
+                // Swipe left - next group
+                this.navigateGroup(1);
+            }
+        }
+    }
+
+    getClientX(e) {
+        if (e.touches && e.touches.length > 0) {
+            return e.touches[0].clientX;
+        }
+        return e.clientX;
+    }
+
+    getClientY(e) {
+        if (e.touches && e.touches.length > 0) {
+            return e.touches[0].clientY;
+        }
+        return e.clientY;
+    }
+
+    navigateGroup(direction) {
+        if (this.groupOrder.length <= 1) return;
+
+        const currentIndex = this.groupOrder.indexOf(this.activeGroupId);
+        if (currentIndex === -1) return;
+
+        let newIndex = currentIndex + direction;
+
+        // Wrap around if needed
+        if (newIndex < 0) {
+            newIndex = this.groupOrder.length - 1;
+        } else if (newIndex >= this.groupOrder.length) {
+            newIndex = 0;
+        }
+
+        const newGroupId = this.groupOrder[newIndex];
+        if (newGroupId && this.groups.has(newGroupId)) {
+            this.activateGroup(newGroupId);
+            
+            // Show brief feedback about the group switch
+            this.showGroupSwitchFeedback(newGroupId);
+        }
+    }
+
+    showGroupSwitchFeedback(groupId) {
+        const group = this.groups.get(groupId);
+        if (!group) return;
+
+        // Create a temporary toast notification
+        const toast = document.createElement('div');
+        toast.className = 'toast toast-info';
+        toast.innerHTML = `
+            <svg class="toast-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+            </svg>
+            <span class="toast-message">Switched to: ${this.escapeHtml(group.name)}</span>
+        `;
+
+        const container = document.getElementById('toast-container');
+        if (container) {
+            container.appendChild(toast);
+            
+            // Auto-remove after 2 seconds
+            setTimeout(() => {
+                toast.classList.add('toast-out');
+                setTimeout(() => toast.remove(), 200);
+            }, 2000);
+        }
+    }
+
+    // ============ Mobile Marked Files ============
+
+    toggleMobileMarkedDrawer() {
+        if (!this.mobileMode) return;
+
+        this.mobileMarkedDrawerOpen = !this.mobileMarkedDrawerOpen;
+        
+        if (this.mobileMarkedDrawer) {
+            this.mobileMarkedDrawer.classList.toggle('visible', this.mobileMarkedDrawerOpen);
+            this.mobileMarkedDrawer.classList.toggle('hidden', !this.mobileMarkedDrawerOpen);
+        }
+        if (this.mobileMarkedCount) {
+            this.mobileMarkedCount.classList.toggle('expanded', this.mobileMarkedDrawerOpen);
+        }
+    }
+
+    updateMobileMarkedUI() {
+        if (!this.mobileMode) return;
+
+        const hasMarkedFiles = this.markedFiles.length > 0;
+        const downloadModalOpen = !this.downloadModal.classList.contains('hidden');
+
+        // Show/hide mobile marked bar
+        if (this.mobileMarkedBar) {
+            this.mobileMarkedBar.classList.toggle('hidden', !hasMarkedFiles || !downloadModalOpen);
+        }
+
+        // Update count display
+        if (this.mobileMarkedCount) {
+            const countNumber = this.mobileMarkedCount.querySelector('.count-number');
+            if (countNumber) {
+                countNumber.textContent = this.markedFiles.length.toString();
+            }
+        }
+
+        // Update mobile marked list
+        this.renderMobileMarkedList();
+
+        // Close drawer if no files left
+        if (!hasMarkedFiles && this.mobileMarkedDrawerOpen) {
+            this.mobileMarkedDrawerOpen = false;
+            if (this.mobileMarkedDrawer) {
+                this.mobileMarkedDrawer.classList.remove('visible');
+                this.mobileMarkedDrawer.classList.add('hidden');
+            }
+            if (this.mobileMarkedCount) {
+                this.mobileMarkedCount.classList.remove('expanded');
+            }
+        }
+    }
+
+    renderMobileMarkedList() {
+        if (!this.mobileMarkedList) return;
+
+        this.mobileMarkedList.innerHTML = this.markedFiles.map(file => {
+            const icon = file.isDir
+                ? '<path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>'
+                : '<path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>';
+            return `
+            <div class="marked-item ${file.isDir ? 'directory' : ''}" data-path="${this.escapeHtml(file.path)}">
+                <svg class="icon" viewBox="0 0 24 24" width="16" height="16">
+                    ${icon}
+                </svg>
+                <span class="name" title="${this.escapeHtml(file.path)}">${this.escapeHtml(file.name)}</span>
+                <button class="unmark-btn" title="Remove" data-path="${this.escapeHtml(file.path)}">
+                    <svg viewBox="0 0 24 24" width="14" height="14">
+                        <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
+            </div>
+        `}).join('');
+
+        // Bind unmark events
+        this.mobileMarkedList.querySelectorAll('.unmark-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const path = btn.dataset.path;
+                if (path) {
+                    this.unmarkFile(path);
+                }
+            });
+        });
     }
 
     // ============ Server Connection ============
@@ -259,7 +603,9 @@ class TerminalMultiplexer {
         }, 300);
     }
 
-    // ============ State Persistence ============
+    // SECTION: API
+
+    // ============ Server Connection ============
 
     startAutoSave() {
         // Save state every 5 seconds
@@ -526,6 +872,15 @@ class TerminalMultiplexer {
         this.downloadAllMarkedBtn = document.getElementById('download-all-marked');
         this.markedFiles = [];
         this.markedEventSource = null;
+        
+        // Mobile marked files UI
+        this.mobileMarkedBar = document.getElementById('mobile-marked-bar');
+        this.mobileMarkedCount = document.getElementById('mobile-marked-count');
+        this.mobileDownloadAll = document.getElementById('mobile-download-all');
+        this.mobileMarkedDrawer = document.getElementById('mobile-marked-drawer');
+        this.mobileMarkedList = document.getElementById('mobile-marked-list');
+        this.mobileMarkedClear = document.getElementById('mobile-marked-clear');
+        this.mobileMarkedDrawerOpen = false;
 
         // File info popup
         this.fileInfoPopup = document.getElementById('file-info-popup');
@@ -561,11 +916,26 @@ class TerminalMultiplexer {
         this.keybar = document.getElementById('keybar');
         this.keybarToggle = document.getElementById('toggle-keybar');
         this.keybarUserHidden = false; // Track if user manually hid the keybar
+
+        // Mobile bottom toolbar
+        this.mobileBottomToolbar = document.getElementById('mobile-bottom-toolbar');
+        this.mobileSessionPicker = document.getElementById('mobile-session-picker');
+        this.mobileSessionName = document.querySelector('.mobile-session-name');
+        this.mobileScratchBtn = document.getElementById('mobile-scratch');
+        
     }
+
+    // SECTION: EVENTS
 
     bindEvents() {
         // Sidebar toggle
-        this.toggleSidebarBtn.addEventListener('click', () => this.toggleSidebar());
+        this.toggleSidebarBtn.addEventListener('click', () => {
+            if (this.mobileMode) {
+                this.toggleMobileDrawer();
+            } else {
+                this.toggleSidebar();
+            }
+        });
 
         // Icon bar fade behavior when sidebar is collapsed
         let iconFadeTimeout = null;
@@ -721,6 +1091,17 @@ class TerminalMultiplexer {
         this.clearMarkedBtn.addEventListener('click', () => this.clearMarkedFiles());
         this.downloadAllMarkedBtn.addEventListener('click', () => this.downloadMarkedFiles());
 
+        // Mobile marked files UI
+        if (this.mobileMarkedCount) {
+            this.mobileMarkedCount.addEventListener('click', () => this.toggleMobileMarkedDrawer());
+        }
+        if (this.mobileDownloadAll) {
+            this.mobileDownloadAll.addEventListener('click', () => this.downloadMarkedFiles());
+        }
+        if (this.mobileMarkedClear) {
+            this.mobileMarkedClear.addEventListener('click', () => this.clearMarkedFiles());
+        }
+
         // File info popup
         this.fileInfoCloseBtn.addEventListener('click', () => this.hideFileInfoPopup());
         this.fileInfoCopyBtn.addEventListener('click', () => this.copyFileInfoPath());
@@ -803,7 +1184,38 @@ class TerminalMultiplexer {
                 this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
             }
         });
+
+        // Mobile toolbar event handlers
+        if (this.mobileSessionPicker) {
+            this.mobileSessionPicker.addEventListener('click', () => {
+                this.showMobileSessionPicker();
+            });
+        }
+
+        // Mobile keybar buttons - same functionality as desktop keybar
+        this.mobileBottomToolbar?.querySelectorAll('.mobile-keybar-btn').forEach(btn => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // Prevent focus change
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keys = btn.dataset.keys;
+                if (keys) {
+                    this.sendKeysToActiveSession({ keys: [keys] });
+                }
+            });
+        });
+
+        // Mobile utility buttons
+        if (this.mobileScratchBtn) {
+            this.mobileScratchBtn.addEventListener('click', () => {
+                this.toggleScratchPad();
+                this.updateScratchButtonState();
+            });
+        }
     }
+
+    // SECTION: SESSIONS
 
     // ============ Group & Session Management ============
 
@@ -1198,6 +1610,8 @@ class TerminalMultiplexer {
             this.activateGroup(firstNewGroup.id);
         }
     }
+
+    // SECTION: SIDEBAR
 
     // ============ Sidebar UI ============
 
@@ -1663,6 +2077,9 @@ class TerminalMultiplexer {
         // Show keybar unless user manually hid it
         this.keybar.classList.toggle('hidden', this.keybarUserHidden);
         this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
+
+        // Update mobile toolbar
+        this.updateMobileToolbar();
 
         // Focus the specified session, or the first one if not specified
         const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId) 
@@ -2924,6 +3341,8 @@ class TerminalMultiplexer {
         this.fileInput.value = '';
     }
 
+    // SECTION: FILES
+
     async browsePath(path) {
         try {
             const response = await fetch(this.url(`/api/browse?path=${encodeURIComponent(path)}`));
@@ -3211,6 +3630,8 @@ class TerminalMultiplexer {
             this.showToast('Failed to add to scratch pad', 'error');
         }
     }
+
+    // SECTION: SETTINGS
 
     // ============ Settings ============
 
@@ -3920,13 +4341,21 @@ class TerminalMultiplexer {
     updateMarkedUI() {
         // Update sidekick panel visibility - only show when download modal is open AND files are marked
         const downloadModalOpen = !this.downloadModal.classList.contains('hidden');
+        const modalContent = this.downloadModal.querySelector('.modal-content');
         if (this.markedFiles.length > 0 && downloadModalOpen) {
             this.markedSidekick.classList.remove('hidden');
-            // Constrain sidekick height to be smaller than the modal
-            this.constrainSidekickHeight();
+            modalContent?.classList.add('has-sidekick');
+            // Constrain sidekick height to be smaller than the modal (not needed on mobile)
+            if (!this.mobileMode) {
+                this.constrainSidekickHeight();
+            }
         } else {
             this.markedSidekick.classList.add('hidden');
+            modalContent?.classList.remove('has-sidekick');
         }
+
+        // Update mobile marked files UI
+        this.updateMobileMarkedUI();
 
         // Update sidekick list
         this.renderMarkedList();

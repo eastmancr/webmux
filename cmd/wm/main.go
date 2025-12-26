@@ -116,6 +116,8 @@ In webmux terminals, use wm to run commands (e.g., wm ls, wm scratch hello)
 `)
 }
 
+// SECTION: API
+
 // API helpers
 
 func apiGet(host, path string) ([]byte, error) {
@@ -210,6 +212,8 @@ func apiPatch(host, path string, data any) error {
 
 	return nil
 }
+
+// SECTION: CLI
 
 // Commands
 

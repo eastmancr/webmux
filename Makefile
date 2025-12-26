@@ -44,7 +44,7 @@ check:
 
 # Prepare package directory for makepkg
 pkg: build
-	rm -f $(PKG)/*.tar.gz || true
+	rm -f $(PKG)/*.tar.gz $(PKG)/*.tar.zst || true
 	mkdir -p $(PKG)
 	tar czf $(PKG)/$(BINARY)-$(VERSION).tar.gz \
 		--transform 's,^,$(BINARY)-$(VERSION)/,' \
