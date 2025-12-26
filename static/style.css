@@ -1331,6 +1331,34 @@ body.mobile-mode .sidebar-panel {
     font-weight: 600;
 }
 
+.modal-header .close-modal {
+    min-width: 32px;
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-header .close-modal.discard-pending {
+    background: var(--danger);
+    color: var(--bg-primary);
+    border-radius: 4px;
+    padding: 4px 10px;
+    min-width: auto;
+}
+
+.modal-header .close-modal.discard-pending .discard-text {
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.modal-header .close-modal.discard-pending:hover {
+    background: #e8567a;
+}
+
+
+
 .modal-body {
     padding: 20px;
     overflow-y: auto;
@@ -1840,6 +1868,10 @@ body.mobile-mode .sidebar-panel {
 .settings-actions .btn-group {
     display: flex;
     gap: 8px;
+}
+
+.settings-actions .btn-group.hidden {
+    display: none;
 }
 
 /* Keybinds Modal */
@@ -3476,7 +3508,7 @@ body.mobile-mode .sidebar-icons-spacer {
     body.mobile-mode .sidebar {
         width: 100%;
     }
-    
+
     body.mobile-mode .modal-content {
         height: 100vh;
         max-height: 100vh;
@@ -3572,11 +3604,238 @@ body.mobile-mode .sidebar-panel {
         flex-direction: column;
     }
 
-    .marked-sidekick {
+.marked-sidekick {
         width: 100%;
         min-width: 100%;
         border-left: none;
         border-top: 1px solid var(--border);
         max-height: 200px;
     }
+}
+}
+
+/* Keybar Settings */
+.keybar-settings-container {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.keybar-buttons-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px;
+    background: var(--bg-secondary);
+}
+
+.keybar-button-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    transition: all var(--transition-speed);
+}
+
+.keybar-button-item:hover {
+    background: var(--bg-primary);
+}
+
+.keybar-button-item.invalid {
+    border-color: var(--danger);
+    background: rgba(243, 139, 168, 0.1);
+}
+
+.keybar-button-item.invalid .keybar-button-keys {
+    color: var(--danger);
+}
+
+.keybar-button-item .keybar-button-keys {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    font-size: 12px;
+    background: var(--bg-primary);
+    padding: 4px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    min-width: 60px;
+    text-align: center;
+}
+
+.keybar-button-item .keybar-button-label {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.keybar-button-item .keybar-button-title {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.keybar-button-item .keybar-button-remove {
+    padding: 4px 8px;
+    background: var(--danger);
+    color: var(--bg-primary);
+    border: none;
+    border-radius: 3px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: all var(--transition-speed);
+}
+
+.keybar-button-item .keybar-button-remove:hover {
+    background: #e8567a;
+}
+
+.keybar-button-item .keybar-button-drag {
+    cursor: grab;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    padding: 2px;
+}
+
+.keybar-button-item .keybar-button-drag:hover {
+    color: var(--text-secondary);
+}
+
+.keybar-button-item .keybar-button-arrows {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.keybar-button-item .keybar-button-up,
+.keybar-button-item .keybar-button-down {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 14px;
+    padding: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--transition-speed);
+}
+
+.keybar-button-item .keybar-button-up:hover:not(:disabled),
+.keybar-button-item .keybar-button-down:hover:not(:disabled) {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+
+.keybar-button-item .keybar-button-up:disabled,
+.keybar-button-item .keybar-button-down:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.keybar-button-item.dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+}
+
+.keybar-button-item.drag-over {
+    border-color: var(--accent);
+    background: rgba(137, 180, 250, 0.1);
+}
+
+.keybar-button-item .keybar-button-invalid {
+    font-size: 10px;
+    color: var(--danger);
+    background: rgba(243, 139, 168, 0.2);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 500;
+}
+
+.keybar-add-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.keybar-input-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.keybar-input-row input {
+    flex: 1;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    transition: all var(--transition-speed);
+}
+
+.keybar-input-row input:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+}
+
+.keybar-input-row input.error {
+    border-color: var(--danger);
+}
+
+.keybar-input-error {
+    font-size: 12px;
+    color: var(--danger);
+    padding: 4px 0;
+}
+
+.keybar-input-error.hidden {
+    display: none;
+}
+
+.keybar-examples {
+    margin-top: 8px;
+}
+
+.keybar-examples h5 {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.example-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 8px;
+}
+
+.example-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.example-item code {
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    background: var(--bg-tertiary);
+    padding: 2px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+}
 }

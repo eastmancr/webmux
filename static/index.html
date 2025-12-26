@@ -98,7 +98,6 @@
                 <button class="keybar-btn" data-keys="C-\\" title="Ctrl-\\: Quit (SIGQUIT)" aria-label="Ctrl-backslash">
                     <span class="key-label">Ctrl-\</span>
                 </button>
-                <span class="keybar-divider" aria-hidden="true"></span>
                 <button class="keybar-btn" data-keys="C-l" title="Ctrl-L: Clear screen" aria-label="Ctrl-L">
                     <span class="key-label">Ctrl-L</span>
                 </button>
@@ -376,6 +375,7 @@
                     <div class="settings-tabs" role="tablist">
                         <button class="settings-tab active" data-tab="ui" role="tab" aria-selected="true" aria-controls="ui-settings-panel">UI Colors</button>
                         <button class="settings-tab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="terminal-settings-panel">Terminal Colors</button>
+                        <button class="settings-tab" data-tab="keybar" role="tab" aria-selected="false" aria-controls="keybar-settings-panel">Keybar</button>
                     </div>
                 </div>
 
@@ -649,11 +649,51 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Keybar Tab -->
+                    <div class="settings-panel" data-panel="keybar" id="keybar-settings-panel" role="tabpanel" aria-labelledby="keybar-settings-tab">
+                        <div class="settings-section">
+                            <h4>Custom Keybar Buttons</h4>
+                            <p class="settings-note">Add or remove special key combinations from the keybar.</p>
+
+                            <div class="keybar-settings-container">
+                                <div id="keybar-buttons-list" class="keybar-buttons-list">
+                                    <!-- Keybar buttons will be populated here -->
+                                </div>
+
+                                <div class="keybar-add-section">
+                                    <div class="keybar-input-row">
+                                        <input type="text" id="new-keybar-keys" placeholder="Key combo (e.g., C-c, M-x, Tab)" maxlength="20" aria-label="New key combination">
+                                        <button id="add-keybar-btn" class="btn btn-primary btn-sm">Add</button>
+                                    </div>
+                                    <div id="keybar-input-error" class="keybar-input-error hidden"></div>
+                                </div>
+                            </div>
+
+                            <div class="keybar-examples">
+                                <h5>Examples:</h5>
+                                <div class="example-grid">
+                                    <div class="example-item">
+                                        <code>C-c</code> - Ctrl+C
+                                    </div>
+                                    <div class="example-item">
+                                        <code>M-x</code> - Alt+X
+                                    </div>
+                                    <div class="example-item">
+                                        <code>C-S-c</code> - Ctrl+Shift+C
+                                    </div>
+                                    <div class="example-item">
+                                        <code>F1</code> - Function key
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="settings-footer">
                     <div class="settings-actions">
-                        <div class="btn-group" role="group" aria-label="Configuration import/export">
+                        <div id="settings-theme-actions" class="btn-group" role="group" aria-label="Configuration import/export">
                             <button id="settings-import" class="btn btn-secondary">Paste</button>
                             <button id="settings-export" class="btn btn-secondary">Copy</button>
                         </div>

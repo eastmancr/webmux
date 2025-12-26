@@ -365,7 +365,7 @@ class TerminalMultiplexer {
         const newGroupId = this.groupOrder[newIndex];
         if (newGroupId && this.groups.has(newGroupId)) {
             this.activateGroup(newGroupId);
-            
+
             // Show brief feedback about the group switch
             this.showGroupSwitchFeedback(newGroupId);
         }
@@ -388,7 +388,7 @@ class TerminalMultiplexer {
         const container = document.getElementById('toast-container');
         if (container) {
             container.appendChild(toast);
-            
+
             // Auto-remove after 2 seconds
             setTimeout(() => {
                 toast.classList.add('toast-out');
@@ -403,7 +403,7 @@ class TerminalMultiplexer {
         if (!this.mobileMode) return;
 
         this.mobileMarkedDrawerOpen = !this.mobileMarkedDrawerOpen;
-        
+
         if (this.mobileMarkedDrawer) {
             this.mobileMarkedDrawer.classList.toggle('visible', this.mobileMarkedDrawerOpen);
             this.mobileMarkedDrawer.classList.toggle('hidden', !this.mobileMarkedDrawerOpen);
@@ -872,7 +872,7 @@ class TerminalMultiplexer {
         this.downloadAllMarkedBtn = document.getElementById('download-all-marked');
         this.markedFiles = [];
         this.markedEventSource = null;
-        
+
         // Mobile marked files UI
         this.mobileMarkedBar = document.getElementById('mobile-marked-bar');
         this.mobileMarkedCount = document.getElementById('mobile-marked-count');
@@ -922,7 +922,7 @@ class TerminalMultiplexer {
         this.mobileSessionPicker = document.getElementById('mobile-session-picker');
         this.mobileSessionName = document.querySelector('.mobile-session-name');
         this.mobileScratchBtn = document.getElementById('mobile-scratch');
-        
+
     }
 
     // SECTION: EVENTS
@@ -1000,8 +1000,30 @@ class TerminalMultiplexer {
                 this.settingsModal.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
                 tab.classList.add('active');
                 this.settingsModal.querySelector(`[data-panel="${tabName}"]`).classList.add('active');
+
+                // Show/hide theme import/export buttons based on tab
+                this.updateThemeActionsVisibility(tabName);
             });
         });
+
+        // Keybar settings event listeners
+        const addKeybarBtn = document.getElementById('add-keybar-btn');
+        if (addKeybarBtn) {
+            addKeybarBtn.addEventListener('click', () => this.addKeybarButton());
+        }
+
+        // Add enter key support for keybar input and clear error on input
+        const keybarInput = document.getElementById('new-keybar-keys');
+        if (keybarInput) {
+            keybarInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.addKeybarButton();
+                }
+            });
+            keybarInput.addEventListener('input', () => {
+                this.hideKeybarInputError();
+            });
+        }
 
         // Color input live preview - sync color picker and hex input
         this.settingsModal.querySelectorAll('input[type="color"]').forEach(colorInput => {
@@ -1117,11 +1139,16 @@ class TerminalMultiplexer {
 
         // Close modals
         document.querySelectorAll('.close-modal').forEach(btn => {
-            btn.addEventListener('click', () => {
-                this.closeModal(this.uploadModal);
-                this.closeModal(this.downloadModal);
-                this.closeModal(this.keybindsModal);
-                this.closeSettingsModal();
+            btn.addEventListener('click', (e) => {
+                const modal = btn.closest('.modal');
+                if (modal === this.settingsModal) {
+                    e.stopPropagation();
+                    this.handleSettingsClose();
+                } else {
+                    this.closeModal(this.uploadModal);
+                    this.closeModal(this.downloadModal);
+                    this.closeModal(this.keybindsModal);
+                }
             });
         });
 
@@ -1129,12 +1156,24 @@ class TerminalMultiplexer {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
                     if (modal === this.settingsModal) {
-                        this.closeSettingsModal();
+                        // Clicking backdrop - if discard pending, reset it; otherwise try to close
+                        if (this.settingsDiscardPending) {
+                            this.resetSettingsDiscardState();
+                        } else {
+                            this.handleSettingsClose();
+                        }
                     } else {
                         this.closeModal(modal);
                     }
                 }
             });
+        });
+
+        // Reset discard state when clicking inside settings modal content (but not on close button)
+        this.settingsModal.querySelector('.modal-content')?.addEventListener('click', (e) => {
+            if (!e.target.closest('.close-modal')) {
+                this.resetSettingsDiscardState();
+            }
         });
 
         // Keyboard shortcuts
@@ -1148,7 +1187,14 @@ class TerminalMultiplexer {
                 this.closeModal(this.uploadModal);
                 this.closeModal(this.downloadModal);
                 this.closeModal(this.keybindsModal);
-                this.closeSettingsModal();
+                // For settings modal, treat Escape like clicking elsewhere
+                if (!this.settingsModal.classList.contains('hidden')) {
+                    if (this.settingsDiscardPending) {
+                        this.resetSettingsDiscardState();
+                    } else {
+                        this.handleSettingsClose();
+                    }
+                }
                 this.cancelInlineRename();
             }
         });
@@ -1160,20 +1206,8 @@ class TerminalMultiplexer {
             document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
         });
 
-        // Keybar button clicks - send keys to active session
-        // Use mousedown + preventDefault to avoid stealing focus from terminal
-        this.keybar.querySelectorAll('.keybar-btn').forEach(btn => {
-            btn.addEventListener('mousedown', (e) => {
-                e.preventDefault(); // Prevent focus change
-            });
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                const keys = btn.dataset.keys;
-                if (keys) {
-                    this.sendKeysToActiveSession({ keys: [keys] });
-                }
-            });
-        });
+        // Keybar events will be bound dynamically after settings are loaded
+        this.bindKeybarEvents();
 
         // Keybar toggle (in sidebar)
         this.keybarToggle.addEventListener('click', () => {
@@ -1192,19 +1226,8 @@ class TerminalMultiplexer {
             });
         }
 
-        // Mobile keybar buttons - same functionality as desktop keybar
-        this.mobileBottomToolbar?.querySelectorAll('.mobile-keybar-btn').forEach(btn => {
-            btn.addEventListener('mousedown', (e) => {
-                e.preventDefault(); // Prevent focus change
-            });
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                const keys = btn.dataset.keys;
-                if (keys) {
-                    this.sendKeysToActiveSession({ keys: [keys] });
-                }
-            });
-        });
+        // Mobile keybar events will be bound dynamically after settings are loaded
+        this.bindMobileKeybarEvents();
 
         // Mobile utility buttons
         if (this.mobileScratchBtn) {
@@ -3640,10 +3663,14 @@ class TerminalMultiplexer {
             const response = await fetch(this.url('/api/settings'));
             this.settings = await response.json();
             this.applyUIColors(this.settings.ui);
+            this.renderKeybar();
+            this.renderMobileKeybar();
         } catch (error) {
             console.error('Failed to load settings:', error);
             // Use defaults
             this.settings = this.getDefaultSettings();
+            this.renderKeybar();
+            this.renderMobileKeybar();
         }
     }
 
@@ -3700,8 +3727,143 @@ class TerminalMultiplexer {
                 base15: '#94e2d5', // Bright Cyan
                 base16: '#89b4fa', // Bright Blue
                 base17: '#cba6f7'  // Bright Magenta
+            },
+            keybar: {
+                buttons: ['C-c', 'C-d', 'C-z', 'C-\\', 'C-l', 'C-r', 'C-u', 'C-w']
             }
         };
+    }
+
+    validateKeyCombo(keys) {
+        // Valid key combinations:
+        // - C-x (Ctrl + key)
+        // - M-x (Alt/Meta + key) 
+        // - S-x (Shift + key)
+        // - C-M-x (Ctrl + Alt + key)
+        // - C-S-x (Ctrl + Shift + key)
+        // - M-S-x (Alt + Shift + key)
+        // - C-M-S-x (Ctrl + Alt + Shift + key)
+        // - F1-F12 (function keys)
+        // - Tab, Enter, Escape, Space, Backspace, Delete
+        // - Single letters, numbers, symbols
+
+        const keyPattern = /^(?:C-)?(?:M-)?(?:S-)?([A-Za-z0-9]|F[1-9]|F1[0-2]|Tab|Enter|Escape|Esc|Space|Backspace|BS|Delete|Del|Up|Down|Left|Right|Home|End|PageUp|PageDown|PgUp|PgDn|Insert|Ins|[\[\]\/\\.,;:'"`~!@#$%^&*()\-_=+<>|])$/i;
+        return keyPattern.test(keys.trim());
+    }
+
+    normalizeKeyCombo(keys) {
+        // Normalize key combo to canonical form
+        let normalized = keys.trim();
+
+        // Normalize modifiers (case-insensitive)
+        normalized = normalized.replace(/^c-/i, 'C-');
+        normalized = normalized.replace(/^m-/i, 'M-');
+        normalized = normalized.replace(/^s-/i, 'S-');
+        normalized = normalized.replace(/C-m-/i, 'C-M-');
+        normalized = normalized.replace(/C-s-/i, 'C-S-');
+        normalized = normalized.replace(/M-s-/i, 'M-S-');
+        normalized = normalized.replace(/C-M-s-/i, 'C-M-S-');
+
+        // Extract the key part (after all modifiers)
+        const modifierMatch = normalized.match(/^((?:C-)?(?:M-)?(?:S-)?)(.+)$/);
+        if (modifierMatch) {
+            const modifiers = modifierMatch[1];
+            let key = modifierMatch[2];
+
+            // Normalize special key names
+            const keyNormalizations = {
+                'tab': 'Tab',
+                'enter': 'Enter',
+                'return': 'Enter',
+                'escape': 'Escape',
+                'esc': 'Escape',
+                'space': 'Space',
+                'backspace': 'Backspace',
+                'bs': 'Backspace',
+                'delete': 'Delete',
+                'del': 'Delete',
+                'up': 'Up',
+                'down': 'Down',
+                'left': 'Left',
+                'right': 'Right',
+                'home': 'Home',
+                'end': 'End',
+                'pageup': 'PageUp',
+                'pgup': 'PageUp',
+                'pagedown': 'PageDown',
+                'pgdn': 'PageDown',
+                'insert': 'Insert',
+                'ins': 'Insert',
+            };
+
+            const lowerKey = key.toLowerCase();
+            if (keyNormalizations[lowerKey]) {
+                key = keyNormalizations[lowerKey];
+            } else if (/^f([1-9]|1[0-2])$/i.test(key)) {
+                // Normalize function keys: f1 -> F1
+                key = key.toUpperCase();
+            } else if (key.length === 1 && /[a-z]/.test(key)) {
+                // Single letter keys stay lowercase
+                key = key.toLowerCase();
+            }
+
+            normalized = modifiers + key;
+        }
+
+        return normalized;
+    }
+
+    formatKeyLabel(keys) {
+        // Convert key combo to human-readable label
+        let label = keys;
+        label = label.replace(/^C-/, 'Ctrl-');
+        label = label.replace(/^M-/, 'Alt-');
+        label = label.replace(/^S-/, 'Shift-');
+        label = label.replace(/Ctrl-M-/, 'Ctrl-Alt-');
+        label = label.replace(/Ctrl-S-/, 'Ctrl-Shift-');
+        label = label.replace(/Alt-S-/, 'Alt-Shift-');
+        label = label.replace(/Ctrl-Alt-S-/, 'Ctrl-Alt-Shift-');
+        return label;
+    }
+
+    formatKeyTitle(keys) {
+        // Generate tooltip description based on key combo
+        const label = this.formatKeyLabel(keys);
+        const descriptions = {
+            'C-c': 'Interrupt (SIGINT)',
+            'C-d': 'EOF / Exit',
+            'C-z': 'Suspend (SIGTSTP)',
+            'C-\\': 'Quit (SIGQUIT)',
+            'C-l': 'Clear screen',
+            'C-r': 'Reverse search history',
+            'C-u': 'Clear line',
+            'C-w': 'Delete word',
+            'C-a': 'Move to beginning of line',
+            'C-e': 'Move to end of line',
+            'C-k': 'Kill to end of line',
+            'C-y': 'Yank (paste)',
+            'C-p': 'Previous command',
+            'C-n': 'Next command',
+            'Tab': 'Tab / Autocomplete',
+            'Escape': 'Escape',
+        };
+        const desc = descriptions[keys];
+        return desc ? `${label}: ${desc}` : label;
+    }
+
+    showKeybarInputError(message) {
+        const errorEl = document.getElementById('keybar-input-error');
+        if (errorEl) {
+            errorEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+    }
+
+    hideKeybarInputError() {
+        const errorEl = document.getElementById('keybar-input-error');
+        if (errorEl) {
+            errorEl.classList.add('hidden');
+        }
     }
 
     applyUIColors(ui) {
@@ -3717,15 +3879,92 @@ class TerminalMultiplexer {
         root.style.setProperty('--border', ui.border);
     }
 
+    updateThemeActionsVisibility(tabName) {
+        const themeActions = document.getElementById('settings-theme-actions');
+        if (themeActions) {
+            themeActions.style.display = tabName === 'keybar' ? 'none' : '';
+        }
+    }
+
     openSettingsModal() {
+        // Populate inputs first, then capture snapshot for comparison
         this.populateSettingsInputs();
+        this.originalSettings = JSON.stringify(this.getSettingsSnapshot());
+        this.settingsDiscardPending = false;
+        this.updateSettingsCloseButton();
+
+        // Set initial theme actions visibility (UI tab is active by default)
+        this.updateThemeActionsVisibility('ui');
+
         this.openModal(this.settingsModal);
     }
 
-    closeSettingsModal() {
-        // Revert to saved settings (cancel any preview)
+    getSettingsSnapshot() {
+        // Get current settings state from inputs and keybar
+        const settings = this.getSettingsFromInputs();
+        return settings;
+    }
+
+    hasUnsavedSettingsChanges() {
+        if (!this.originalSettings) return false;
+        const current = JSON.stringify(this.getSettingsSnapshot());
+        return current !== this.originalSettings;
+    }
+
+    updateSettingsCloseButton() {
+        const closeBtn = this.settingsModal.querySelector('.close-modal');
+        if (!closeBtn) return;
+
+        if (this.settingsDiscardPending) {
+            closeBtn.classList.add('discard-pending');
+            closeBtn.innerHTML = `<span class="discard-text">Discard?</span>`;
+            closeBtn.title = 'Click again to discard changes';
+        } else {
+            closeBtn.classList.remove('discard-pending');
+            closeBtn.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+            </svg>`;
+            closeBtn.title = 'Close';
+        }
+    }
+
+    handleSettingsClose() {
+        if (this.hasUnsavedSettingsChanges()) {
+            if (this.settingsDiscardPending) {
+                // Second click - actually discard
+                this.settingsDiscardPending = false;
+                this.discardSettingsChanges();
+            } else {
+                // First click - show discard confirmation
+                this.settingsDiscardPending = true;
+                this.updateSettingsCloseButton();
+            }
+        } else {
+            // No changes, just close
+            this.closeModal(this.settingsModal);
+        }
+    }
+
+    resetSettingsDiscardState() {
+        if (this.settingsDiscardPending) {
+            this.settingsDiscardPending = false;
+            this.updateSettingsCloseButton();
+        }
+    }
+
+    discardSettingsChanges() {
+        // Revert to saved settings
         this.applyUIColors(this.settings.ui);
+        // Restore keybar settings from saved state
+        if (this.originalSettings) {
+            const original = JSON.parse(this.originalSettings);
+            this.settings.keybar = original.keybar;
+        }
         this.closeModal(this.settingsModal);
+    }
+
+    closeSettingsModal() {
+        this.handleSettingsClose();
     }
 
     populateSettingsInputs() {
@@ -3743,10 +3982,12 @@ class TerminalMultiplexer {
             if (colorInput) colorInput.value = value;
             if (hexInput) hexInput.value = value;
         }
+        // Populate keybar buttons
+        this.populateKeybarButtons();
     }
 
     getSettingsFromInputs() {
-        const settings = { ui: {}, terminal: {} };
+        const settings = { ui: {}, terminal: {}, keybar: {} };
         const hexPattern = /^#[0-9A-Fa-f]{6}$/;
 
         this.settingsModal.querySelectorAll('[data-setting]').forEach(input => {
@@ -3762,6 +4003,11 @@ class TerminalMultiplexer {
                 settings[category][key] = defaults[category]?.[key] || '#000000';
             }
         });
+
+        // Include keybar settings from current state
+        settings.keybar = { 
+            buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons 
+        };
 
         return settings;
     }
@@ -3784,6 +4030,8 @@ class TerminalMultiplexer {
             if (!response.ok) throw new Error('Failed to save settings');
 
             this.settings = settings;
+            this.renderKeybar();
+            this.renderMobileKeybar();
             this.closeModal(this.settingsModal);
             this.toastSuccess('Settings saved');
         } catch (error) {
@@ -3809,8 +4057,292 @@ class TerminalMultiplexer {
             if (hexInput) hexInput.value = value;
         }
 
+        // Reset keybar settings
+        this.settings.keybar = { ...defaults.keybar };
+        this.populateKeybarButtons();
+
         // Preview the reset
         this.previewSettings();
+    }
+
+    // ============ Keybar Settings ============
+
+    populateKeybarButtons() {
+        const buttonsList = document.getElementById('keybar-buttons-list');
+        if (!buttonsList) return;
+
+        buttonsList.innerHTML = '';
+
+        const buttons = this.getKeybarButtonsFromSettings();
+
+        buttons.forEach((keys, index) => {
+            const buttonItem = this.createKeybarButtonItem(keys, index);
+            buttonsList.appendChild(buttonItem);
+        });
+    }
+
+    createKeybarButtonItem(keys, index) {
+        const div = document.createElement('div');
+        div.className = 'keybar-button-item';
+        div.draggable = true;
+        div.dataset.index = index;
+
+        const isValid = this.validateKeyCombo(keys);
+        if (!isValid) {
+            div.classList.add('invalid');
+        }
+
+        const label = this.formatKeyLabel(keys);
+        const title = this.formatKeyTitle(keys);
+
+        const buttons = this.getKeybarButtonsFromSettings();
+        const isFirst = index === 0;
+        const isLast = index === buttons.length - 1;
+
+        div.innerHTML = `
+            <span class="keybar-button-drag" title="Drag to reorder">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+            </span>
+            <div class="keybar-button-arrows">
+                <button class="keybar-button-up" title="Move up" ${isFirst ? 'disabled' : ''}>
+                    <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+                </button>
+                <button class="keybar-button-down" title="Move down" ${isLast ? 'disabled' : ''}>
+                    <svg viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+                </button>
+            </div>
+            <span class="keybar-button-keys">${keys}</span>
+            <span class="keybar-button-label">${label}</span>
+            ${!isValid ? '<span class="keybar-button-invalid">Invalid</span>' : ''}
+            <button class="keybar-button-remove" data-index="${index}" title="Remove">
+                <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+            </button>
+        `;
+
+        // Add button handlers
+        const removeBtn = div.querySelector('.keybar-button-remove');
+        removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.removeKeybarButton(index);
+        });
+
+        const upBtn = div.querySelector('.keybar-button-up');
+        upBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (index > 0) {
+                this.reorderKeybarButton(index, index - 1);
+            }
+        });
+
+        const downBtn = div.querySelector('.keybar-button-down');
+        downBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (index < buttons.length - 1) {
+                this.reorderKeybarButton(index, index + 1);
+            }
+        });
+
+        // Drag handlers for reordering
+        div.addEventListener('dragstart', (e) => {
+            div.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', index.toString());
+        });
+
+        div.addEventListener('dragend', () => {
+            div.classList.remove('dragging');
+        });
+
+        div.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const dragging = document.querySelector('.keybar-button-item.dragging');
+            if (dragging && dragging !== div) {
+                div.classList.add('drag-over');
+            }
+        });
+
+        div.addEventListener('dragleave', () => {
+            div.classList.remove('drag-over');
+        });
+
+        div.addEventListener('drop', (e) => {
+            e.preventDefault();
+            div.classList.remove('drag-over');
+            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+            const toIndex = index;
+            if (fromIndex !== toIndex) {
+                this.reorderKeybarButton(fromIndex, toIndex);
+            }
+        });
+
+        return div;
+    }
+
+    reorderKeybarButton(fromIndex, toIndex) {
+        const buttons = [...this.getKeybarButtonsFromSettings()];
+        const [moved] = buttons.splice(fromIndex, 1);
+        buttons.splice(toIndex, 0, moved);
+        this.settings.keybar = { buttons };
+        this.populateKeybarButtons();
+    }
+
+    removeKeybarButton(index) {
+        if (!this.settings.keybar) {
+            this.settings.keybar = { buttons: [...this.getDefaultSettings().keybar.buttons] };
+        }
+
+        this.settings.keybar.buttons.splice(index, 1);
+        this.populateKeybarButtons();
+    }
+
+    addKeybarButton() {
+        const keysInput = document.getElementById('new-keybar-keys');
+        const rawKeys = keysInput.value.trim();
+
+        if (!rawKeys) {
+            this.showKeybarInputError('Enter a key combination');
+            return;
+        }
+
+        if (!this.validateKeyCombo(rawKeys)) {
+            this.showKeybarInputError('Invalid key combination');
+            return;
+        }
+
+        // Normalize the key combo
+        const keys = this.normalizeKeyCombo(rawKeys);
+
+        if (!this.settings.keybar) {
+            this.settings.keybar = { buttons: [...this.getDefaultSettings().keybar.buttons] };
+        }
+
+        // Check for duplicates (compare normalized)
+        const existingNormalized = this.settings.keybar.buttons.map(k => this.normalizeKeyCombo(k));
+        if (existingNormalized.includes(keys)) {
+            this.showKeybarInputError('Key combination already exists');
+            return;
+        }
+
+        this.hideKeybarInputError();
+        this.settings.keybar.buttons.push(keys);
+        this.populateKeybarButtons();
+
+        // Clear input
+        keysInput.value = '';
+    }
+
+    getKeybarButtonsFromSettings() {
+        const buttons = this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons;
+        // Handle legacy format (array of objects)
+        if (buttons.length > 0 && typeof buttons[0] === 'object') {
+            return buttons.map(b => b.keys);
+        }
+        return buttons;
+    }
+
+    renderKeybar() {
+        if (!this.keybar) return;
+
+        const buttons = this.getKeybarButtonsFromSettings();
+
+        // Clear existing buttons
+        this.keybar.innerHTML = '';
+
+        // Only render valid buttons
+        buttons.filter(keys => this.validateKeyCombo(keys)).forEach(keys => {
+            const btn = document.createElement('button');
+            btn.className = 'keybar-btn';
+            btn.dataset.keys = keys;
+            btn.title = this.formatKeyTitle(keys);
+            btn.setAttribute('aria-label', this.formatKeyLabel(keys));
+
+            const label = document.createElement('span');
+            label.className = 'key-label';
+            label.textContent = this.formatKeyLabel(keys);
+
+            btn.appendChild(label);
+            this.keybar.appendChild(btn);
+        });
+
+        // Re-bind event listeners for new buttons
+        this.bindKeybarEvents();
+    }
+
+    renderMobileKeybar() {
+        if (!this.mobileBottomToolbar) return;
+
+        const mobileKeybarScroll = this.mobileBottomToolbar.querySelector('.mobile-keybar-scroll');
+        if (!mobileKeybarScroll) return;
+
+        const buttons = this.getKeybarButtonsFromSettings();
+
+        // Clear existing buttons except the "more" button
+        const existingBtns = mobileKeybarScroll.querySelectorAll('.mobile-keybar-btn');
+        existingBtns.forEach(btn => btn.remove());
+
+        // Add new buttons (limit to first 5 valid buttons for mobile)
+        const validButtons = buttons.filter(keys => this.validateKeyCombo(keys));
+        validButtons.slice(0, 5).forEach(keys => {
+            const btn = document.createElement('button');
+            btn.className = 'mobile-keybar-btn';
+            btn.dataset.keys = keys;
+            btn.title = this.formatKeyTitle(keys);
+            btn.setAttribute('aria-label', this.formatKeyLabel(keys));
+
+            const label = document.createElement('span');
+            label.className = 'mobile-key-label';
+            label.textContent = this.formatKeyLabel(keys);
+
+            btn.appendChild(label);
+
+            // Insert before the "more" button
+            const moreBtn = mobileKeybarScroll.querySelector('.mobile-keybar-more');
+            if (moreBtn) {
+                mobileKeybarScroll.insertBefore(btn, moreBtn);
+            } else {
+                mobileKeybarScroll.appendChild(btn);
+            }
+        });
+
+        // Re-bind event listeners for new buttons
+        this.bindMobileKeybarEvents();
+    }
+
+    bindKeybarEvents() {
+        if (!this.keybar) return;
+
+        // Keybar button clicks - send keys to active session
+        this.keybar.querySelectorAll('.keybar-btn').forEach(btn => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // Prevent focus change
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keys = btn.dataset.keys;
+                if (keys) {
+                    this.sendKeysToActiveSession({ keys: [keys] });
+                }
+            });
+        });
+    }
+
+    bindMobileKeybarEvents() {
+        if (!this.mobileBottomToolbar) return;
+
+        // Mobile keybar buttons - same functionality as desktop keybar
+        this.mobileBottomToolbar.querySelectorAll('.mobile-keybar-btn').forEach(btn => {
+            btn.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // Prevent focus change
+            });
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const keys = btn.dataset.keys;
+                if (keys) {
+                    this.sendKeysToActiveSession({ keys: [keys] });
+                }
+            });
+        });
     }
 
     async exportSettings() {

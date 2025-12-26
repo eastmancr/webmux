@@ -66,6 +66,13 @@ type Settings struct {
 	UI UIColors `json:"ui"`
 	// Terminal colors
 	Terminal TerminalColors `json:"terminal"`
+	// Keybar configuration
+	Keybar KeybarSettings `json:"keybar"`
+}
+
+// KeybarSettings represents keybar button configuration
+type KeybarSettings struct {
+	Buttons []string `json:"buttons"`
 }
 
 // UIColors represents the multiplexer UI color scheme
@@ -153,6 +160,9 @@ func DefaultSettings() *Settings {
 			Base15: "#94e2d5", // Bright Cyan
 			Base16: "#89b4fa", // Bright Blue
 			Base17: "#cba6f7", // Bright Magenta
+		},
+		Keybar: KeybarSettings{
+			Buttons: []string{"C-c", "C-d", "C-z", "C-\\", "C-l", "C-r", "C-u", "C-w"},
 		},
 	}
 }
@@ -313,6 +323,11 @@ func mergeWithDefaults(s *Settings) {
 	}
 	if s.Terminal.Base17 == "" {
 		s.Terminal.Base17 = d.Terminal.Base17
+	}
+
+	// Keybar settings - use defaults if empty
+	if len(s.Keybar.Buttons) == 0 {
+		s.Keybar.Buttons = d.Keybar.Buttons
 	}
 }
 
