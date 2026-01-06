@@ -47,6 +47,120 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+// SECTION: LOGGING
+
+// RotatingLogWriter writes to both stdout and a rotating log file
+type RotatingLogWriter struct {
+	file      *os.File
+	filePath  string
+	maxLines  int
+	lineCount int
+	mu        sync.Mutex
+}
+
+// Global log writer for the application
+var logWriter *RotatingLogWriter
+
+// NewRotatingLogWriter creates a log writer that tees to stdout and a file in temp dir
+func NewRotatingLogWriter(maxLines int) (*RotatingLogWriter, error) {
+	logPath := filepath.Join(os.TempDir(), fmt.Sprintf("webmux-%d.log", os.Getpid()))
+	// Use 0600 permissions - logs may contain sensitive paths or error details
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create log file: %w", err)
+	}
+
+	return &RotatingLogWriter{
+		file:     file,
+		filePath: logPath,
+		maxLines: maxLines,
+	}, nil
+}
+
+// Write implements io.Writer, writing to both stdout and the log file
+func (w *RotatingLogWriter) Write(p []byte) (n int, err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Always write to stdout
+	os.Stdout.Write(p)
+
+	// Count newlines in the data
+	newLines := 0
+	for _, b := range p {
+		if b == '\n' {
+			newLines++
+		}
+	}
+
+	// Check if we need to rotate (simple rotation: truncate when limit reached)
+	if w.lineCount+newLines > w.maxLines {
+		w.file.Truncate(0)
+		w.file.Seek(0, 0)
+		w.lineCount = 0
+		// Write rotation marker
+		w.file.WriteString(fmt.Sprintf("[%s] --- Log rotated (max %d lines) ---\n",
+			time.Now().Format("2006/01/02 15:04:05"), w.maxLines))
+		w.lineCount++
+	}
+
+	// Write to file
+	n, err = w.file.Write(p)
+	w.lineCount += newLines
+	return n, err
+}
+
+// Path returns the log file path
+func (w *RotatingLogWriter) Path() string {
+	return w.filePath
+}
+
+// ReadLogs reads the last n lines from the log file
+func (w *RotatingLogWriter) ReadLogs(maxLines int) (string, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Validate input
+	if maxLines <= 0 {
+		maxLines = 1000
+	}
+
+	// Sync file to ensure all writes are visible
+	if err := w.file.Sync(); err != nil {
+		return "", fmt.Errorf("sync failed: %w", err)
+	}
+
+	// Read the entire file
+	content, err := os.ReadFile(w.filePath)
+	if err != nil {
+		return "", fmt.Errorf("read failed: %w", err)
+	}
+
+	// Handle empty file
+	if len(content) == 0 {
+		return "", nil
+	}
+
+	lines := strings.Split(string(content), "\n")
+
+	// Return last maxLines lines
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
+// Close closes the log file
+func (w *RotatingLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file != nil {
+		return w.file.Close()
+	}
+	return nil
+}
+
 // SECTION: TYPES
 
 // Session represents a terminal session backed by tmux + ttyd
@@ -443,11 +557,13 @@ wm() {
 
 // tmuxSocketPath returns the path to our dedicated tmux socket
 func (sm *SessionManager) tmuxSocketPath() string {
-	// Use XDG_RUNTIME_DIR if available (per-user tmp), otherwise /tmp with uid
-	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "webmux-tmux.sock")
-	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("webmux-tmux-%d.sock", os.Getuid()))
+	// Use XDG_DATA_HOME (~/.local/share) for the socket to avoid issues with
+	// XDG_RUNTIME_DIR being cleaned up by systemd when user has no active sessions
+	// (which happens when accessing webmux only via web/VPN without a local login)
+	dataDir := xdgDataHome()
+	socketDir := filepath.Join(dataDir, "webmux")
+	os.MkdirAll(socketDir, 0700)
+	return filepath.Join(socketDir, "tmux.sock")
 }
 
 // sessionEnvArgs returns tmux -e arguments for setting session environment variables
@@ -669,12 +785,14 @@ func (sm *SessionManager) startTtyd(session *Session) error {
 
 // handleTtydExit handles ttyd process exit and restarts for reconnection
 func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
-	cmd.Wait()
+	exitState := cmd.Wait()
+	log.Printf("Session %s: ttyd process exited with: %v", session.ID, exitState)
 
 	sm.mu.Lock()
 	// Check if session still exists
 	s, ok := sm.sessions[session.ID]
 	if !ok {
+		log.Printf("Session %s: already removed from sessions map", session.ID)
 		sm.mu.Unlock()
 		return
 	}
@@ -684,7 +802,7 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 	checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", session.tmuxSession)
 	if err := checkCmd.Run(); err != nil {
 		// tmux session is gone, clean up
-		log.Printf("Session %s: tmux session exited, cleaning up", session.ID)
+		log.Printf("Session %s: tmux session %s no longer exists, cleaning up", session.ID, session.tmuxSession)
 		sm.deleteSession(session.ID)
 		if len(sm.sessions) == 0 {
 			sm.resetCounters()
@@ -693,7 +811,7 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 		return
 	}
 
-	log.Printf("Session %s: ttyd exited, restarting for reconnection...", session.ID)
+	log.Printf("Session %s: ttyd exited but tmux session %s still exists, restarting ttyd...", session.ID, session.tmuxSession)
 	sm.mu.Unlock()
 
 	// Restart ttyd (outside of lock)
@@ -705,6 +823,8 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 			sm.resetCounters()
 		}
 		sm.mu.Unlock()
+	} else {
+		log.Printf("Session %s: ttyd restarted successfully", session.ID)
 	}
 }
 
@@ -712,21 +832,26 @@ func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
 // and updates the current foreground process
 func (sm *SessionManager) monitorSession(session *Session) {
 	tmuxSocket := sm.tmuxSocketPath()
+	startTime := time.Now()
+	checkCount := 0
 
 	for {
 		sm.mu.RLock()
 		s, ok := sm.sessions[session.ID]
 		if !ok {
 			sm.mu.RUnlock()
+			log.Printf("Session %s: removed from sessions map after %d checks (%v)", session.ID, checkCount, time.Since(startTime))
 			return
 		}
 		tmuxSession := s.tmuxSession
 		sm.mu.RUnlock()
 
+		checkCount++
+
 		// Check if tmux session still exists
 		checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", tmuxSession)
 		if err := checkCmd.Run(); err != nil {
-			log.Printf("Session %s: tmux session exited, cleaning up", session.ID)
+			log.Printf("Session %s: tmux session %s exited after %d checks (%v), cleaning up", session.ID, tmuxSession, checkCount, time.Since(startTime))
 			// Kill ttyd process if running
 			sm.mu.Lock()
 			if s, ok := sm.sessions[session.ID]; ok {
@@ -1141,6 +1266,49 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"sessionCount": len(sessions),
 		"tmuxSocket":   s.manager.tmuxSocketPath(),
 	})
+}
+
+// Maximum lines that can be requested from logs endpoint
+const maxLogLines = 10000
+
+// handleLogs returns the server logs
+func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Prevent caching of logs
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	if logWriter == nil {
+		http.Error(w, "Log file not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Get optional lines parameter (default to max, capped for safety)
+	maxLines := maxLogLines
+	if linesParam := r.URL.Query().Get("lines"); linesParam != "" {
+		if n, err := strconv.Atoi(linesParam); err == nil && n > 0 {
+			if n > maxLogLines {
+				n = maxLogLines
+			}
+			maxLines = n
+		}
+	}
+
+	logs, err := logWriter.ReadLogs(maxLines)
+	if err != nil {
+		// Don't expose internal error details
+		log.Printf("Failed to read logs: %v", err)
+		http.Error(w, "Failed to read logs", http.StatusInternalServerError)
+		return
+	}
+
+	w.Write([]byte(logs))
 }
 
 // handleScratch handles scratch pad GET/POST/DELETE
@@ -1560,11 +1728,24 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewDecoder(r.Body).Decode(&req)
 
+		// Log session creation with origin info for debugging
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = r.Header.Get("Referer")
+		}
+		remoteAddr := r.RemoteAddr
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			remoteAddr = fwd
+		}
+		log.Printf("Session create request from %s (origin: %s)", remoteAddr, origin)
+
 		session, err := s.manager.CreateSession(req.Name)
 		if err != nil {
+			log.Printf("Session create failed: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		log.Printf("Session %s created successfully", session.ID)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(session)
 
@@ -1591,6 +1772,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodDelete:
+		// Log who is requesting the session close
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = r.Header.Get("Referer")
+		}
+		remoteAddr := r.RemoteAddr
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			remoteAddr = fwd
+		}
+		log.Printf("Session DELETE request for %s from %s (origin: %s)", sessionID, remoteAddr, origin)
+
 		if err := s.manager.CloseSession(sessionID); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
@@ -1864,13 +2056,23 @@ const ttydHeadScript = `<head><script>
 (function() {
     var OrigWebSocket = window.WebSocket;
     window.WebSocket = function(url, protocols) {
-        // Rewrite localhost/127.0.0.1 WebSocket URLs to use current page's path
-        if (url.match(/^wss?:\/\/(localhost|127\.0\.0\.1)/)) {
-            var pagePath = window.location.pathname.replace(/\/$/, '');
-            var wsPath = url.replace(/^wss?:\/\/[^\/]+/, '');
-            var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            url = protocol + '//' + window.location.host + pagePath + wsPath;
-            console.log('[webmux] Rewriting WebSocket URL to:', url);
+        var originalUrl = url;
+        // Rewrite WebSocket URLs that point to localhost/127.0.0.1 or use a different host
+        // than the current page (which happens when accessed through a reverse proxy)
+        var currentHost = window.location.host;
+        var urlMatch = url.match(/^(wss?):\/\/([^\/]+)(.*)/);
+        if (urlMatch) {
+            var wsProtocol = urlMatch[1];
+            var wsHost = urlMatch[2];
+            var wsPath = urlMatch[3];
+            // Rewrite if: targeting localhost/127.0.0.1, OR if the host doesn't match current page
+            // (the latter catches cases where ttyd generates URLs with internal hostnames)
+            if (wsHost.match(/^(localhost|127\.0\.0\.1)(:\d+)?$/) || wsHost !== currentHost) {
+                var pagePath = window.location.pathname.replace(/\/$/, '');
+                var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                url = protocol + '//' + currentHost + pagePath + wsPath;
+                console.log('[webmux] Rewriting WebSocket URL:', originalUrl, '->', url);
+            }
         }
         if (protocols) {
             return new OrigWebSocket(url, protocols);
@@ -1882,6 +2084,7 @@ const ttydHeadScript = `<head><script>
     window.WebSocket.OPEN = OrigWebSocket.OPEN;
     window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
     window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+    console.log('[webmux] WebSocket interceptor installed');
 })();
 </script>`
 
@@ -1991,6 +2194,10 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 			resp.Body = io.NopCloser(strings.NewReader(content))
 			resp.ContentLength = int64(len(content))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(content)))
+			// Prevent caching to ensure WebSocket intercept is always fresh
+			resp.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			resp.Header.Set("Pragma", "no-cache")
+			resp.Header.Set("Expires", "0")
 
 			return nil
 		}
@@ -2569,6 +2776,18 @@ func (s *Server) handleMarkedDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Set up rotating log writer (9999 lines max, stored in system temp dir)
+	var err error
+	logWriter, err = NewRotatingLogWriter(9999)
+	if err != nil {
+		// Fall back to stdout only if we can't create log file
+		fmt.Fprintf(os.Stderr, "Warning: could not create log file: %v\n", err)
+	} else {
+		log.SetOutput(logWriter)
+		log.SetFlags(log.Ldate | log.Ltime)
+		defer logWriter.Close()
+	}
+
 	// Configuration via flags
 	defaultUploadDir := filepath.Join(xdgDataHome(), "webmux", "uploads")
 
@@ -2640,6 +2859,7 @@ func main() {
 
 	// API routes
 	mux.HandleFunc("/api/info", server.handleInfo)
+	mux.HandleFunc("/api/logs", server.handleLogs)
 	mux.HandleFunc("/api/sessions", server.handleSessions)
 	mux.HandleFunc("/api/sessions/", server.handleSession)
 	mux.HandleFunc("/api/upload", server.handleUpload)

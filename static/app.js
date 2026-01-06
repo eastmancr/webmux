@@ -740,7 +740,16 @@ class TerminalMultiplexer {
             const currentSessionIds = Array.from(this.sessions.keys());
             for (const sessionId of currentSessionIds) {
                 if (!serverSessionIds.has(sessionId)) {
-                    console.log(`Session ${sessionId} no longer exists, cleaning up`);
+                    // Don't remove sessions that were just created (< 3 seconds ago)
+                    // This prevents race conditions where the health check runs before
+                    // the server has fully registered the session
+                    const session = this.sessions.get(sessionId);
+                    const addedAt = session?._addedAt || 0;
+                    if (Date.now() - addedAt < 3000) {
+                        console.log(`Session ${sessionId} not on server but was just created, waiting...`);
+                        continue;
+                    }
+                    console.log(`Session ${sessionId} no longer exists on server, cleaning up`);
                     this.handleSessionDied(sessionId);
                 }
             }
@@ -909,6 +918,15 @@ class TerminalMultiplexer {
         this.keybindsModal = document.getElementById('keybinds-modal');
         this.openKeybindsBtn = document.getElementById('open-keybinds');
 
+        // Logs modal
+        this.logsModal = document.getElementById('logs-modal');
+        this.openLogsBtn = document.getElementById('open-logs');
+        this.logsContent = document.getElementById('logs-content');
+        this.logsAutoRefresh = document.getElementById('logs-auto-refresh');
+        this.logsRefreshBtn = document.getElementById('logs-refresh');
+        this.logsRefreshInterval = null;
+        this.logsFetchPending = false;
+
         // Scratch pad toggle
         this.toggleScratchBtn = document.getElementById('toggle-scratch');
 
@@ -971,6 +989,25 @@ class TerminalMultiplexer {
             this.openModal(this.keybindsModal);
         });
 
+        // Logs button
+        this.openLogsBtn.addEventListener('click', () => {
+            this.openLogsModal();
+        });
+
+        // Logs refresh button
+        this.logsRefreshBtn.addEventListener('click', () => {
+            this.fetchLogs();
+        });
+
+        // Logs auto-refresh toggle
+        this.logsAutoRefresh.addEventListener('change', () => {
+            if (this.logsAutoRefresh.checked && !this.logsModal.classList.contains('hidden')) {
+                this.startLogsAutoRefresh();
+            } else {
+                this.stopLogsAutoRefresh();
+            }
+        });
+
         // Scratch pad toggle button
         this.toggleScratchBtn.addEventListener('click', () => {
             this.toggleScratchPad();
@@ -983,6 +1020,11 @@ class TerminalMultiplexer {
             if (e.ctrlKey && e.key === '/') {
                 e.preventDefault();
                 this.openModal(this.keybindsModal);
+            }
+            // Ctrl+Shift+L to open logs modal
+            if (e.ctrlKey && e.shiftKey && (e.key === 'L' || e.key === 'l')) {
+                e.preventDefault();
+                this.openLogsModal();
             }
         });
 
@@ -1144,6 +1186,8 @@ class TerminalMultiplexer {
                 if (modal === this.settingsModal) {
                     e.stopPropagation();
                     this.handleSettingsClose();
+                } else if (modal === this.logsModal) {
+                    this.closeLogsModal();
                 } else {
                     this.closeModal(this.uploadModal);
                     this.closeModal(this.downloadModal);
@@ -1152,7 +1196,7 @@ class TerminalMultiplexer {
             });
         });
 
-        [this.uploadModal, this.downloadModal, this.settingsModal, this.keybindsModal].forEach(modal => {
+        [this.uploadModal, this.downloadModal, this.settingsModal, this.keybindsModal, this.logsModal].forEach(modal => {
             modal.addEventListener('click', (e) => {
                 if (e.target === modal) {
                     if (modal === this.settingsModal) {
@@ -1162,6 +1206,8 @@ class TerminalMultiplexer {
                         } else {
                             this.handleSettingsClose();
                         }
+                    } else if (modal === this.logsModal) {
+                        this.closeLogsModal();
                     } else {
                         this.closeModal(modal);
                     }
@@ -1187,6 +1233,7 @@ class TerminalMultiplexer {
                 this.closeModal(this.uploadModal);
                 this.closeModal(this.downloadModal);
                 this.closeModal(this.keybindsModal);
+                this.closeLogsModal();
                 // For settings modal, treat Escape like clicking elsewhere
                 if (!this.settingsModal.classList.contains('hidden')) {
                     if (this.settingsDiscardPending) {
@@ -1457,6 +1504,8 @@ class TerminalMultiplexer {
                 return null;
             }
 
+            // Mark when this session was added to the frontend (for race condition protection)
+            session._addedAt = Date.now();
             this.sessions.set(session.id, session);
             return session;
         } catch (error) {
@@ -3307,6 +3356,89 @@ class TerminalMultiplexer {
         }
         if (modal === this.downloadModal) {
             this.markedSidekick.classList.add('hidden');
+        }
+    }
+
+    // ============ Logs Modal ============
+
+    openLogsModal() {
+        this.openModal(this.logsModal);
+        this.fetchLogs();
+        if (this.logsAutoRefresh.checked) {
+            this.startLogsAutoRefresh();
+        }
+    }
+
+    closeLogsModal() {
+        this.stopLogsAutoRefresh();
+        this.logsFetchPending = false; // Cancel any pending fetch display
+        this.closeModal(this.logsModal);
+    }
+
+    async fetchLogs() {
+        // Prevent concurrent fetches
+        if (this.logsFetchPending) return;
+        this.logsFetchPending = true;
+
+        try {
+            const response = await fetch(this.url('/api/logs'));
+
+            // Check if modal was closed while we were fetching
+            if (this.logsModal.classList.contains('hidden')) {
+                return;
+            }
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const logs = await response.text();
+
+            // Only update if content changed (preserves user's text selection)
+            if (this.logsContent.textContent === logs) {
+                return;
+            }
+
+            const wasAtBottom = this.isLogsScrolledToBottom();
+            // textContent is safe from XSS
+            this.logsContent.textContent = logs;
+            // Auto-scroll to bottom if user was already at bottom
+            if (wasAtBottom) {
+                this.scrollLogsToBottom();
+            }
+        } catch (error) {
+            // Only show error if modal is still open
+            if (!this.logsModal.classList.contains('hidden')) {
+                console.error('Failed to fetch logs:', error);
+                this.logsContent.textContent = `Failed to load logs: ${error.message}`;
+            }
+        } finally {
+            this.logsFetchPending = false;
+        }
+    }
+
+    isLogsScrolledToBottom() {
+        const el = this.logsContent;
+        // Consider "at bottom" if within 50px of the bottom
+        return el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+    }
+
+    scrollLogsToBottom() {
+        this.logsContent.scrollTop = this.logsContent.scrollHeight;
+    }
+
+    startLogsAutoRefresh() {
+        this.stopLogsAutoRefresh();
+        this.logsRefreshInterval = setInterval(() => {
+            if (!this.logsModal.classList.contains('hidden')) {
+                this.fetchLogs();
+            }
+        }, 2000); // Refresh every 2 seconds
+    }
+
+    stopLogsAutoRefresh() {
+        if (this.logsRefreshInterval) {
+            clearInterval(this.logsRefreshInterval);
+            this.logsRefreshInterval = null;
         }
     }
 
