@@ -1,0 +1,45 @@
+# Example systemd service file for webmux
+# Copy to /etc/systemd/system/webmux.service and adjust as needed
+#
+# After copying:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable webmux
+#   sudo systemctl start webmux
+
+[Unit]
+Description=Webmux web-based terminal multiplexer
+After=network.target
+
+[Service]
+Type=simple
+
+# Change to your username and group
+User=<username>
+Group=<username>
+
+# Working directory for new terminal sessions
+WorkingDirectory=/home/<username>
+
+# XDG environment variables
+# These ensure webmux can find config files and store data properly
+Environment="HOME=/home/<username>"
+Environment="XDG_CONFIG_HOME=/home/<username>/.config"
+Environment="XDG_DATA_HOME=/home/<username>/.local/share"
+Environment="XDG_STATE_HOME=/home/<username>/.local/state"
+Environment="XDG_CACHE_HOME=/home/<username>/.cache"
+Environment="XDG_RUNTIME_DIR=/run/user/<user id>"
+
+ExecStart=/usr/bin/webmux -port 8080
+Restart=on-failure
+RestartSec=5
+
+# Don't let systemd manage child process cgroups
+# This prevents systemd from killing tmux sessions unexpectedly
+Delegate=yes
+
+# Only kill the main webmux process on stop, not child tmux sessions
+# This allows sessions to persist across webmux restarts
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
