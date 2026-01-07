@@ -494,6 +494,29 @@ body.mobile-mode .sidebar-panel {
     color: var(--bg-primary);
 }
 
+.btn-icon {
+    padding: 8px;
+    min-width: unset;
+    width: 36px;
+    height: 36px;
+}
+
+.btn-icon svg {
+    margin: 0;
+}
+
+.btn-subtle {
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--text-muted);
+}
+
+.btn-subtle:hover {
+    background: var(--bg-tertiary);
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
 /* Main terminal area */
 #terminal-container {
     flex: 1;

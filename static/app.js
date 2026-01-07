@@ -1104,6 +1104,12 @@ class TerminalMultiplexer {
         this.newSessionBtn.addEventListener('click', () => this.createNewSessionAndGroup());
         this.createFirstBtn.addEventListener('click', () => this.createNewSessionAndGroup());
 
+        // Clipboard permission button
+        const clipboardPermBtn = document.getElementById('clipboard-permission-btn');
+        if (clipboardPermBtn) {
+            clipboardPermBtn.addEventListener('click', () => this.requestClipboardPermission());
+        }
+
         // Upload modal
         this.openUploadBtn.addEventListener('click', () => this.openModal(this.uploadModal));
         this.dropZone.addEventListener('click', () => this.fileInput.click());
@@ -3881,6 +3887,12 @@ class TerminalMultiplexer {
         // - F1-F12 (function keys)
         // - Tab, Enter, Escape, Space, Backspace, Delete
         // - Single letters, numbers, symbols
+        // - Special actions: Paste (reads system clipboard)
+
+        // Check for special actions first
+        if (keys.trim().toLowerCase() === 'paste') {
+            return true;
+        }
 
         const keyPattern = /^(?:C-)?(?:M-)?(?:S-)?([A-Za-z0-9]|F[1-9]|F1[0-2]|Tab|Enter|Escape|Esc|Space|Backspace|BS|Delete|Del|Up|Down|Left|Right|Home|End|PageUp|PageDown|PgUp|PgDn|Insert|Ins|[\[\]\/\\.,;:'"`~!@#$%^&*()\-_=+<>|])$/i;
         return keyPattern.test(keys.trim());
@@ -3929,6 +3941,7 @@ class TerminalMultiplexer {
                 'pgdn': 'PageDown',
                 'insert': 'Insert',
                 'ins': 'Insert',
+                'paste': 'Paste',
             };
 
             const lowerKey = key.toLowerCase();
@@ -3981,6 +3994,7 @@ class TerminalMultiplexer {
             'C-n': 'Next command',
             'Tab': 'Tab / Autocomplete',
             'Escape': 'Escape',
+            'Paste': 'Paste from system clipboard',
         };
         const desc = descriptions[keys];
         return desc ? `${label}: ${desc}` : label;
@@ -4454,12 +4468,50 @@ class TerminalMultiplexer {
             });
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
+                btn.blur(); // Remove focus so arrow keys don't navigate buttons
                 const keys = btn.dataset.keys;
                 if (keys) {
-                    this.sendKeysToActiveSession({ keys: [keys] });
+                    this.handleKeybarAction(keys);
                 }
             });
         });
+    }
+
+    // Handle keybar button action - either send keys or perform special action
+    async handleKeybarAction(keys) {
+        // Handle special actions
+        if (keys === 'Paste') {
+            await this.pasteFromClipboard();
+            return;
+        }
+
+        // Regular key combo - send to active session
+        this.sendKeysToActiveSession({ keys: [keys] });
+    }
+
+    // Paste system clipboard content to active terminal
+    // Only works reliably on Chromium browsers; Firefox shows a context menu
+    async pasteFromClipboard() {
+        // On non-Chromium browsers, direct them to use keyboard shortcut
+        if (!this.isChromium) {
+            this.toastWarning('Use Ctrl+Shift+V to paste in this browser');
+            return;
+        }
+
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text) {
+                this.toastWarning('Clipboard is empty');
+                return;
+            }
+            // Send as text sequence rather than keys
+            await this.sendKeysToActiveSession({ 
+                sequence: [{ type: 'text', value: text }] 
+            });
+        } catch (err) {
+            console.error('[clipboard] Failed to paste:', err);
+            this.toastError('Failed to read clipboard. Grant permission in browser settings.');
+        }
     }
 
     bindMobileKeybarEvents() {
@@ -4472,9 +4524,10 @@ class TerminalMultiplexer {
             });
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
+                btn.blur(); // Remove focus so arrow keys don't navigate buttons
                 const keys = btn.dataset.keys;
                 if (keys) {
-                    this.sendKeysToActiveSession({ keys: [keys] });
+                    this.handleKeybarAction(keys);
                 }
             });
         });
@@ -5163,10 +5216,15 @@ class TerminalMultiplexer {
 
     connectClipboardEvents() {
         // Connect to SSE for clipboard updates from wm CLI
-        // When text is copied via wm copy, it's broadcast here to update browser clipboard
-        // Content is base64-encoded to handle newlines safely in SSE
+        // Handles two event types:
+        // 1. Default message: clipboard content update (base64-encoded)
+        // 2. clipboard-request: server requesting browser clipboard for wm paste
         let retryDelay = 1000;
         const maxRetryDelay = 30000;
+
+        // Track clipboard-read permission state
+        this.clipboardReadPermission = 'prompt'; // 'granted', 'prompt', or 'denied'
+        this.initClipboardPermission();
 
         const connect = () => {
             const es = new EventSource(this.url('/api/clipboard/events'));
@@ -5175,6 +5233,7 @@ class TerminalMultiplexer {
                 retryDelay = 1000;
             };
 
+            // Handle clipboard content updates (wm copy)
             es.onmessage = async (e) => {
                 const encoded = e.data;
                 if (encoded) {
@@ -5189,6 +5248,13 @@ class TerminalMultiplexer {
                 }
             };
 
+            // Handle clipboard read requests (wm paste)
+            es.addEventListener('clipboard-request', async (e) => {
+                const requestId = e.data;
+                console.log('[clipboard] Received request:', requestId);
+                await this.handleClipboardRequest(requestId);
+            });
+
             es.onerror = () => {
                 es.close();
                 setTimeout(connect, retryDelay);
@@ -5199,6 +5265,127 @@ class TerminalMultiplexer {
         };
 
         connect();
+    }
+
+    // Initialize clipboard permission tracking (Chrome/Chromium only)
+    async initClipboardPermission() {
+        // Only Chrome/Chromium supports seamless clipboard read with persistent permissions
+        // Firefox requires user gesture for each read and shows a context menu on failure
+        // Safari has similar limitations
+        // For non-Chrome browsers, we skip browser clipboard entirely and use server-side
+        this.isChromium = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent) 
+            || /Chromium/.test(navigator.userAgent)
+            || /Edg/.test(navigator.userAgent);  // Edge is Chromium-based
+        
+        if (!this.isChromium) {
+            this.clipboardReadPermission = 'unsupported';
+            this.updateClipboardPermissionUI();
+            return;
+        }
+
+        try {
+            const result = await navigator.permissions.query({ name: 'clipboard-read' });
+            this.clipboardReadPermission = result.state;
+            this.updateClipboardPermissionUI();
+
+            // Listen for permission changes
+            result.addEventListener('change', () => {
+                this.clipboardReadPermission = result.state;
+                this.updateClipboardPermissionUI();
+                console.log('[clipboard] Permission changed to:', result.state);
+            });
+        } catch (err) {
+            // Permissions API query failed
+            this.clipboardReadPermission = 'unsupported';
+            this.updateClipboardPermissionUI();
+        }
+    }
+
+    // Update UI based on clipboard permission state
+    updateClipboardPermissionUI() {
+        const btn = document.getElementById('clipboard-permission-btn');
+        if (!btn) return;
+
+        // Only show button for Chromium browsers where permission can be granted
+        if (this.clipboardReadPermission === 'unsupported') {
+            btn.style.display = 'none';
+            return;
+        }
+
+        if (this.clipboardReadPermission === 'denied') {
+            btn.style.display = 'flex';
+            btn.title = 'Clipboard access denied - click to enable for wm paste';
+        } else if (this.clipboardReadPermission === 'prompt') {
+            btn.style.display = 'flex';
+            btn.title = 'Click to enable clipboard access for wm paste';
+        } else {
+            btn.style.display = 'none';
+        }
+    }
+
+    // Handle clipboard read request from server (for wm paste)
+    async handleClipboardRequest(requestId) {
+        // Only attempt browser clipboard read on Chromium with granted permission
+        // Other browsers fall back to server-side clipboard immediately
+        if (!this.isChromium || this.clipboardReadPermission !== 'granted') {
+            await fetch(this.url(`/api/clipboard/response/${requestId}?error=1`), {
+                method: 'POST'
+            });
+            return;
+        }
+
+        // Dedupe: track handled requests to avoid double-handling
+        // (can happen with multiple tabs or SSE reconnects)
+        if (!this.handledClipboardRequests) {
+            this.handledClipboardRequests = new Set();
+        }
+        if (this.handledClipboardRequests.has(requestId)) {
+            return;
+        }
+        this.handledClipboardRequests.add(requestId);
+        
+        // Clean up old request IDs (keep last 100)
+        if (this.handledClipboardRequests.size > 100) {
+            const arr = Array.from(this.handledClipboardRequests);
+            this.handledClipboardRequests = new Set(arr.slice(-50));
+        }
+
+        try {
+            const text = await navigator.clipboard.readText();
+            await fetch(this.url(`/api/clipboard/response/${requestId}`), {
+                method: 'POST',
+                body: text
+            });
+            console.log('[clipboard] Sent browser clipboard to wm paste:', text.length, 'chars');
+        } catch (err) {
+            console.log('[clipboard] Browser clipboard read failed, using server fallback');
+            await fetch(this.url(`/api/clipboard/response/${requestId}?error=1`), {
+                method: 'POST'
+            });
+        }
+    }
+
+    // Request clipboard permission via user interaction (Chrome/Edge)
+    async requestClipboardPermission() {
+        if (!this.isChromium) {
+            this.toastWarning('Clipboard sync not supported in this browser. Use Ctrl+Shift+V to paste.');
+            return;
+        }
+
+        try {
+            // This will prompt the user if in 'prompt' state
+            await navigator.clipboard.readText();
+            // If successful, permission was granted
+            this.clipboardReadPermission = 'granted';
+            this.updateClipboardPermissionUI();
+            this.toastSuccess('Clipboard access enabled');
+        } catch (err) {
+            if (err.name === 'NotAllowedError') {
+                this.toastError('Clipboard access denied. Check browser settings.');
+            }
+            // Re-query permission state
+            this.initClipboardPermission();
+        }
     }
 }
 
