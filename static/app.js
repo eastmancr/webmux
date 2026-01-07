@@ -154,6 +154,9 @@ class TerminalMultiplexer {
 
         // Connect to marked files SSE
         this.connectMarkedEvents();
+
+        // Connect to clipboard SSE (for wm copy integration)
+        this.connectClipboardEvents();
     }
 
     startSessionHealthCheck() {
@@ -5154,6 +5157,48 @@ class TerminalMultiplexer {
 
     isFileMarked(path) {
         return this.markedFiles.some(f => f.path === path);
+    }
+
+    // ============ Clipboard Integration ============
+
+    connectClipboardEvents() {
+        // Connect to SSE for clipboard updates from wm CLI
+        // When text is copied via wm copy, it's broadcast here to update browser clipboard
+        // Content is base64-encoded to handle newlines safely in SSE
+        let retryDelay = 1000;
+        const maxRetryDelay = 30000;
+
+        const connect = () => {
+            const es = new EventSource(this.url('/api/clipboard/events'));
+
+            es.onopen = () => {
+                retryDelay = 1000;
+            };
+
+            es.onmessage = async (e) => {
+                const encoded = e.data;
+                if (encoded) {
+                    try {
+                        // Decode base64 to get original text
+                        const text = atob(encoded);
+                        await navigator.clipboard.writeText(text);
+                        console.log('[clipboard] Updated from wm copy:', text.length, 'chars');
+                    } catch (err) {
+                        console.warn('[clipboard] Failed to update clipboard:', err);
+                    }
+                }
+            };
+
+            es.onerror = () => {
+                es.close();
+                setTimeout(connect, retryDelay);
+                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
+            };
+
+            this.clipboardEventSource = es;
+        };
+
+        connect();
     }
 }
 

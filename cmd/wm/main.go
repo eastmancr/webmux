@@ -70,6 +70,10 @@ func main() {
 		err = cmdMark(host, args)
 	case "init":
 		err = cmdInit()
+	case "copy", "c":
+		err = cmdCopy(args)
+	case "paste", "p", "v":
+		err = cmdPaste()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -104,6 +108,8 @@ Commands:
   mark <file>...     Mark files for download
   mark unmark <file> Unmark a file
   mark clear         Clear all marked files
+  copy, c [text]     Copy text to browser clipboard (reads stdin if no args)
+  paste, p, v        Paste from browser clipboard to stdout
   init               Output shell code that defines the wm wrapper function
 
 Environment:
@@ -112,6 +118,16 @@ Environment:
   WEBMUX_HOST        Full server address (overrides WEBMUX_PORT if set)
 
 In webmux terminals, use wm to run commands (e.g., wm ls, wm scratch hello)
+
+Clipboard:
+  The copy/paste commands use the webmux HTTP API to sync with the browser.
+  Wrapper scripts for wl-copy, wl-paste, xclip, and xsel are provided in PATH,
+  so programs like neovim work automatically without configuration.
+
+  Copy: Sends text to all connected browser tabs (updates system clipboard)
+  Paste: Returns the last text copied via wm copy (not system clipboard)
+
+  To paste from your system clipboard into the terminal, use Ctrl+Shift+V.
 
 `)
 }
@@ -572,6 +588,88 @@ wm() {
 }
 `, wmBin)
 	return nil
+}
+
+// SECTION: CLIPBOARD
+
+// cmdCopy sends text to the server-side clipboard via HTTP API
+// The server broadcasts to connected browsers to update their clipboards
+// Usage: wm copy <text>  OR  echo "text" | wm copy
+func cmdCopy(args []string) error {
+	var text string
+
+	if len(args) > 0 {
+		text = strings.Join(args, " ")
+	} else {
+		// Read from stdin
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("failed to read stdin: %w", err)
+		}
+		text = string(data)
+	}
+
+	if text == "" {
+		return fmt.Errorf("nothing to copy")
+	}
+
+	// Determine host from environment
+	host := os.Getenv("WEBMUX_HOST")
+	if host == "" {
+		port := os.Getenv("WEBMUX_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		host = "localhost:" + port
+	}
+
+	// POST to clipboard API
+	resp, err := http.Post(
+		fmt.Sprintf("http://%s/api/clipboard", host),
+		"text/plain",
+		strings.NewReader(text),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set clipboard: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to set clipboard: %s", string(body))
+	}
+
+	return nil
+}
+
+// cmdPaste reads from the server-side clipboard via HTTP API
+// Outputs the clipboard contents to stdout
+func cmdPaste() error {
+	// Determine host from environment
+	host := os.Getenv("WEBMUX_HOST")
+	if host == "" {
+		port := os.Getenv("WEBMUX_PORT")
+		if port == "" {
+			port = "8080"
+		}
+		host = "localhost:" + port
+	}
+
+	// GET from clipboard API
+	resp, err := http.Get(fmt.Sprintf("http://%s/api/clipboard", host))
+	if err != nil {
+		return fmt.Errorf("failed to get clipboard: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to get clipboard: %s", string(body))
+	}
+
+	// Copy clipboard content to stdout
+	_, err = io.Copy(os.Stdout, resp.Body)
+	return err
 }
 
 // Multipart helper

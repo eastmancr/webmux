@@ -21,6 +21,7 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -535,20 +536,177 @@ func NewSessionManager(startPort int, shell, workDir, serverPort string) *Sessio
 		}
 	}
 
-	// Create shell init script that defines the wm function
+	// Create shell init script that defines the wm function and sets up clipboard tools
 	// This will be sourced via ENV (POSIX shells) or BASH_ENV (bash)
 	if sm.wmBinDir != "" {
 		wmPath := filepath.Join(sm.wmBinDir, "wm")
 		initPath := filepath.Join(sm.wmBinDir, "init.sh")
 		// Generate the init script content (same as `wm init` output)
+		// Also prepend wmBinDir to PATH so wl-copy/wl-paste wrappers are found first
 		initContent := fmt.Sprintf(`# webmux shell init
 _wm_bin=%q
 wm() {
   "$_wm_bin" "$@"
 }
-`, wmPath)
+# Add webmux bin dir to PATH for wl-copy/wl-paste wrappers
+export PATH=%q:"$PATH"
+`, wmPath, sm.wmBinDir)
 		if err := os.WriteFile(initPath, []byte(initContent), 0644); err != nil {
 			log.Printf("Warning: could not write init script: %v", err)
+		}
+
+		// Create wl-copy wrapper that uses the webmux clipboard API (via wm copy)
+		// This allows programs like neovim to use wl-copy transparently
+		wlCopyPath := filepath.Join(sm.wmBinDir, "wl-copy")
+		wlCopyContent := fmt.Sprintf(`#!/bin/sh
+# webmux wl-copy wrapper - copies to browser clipboard via HTTP API
+# Supports: wl-copy [text], echo text | wl-copy, wl-copy < file
+# Ignores wl-copy-specific flags for compatibility
+
+# Skip flags (wl-copy has -n, -p, -t, etc.)
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n|--trim-newline|-p|--primary|-o|--paste-once|-f|--foreground|-c|--clear)
+      shift ;;
+    -t|--type|-s|--seat)
+      shift 2 ;;  # these take an argument
+    --)
+      shift; break ;;
+    -*)
+      shift ;;  # skip unknown flags
+    *)
+      break ;;
+  esac
+done
+
+if [ $# -gt 0 ]; then
+  # Text provided as arguments
+  printf "%%s" "$*" | %q copy
+else
+  # Read from stdin
+  %q copy
+fi
+`, wmPath, wmPath)
+		if err := os.WriteFile(wlCopyPath, []byte(wlCopyContent), 0755); err != nil {
+			log.Printf("Warning: could not write wl-copy wrapper: %v", err)
+		}
+
+		// Create wl-paste wrapper that uses the webmux clipboard API (via wm paste)
+		wlPastePath := filepath.Join(sm.wmBinDir, "wl-paste")
+		wlPasteContent := fmt.Sprintf(`#!/bin/sh
+# webmux wl-paste wrapper - pastes from server-side clipboard via HTTP API
+# Ignores wl-paste-specific flags for compatibility
+
+# Skip flags
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n|--no-newline|-l|--list-types|-p|--primary)
+      shift ;;
+    -t|--type|-s|--seat)
+      shift 2 ;;
+    -w|--watch)
+      # --watch is not supported, just exit
+      echo "wl-paste --watch not supported in webmux" >&2
+      exit 1 ;;
+    --)
+      shift; break ;;
+    -*)
+      shift ;;
+    *)
+      break ;;
+  esac
+done
+
+%q paste
+`, wmPath)
+		if err := os.WriteFile(wlPastePath, []byte(wlPasteContent), 0755); err != nil {
+			log.Printf("Warning: could not write wl-paste wrapper: %v", err)
+		}
+
+		// Create xclip wrapper for X11 clipboard compatibility
+		// xclip is used by many programs when DISPLAY is set
+		xclipPath := filepath.Join(sm.wmBinDir, "xclip")
+		xclipContent := fmt.Sprintf(`#!/bin/sh
+# webmux xclip wrapper - copies/pastes to browser clipboard via HTTP API
+# Supports: xclip -selection clipboard -i, xclip -selection clipboard -o
+
+selection="clipboard"
+mode="in"  # default is copy (input)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -selection|-sel)
+      shift
+      selection="$1"
+      shift ;;
+    -i|-in)
+      mode="in"
+      shift ;;
+    -o|-out)
+      mode="out"
+      shift ;;
+    -d|-display|-target|-t|-loops|-l|-quiet|-q|-verbose|-v|-silent|-f|-r|-rmlastnl|-sensitive|-noutf8)
+      shift ;;  # ignore these flags
+    -*)
+      shift ;;
+    *)
+      shift ;;
+  esac
+done
+
+# Only handle clipboard selection (primary selection not supported via OSC 52)
+if [ "$mode" = "out" ]; then
+  %q paste
+else
+  %q copy
+fi
+`, wmPath, wmPath)
+		if err := os.WriteFile(xclipPath, []byte(xclipContent), 0755); err != nil {
+			log.Printf("Warning: could not write xclip wrapper: %v", err)
+		}
+
+		// Create xsel wrapper for X11 clipboard compatibility
+		xselPath := filepath.Join(sm.wmBinDir, "xsel")
+		xselContent := fmt.Sprintf(`#!/bin/sh
+# webmux xsel wrapper - copies/pastes to browser clipboard via HTTP API
+# Supports: xsel -b -i, xsel -b -o, xsel --clipboard --input, etc.
+
+mode="in"  # default is copy (input)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i|--input)
+      mode="in"
+      shift ;;
+    -o|--output)
+      mode="out"
+      shift ;;
+    -a|--append)
+      mode="in"
+      shift ;;
+    -c|--clear)
+      # Clear clipboard - just copy empty string
+      echo -n "" | %q copy
+      exit 0 ;;
+    -b|--clipboard|-p|--primary|-s|--secondary)
+      shift ;;  # ignore selection type (we only support clipboard)
+    -d|--display|-t|--selectionTimeout|-l|--logfile|-n|--nodetach|-k|--keep|-x|--delete|-f|--follow|-z|--zeroflush|-v|--verbose)
+      shift ;;
+    -*)
+      shift ;;
+    *)
+      shift ;;
+  esac
+done
+
+if [ "$mode" = "out" ]; then
+  %q paste
+else
+  %q copy
+fi
+`, wmPath, wmPath, wmPath)
+		if err := os.WriteFile(xselPath, []byte(xselContent), 0755); err != nil {
+			log.Printf("Warning: could not write xsel wrapper: %v", err)
 		}
 	}
 
@@ -1207,31 +1365,36 @@ type UIState struct {
 
 // Server holds the HTTP server and session manager
 type Server struct {
-	manager      *SessionManager
-	uploadDir    string
-	settings     *Settings
-	settingsMu   sync.RWMutex
-	scratchText  string
-	scratchMu    sync.RWMutex
-	scratchSubs  map[chan string]struct{} // SSE subscribers
-	scratchSubMu sync.Mutex
-	markedFiles  []MarkedFile // Files marked for download
-	markedMu     sync.RWMutex
-	markedSubs   map[chan string]struct{} // SSE subscribers for marked files
-	markedSubMu  sync.Mutex
-	uiState      *UIState // UI layout state (groups, order, etc.)
-	uiStateMu    sync.RWMutex
+	manager            *SessionManager
+	uploadDir          string
+	settings           *Settings
+	settingsMu         sync.RWMutex
+	scratchText        string
+	scratchMu          sync.RWMutex
+	scratchSubs        map[chan string]struct{} // SSE subscribers
+	scratchSubMu       sync.Mutex
+	markedFiles        []MarkedFile // Files marked for download
+	markedMu           sync.RWMutex
+	markedSubs         map[chan string]struct{} // SSE subscribers for marked files
+	markedSubMu        sync.Mutex
+	uiState            *UIState // UI layout state (groups, order, etc.)
+	uiStateMu          sync.RWMutex
+	clipboard          string                   // Server-side clipboard for wm CLI
+	clipboardMu        sync.RWMutex             // Protects clipboard
+	clipboardClients   map[chan string]struct{} // SSE subscribers for clipboard updates
+	clipboardClientsMu sync.RWMutex             // Protects clipboardClients
 }
 
 // NewServer creates a new server instance
 func NewServer(manager *SessionManager, uploadDir string) *Server {
 	s := &Server{
-		manager:     manager,
-		uploadDir:   uploadDir,
-		settings:    LoadSettings(),
-		scratchSubs: make(map[chan string]struct{}),
-		markedFiles: make([]MarkedFile, 0),
-		markedSubs:  make(map[chan string]struct{}),
+		manager:          manager,
+		uploadDir:        uploadDir,
+		settings:         LoadSettings(),
+		scratchSubs:      make(map[chan string]struct{}),
+		markedFiles:      make([]MarkedFile, 0),
+		markedSubs:       make(map[chan string]struct{}),
+		clipboardClients: make(map[chan string]struct{}),
 		uiState: &UIState{
 			Groups:     make([]UIGroup, 0),
 			GroupOrder: make([]string, 0),
@@ -1477,6 +1640,114 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// SECTION: CLIPBOARD
+
+// Maximum clipboard size (10MB - same as OSC 52 payload limit in xterm.js)
+const maxClipboardSize = 10 * 1024 * 1024
+
+// handleClipboard provides a server-side clipboard that the wm CLI can use
+// This enables clipboard integration without relying on OSC 52 escape sequences
+// POST: set clipboard content (body is the text, max 10MB)
+// GET: get clipboard content (returns the text)
+func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.clipboardMu.RLock()
+		content := s.clipboard
+		s.clipboardMu.RUnlock()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(content))
+
+	case http.MethodPost:
+		// Limit request body size to prevent memory exhaustion
+		r.Body = http.MaxBytesReader(w, r.Body, maxClipboardSize)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			if err.Error() == "http: request body too large" {
+				http.Error(w, "Clipboard content too large (max 10MB)", http.StatusRequestEntityTooLarge)
+				return
+			}
+			http.Error(w, "Failed to read body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.clipboardMu.Lock()
+		s.clipboard = string(body)
+		s.clipboardMu.Unlock()
+		// Also broadcast to all connected clients to update their browser clipboard
+		s.broadcastClipboard(string(body))
+		w.WriteHeader(http.StatusOK)
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// broadcastClipboard sends clipboard content to all connected SSE clients
+func (s *Server) broadcastClipboard(content string) {
+	s.clipboardClientsMu.RLock()
+	defer s.clipboardClientsMu.RUnlock()
+	for ch := range s.clipboardClients {
+		select {
+		case ch <- content:
+		default:
+			// Client not ready, skip
+		}
+	}
+}
+
+// handleClipboardEvents provides SSE stream for clipboard updates
+// When wm copy is called, this broadcasts to all connected browsers
+// Content is base64-encoded to handle newlines and special characters safely
+func (s *Server) handleClipboardEvents(w http.ResponseWriter, r *http.Request) {
+	// Set SSE headers
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Create channel for this client
+	clientChan := make(chan string, 10)
+	s.clipboardClientsMu.Lock()
+	s.clipboardClients[clientChan] = struct{}{}
+	s.clipboardClientsMu.Unlock()
+
+	defer func() {
+		s.clipboardClientsMu.Lock()
+		delete(s.clipboardClients, clientChan)
+		s.clipboardClientsMu.Unlock()
+		close(clientChan)
+	}()
+
+	// Helper to send base64-encoded content (handles newlines in SSE)
+	sendContent := func(content string) {
+		encoded := base64.StdEncoding.EncodeToString([]byte(content))
+		fmt.Fprintf(w, "data: %s\n\n", encoded)
+		flusher.Flush()
+	}
+
+	// Send initial clipboard content
+	s.clipboardMu.RLock()
+	if s.clipboard != "" {
+		sendContent(s.clipboard)
+	}
+	s.clipboardMu.RUnlock()
+
+	// Stream updates
+	for {
+		select {
+		case content := <-clientChan:
+			sendContent(content)
+		case <-r.Context().Done():
+			return
+		}
 	}
 }
 
@@ -2088,37 +2359,6 @@ const ttydHeadScript = `<head><script>
 })();
 </script>`
 
-// ttydBodyScript is injected before </body> for OSC 52 clipboard support
-const ttydBodyScript = `<script>
-(function() {
-    // Wait for terminal to initialize, then set up OSC 52 handler for copy
-    var checkTerm = setInterval(function() {
-        if (window.term && window.term.terminal) {
-            clearInterval(checkTerm);
-            var terminal = window.term.terminal;
-
-            // Register OSC 52 handler for copy (used by tmux set-clipboard)
-            if (terminal.parser && terminal.parser.registerOscHandler) {
-                terminal.parser.registerOscHandler(52, function(data) {
-                    // OSC 52 format: "<selection>;<base64-text>"
-                    var parts = data.split(';');
-                    if (parts.length >= 2) {
-                        var base64Text = parts.slice(1).join(';');
-                        if (base64Text && base64Text !== '?') {
-                            try {
-                                var text = atob(base64Text);
-                                navigator.clipboard.writeText(text);
-                            } catch (e) {}
-                        }
-                    }
-                    return true;
-                });
-            }
-        }
-    }, 100);
-})();
-</script></body>`
-
 // SECTION: TERMINAL
 
 // handleTerminalProxy proxies all HTTP requests to the appropriate ttyd instance
@@ -2187,8 +2427,6 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 
 			// Inject WebSocket fix at start of <head> (must run before ttyd's JS)
 			content := strings.Replace(string(body), "<head>", ttydHeadScript, 1)
-			// Inject OSC 52 clipboard handler before </body>
-			content = strings.Replace(content, "</body>", ttydBodyScript, 1)
 
 			// Update the response
 			resp.Body = io.NopCloser(strings.NewReader(content))
@@ -2198,6 +2436,8 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 			resp.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			resp.Header.Set("Pragma", "no-cache")
 			resp.Header.Set("Expires", "0")
+			// Allow clipboard access in iframe
+			resp.Header.Set("Permissions-Policy", "clipboard-read=*, clipboard-write=*")
 
 			return nil
 		}
@@ -2872,6 +3112,8 @@ func main() {
 	mux.HandleFunc("/api/marked", server.handleMarked)
 	mux.HandleFunc("/api/marked/events", server.handleMarkedEvents)
 	mux.HandleFunc("/api/marked/download", server.handleMarkedDownload)
+	mux.HandleFunc("/api/clipboard", server.handleClipboard)
+	mux.HandleFunc("/api/clipboard/events", server.handleClipboardEvents)
 
 	// Terminal proxy - forwards requests to ttyd instances
 	mux.HandleFunc("/t/", server.handleTerminalProxy)

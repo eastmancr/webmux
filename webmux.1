@@ -49,6 +49,12 @@ Get or set scratch pad content. Use \fB-\fR to read from stdin, \fBclear\fR to c
 .TP
 .B wm mark \fR[\fIfile\fR...]
 List or mark files for download. Use \fBunmark\fR to remove, \fBclear\fR to clear all.
+.TP
+.B wm copy \fR[\fItext\fR]
+Copy text to browser clipboard via OSC 52. Reads from stdin if no arguments.
+.TP
+.B wm paste
+Output browser clipboard contents to stdout via OSC 52 query.
 
 .SH FILES
 .TP
@@ -79,7 +85,9 @@ Exchange text between CLI and browser. Send from terminal with \fBwm scratch\fR,
 Customizable UI and terminal colors using Base24 color schemes. Settings are persisted to disk.
 .TP
 .B Clipboard
-Copy support via OSC 52 escape sequences. Paste via Ctrl+Shift+V.
+Full OSC 52 clipboard integration for copy and paste. TUI applications (neovim, etc.) can use
+OSC 52 to read/write the browser clipboard. The \fBwm copy\fR and \fBwm paste\fR commands
+provide CLI access. Native browser paste (Ctrl+Shift+V) also works.
 
 .SH EXAMPLES
 .TP
