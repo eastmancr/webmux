@@ -5233,17 +5233,25 @@ class TerminalMultiplexer {
                 retryDelay = 1000;
             };
 
-            // Handle clipboard content updates (wm copy)
+            // Handle clipboard content updates (wm copy or OSC 52 from terminal)
             es.onmessage = async (e) => {
                 const encoded = e.data;
                 if (encoded) {
                     try {
                         // Decode base64 to get original text
                         const text = atob(encoded);
-                        await navigator.clipboard.writeText(text);
-                        console.log('[clipboard] Updated from wm copy:', text.length, 'chars');
+                        // Try to write to browser clipboard (may fail due to permissions)
+                        // This works in Chromium with granted permissions, fails elsewhere
+                        try {
+                            await navigator.clipboard.writeText(text);
+                            console.log('[clipboard] Updated browser clipboard:', text.length, 'chars');
+                        } catch (clipErr) {
+                            // Browser clipboard write failed - this is expected in most cases
+                            // Server-side clipboard is still updated, so wm paste will work
+                            console.log('[clipboard] Server clipboard updated:', text.length, 'chars (browser write failed)');
+                        }
                     } catch (err) {
-                        console.warn('[clipboard] Failed to update clipboard:', err);
+                        console.warn('[clipboard] Failed to decode clipboard data:', err);
                     }
                 }
             };
@@ -5276,7 +5284,7 @@ class TerminalMultiplexer {
         this.isChromium = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent) 
             || /Chromium/.test(navigator.userAgent)
             || /Edg/.test(navigator.userAgent);  // Edge is Chromium-based
-        
+
         if (!this.isChromium) {
             this.clipboardReadPermission = 'unsupported';
             this.updateClipboardPermissionUI();
@@ -5343,7 +5351,7 @@ class TerminalMultiplexer {
             return;
         }
         this.handledClipboardRequests.add(requestId);
-        
+
         // Clean up old request IDs (keep last 100)
         if (this.handledClipboardRequests.size > 100) {
             const arr = Array.from(this.handledClipboardRequests);

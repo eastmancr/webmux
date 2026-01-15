@@ -708,6 +708,26 @@ fi
 		if err := os.WriteFile(xselPath, []byte(xselContent), 0755); err != nil {
 			log.Printf("Warning: could not write xsel wrapper: %v", err)
 		}
+
+		// Create pbcopy wrapper (macOS compatibility)
+		pbcopyPath := filepath.Join(sm.wmBinDir, "pbcopy")
+		pbcopyContent := fmt.Sprintf(`#!/bin/sh
+# webmux pbcopy wrapper - copies to clipboard via HTTP API
+%q copy
+`, wmPath)
+		if err := os.WriteFile(pbcopyPath, []byte(pbcopyContent), 0755); err != nil {
+			log.Printf("Warning: could not write pbcopy wrapper: %v", err)
+		}
+
+		// Create pbpaste wrapper (macOS compatibility)
+		pbpastePath := filepath.Join(sm.wmBinDir, "pbpaste")
+		pbpasteContent := fmt.Sprintf(`#!/bin/sh
+# webmux pbpaste wrapper - pastes from clipboard via HTTP API
+%q paste
+`, wmPath)
+		if err := os.WriteFile(pbpastePath, []byte(pbpasteContent), 0755); err != nil {
+			log.Printf("Warning: could not write pbpaste wrapper: %v", err)
+		}
 	}
 
 	return sm
@@ -764,6 +784,11 @@ func (sm *SessionManager) CreateSession(name string) (*Session, error) {
 	tmuxArgs = append(tmuxArgs, sm.sessionEnvArgs()...)
 	// Add session ID so wm CLI knows which session it's in
 	tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_SESSION="+id)
+	// Signal that OSC 52 clipboard is supported (webmux intercepts and handles it)
+	// Apps can check this to enable OSC 52 clipboard integration
+	tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_CLIPBOARD=osc52")
+	// Set COLORTERM to help apps detect modern terminal features
+	tmuxArgs = append(tmuxArgs, "-e", "COLORTERM=truecolor")
 	// Clear display environment variables by default (clean terminal session)
 	// We set them to a dummy value rather than empty, because some shell init
 	// scripts check `[ -z "$DISPLAY" ]` to detect headless sessions and may
@@ -2594,6 +2619,8 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // proxyWebSocket handles WebSocket connections by proxying to ttyd
+// It intercepts OSC 52 clipboard sequences from terminal output and broadcasts
+// them via the server's clipboard SSE mechanism.
 func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHost string, parts []string) {
 	// Build target WebSocket path
 	targetPath := "/"
@@ -2601,7 +2628,7 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHo
 		targetPath = "/" + parts[1]
 	}
 
-	// Connect to the backend ttyd WebSocket
+	// Connect to the backend ttyd
 	targetConn, err := net.Dial("tcp", targetHost)
 	if err != nil {
 		http.Error(w, "Failed to connect to terminal", http.StatusBadGateway)
@@ -2624,11 +2651,10 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHo
 	}
 
 	// Manually construct and send the WebSocket upgrade request to ttyd
-	// We need to rewrite the path and Host header
 	upgradeReq := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, targetPath)
 	upgradeReq += fmt.Sprintf("Host: %s\r\n", targetHost)
 
-	// Copy relevant headers (but not Host, we set it above)
+	// Copy relevant headers (but not Host)
 	for key, values := range r.Header {
 		if key == "Host" {
 			continue
@@ -2646,20 +2672,40 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHo
 		return
 	}
 
+	// Create OSC 52 scanner for backend -> client direction
+	osc52Scanner := newOSC52Scanner(s)
+
 	// Bidirectionally copy data between client and backend
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Backend (ttyd) -> Client
+	// Backend (ttyd) -> Client with OSC 52 scanning
 	go func() {
 		defer wg.Done()
-		io.Copy(clientConn, targetConn)
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := targetConn.Read(buf)
+			if err != nil {
+				break
+			}
+			if n > 0 {
+				// Scan for OSC 52 in the data stream
+				// Note: This scans raw WebSocket frame data which includes frame headers,
+				// but OSC 52 sequences are in the payload so this should still work
+				osc52Scanner.Scan(buf[:n])
+
+				// Forward all data to client (we don't strip OSC 52 to avoid breaking frames)
+				if _, err := clientConn.Write(buf[:n]); err != nil {
+					break
+				}
+			}
+		}
 		if tc, ok := clientConn.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
 	}()
 
-	// Client -> Backend (ttyd)
+	// Client -> Backend (ttyd) - pass through unchanged
 	go func() {
 		defer wg.Done()
 		// First flush any buffered data from the hijacked connection
@@ -2675,6 +2721,238 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHo
 	wg.Wait()
 	clientConn.Close()
 	targetConn.Close()
+}
+
+// osc52Scanner scans a byte stream for OSC 52 clipboard escape sequences.
+// It buffers partial sequences across multiple Scan() calls and extracts
+// clipboard content when complete sequences are found.
+//
+// Supported formats:
+//   - Direct OSC 52: \x1b]52;c;<base64>\x07 (BEL terminator)
+//   - Direct OSC 52: \x1b]52;c;<base64>\x1b\\ (ST terminator)
+//   - Tmux passthrough: \x1bPtmux;\x1b\x1b]52;c;<base64>\x07\x1b\\
+type osc52Scanner struct {
+	server *Server
+	buf    []byte
+}
+
+const (
+	// Maximum size of the scanner buffer (64KB should handle any reasonable clipboard)
+	osc52MaxBufSize = 64 * 1024
+	// Maximum decoded clipboard size we'll accept (10MB)
+	osc52MaxClipboardSize = 10 * 1024 * 1024
+)
+
+func newOSC52Scanner(s *Server) *osc52Scanner {
+	return &osc52Scanner{server: s}
+}
+
+// Scan processes incoming data looking for OSC 52 sequences.
+// Found clipboard content is broadcast to connected clients.
+func (o *osc52Scanner) Scan(data []byte) {
+	// Append new data to buffer
+	o.buf = append(o.buf, data...)
+
+	// Process all complete sequences in buffer
+	for {
+		clipboardText, remaining, found := o.extractOSC52(o.buf)
+		if !found {
+			break
+		}
+
+		if clipboardText != "" && len(clipboardText) <= osc52MaxClipboardSize {
+			o.server.clipboardMu.Lock()
+			o.server.clipboard = clipboardText
+			o.server.clipboardMu.Unlock()
+			o.server.broadcastClipboard(clipboardText)
+		}
+
+		o.buf = remaining
+	}
+
+	// Prevent unbounded buffer growth by keeping only recent data
+	// that might contain the start of an incomplete sequence
+	if len(o.buf) > osc52MaxBufSize {
+		o.buf = o.buf[len(o.buf)-osc52MaxBufSize:]
+	}
+}
+
+// extractOSC52 finds and extracts the first complete OSC 52 sequence from data.
+// Returns: clipboard text (empty if malformed), remaining data, and whether a sequence was found.
+func (o *osc52Scanner) extractOSC52(data []byte) (clipboardText string, remaining []byte, found bool) {
+	// Look for tmux passthrough first: \x1bPtmux;\x1b
+	if idx := indexTmuxPassthrough(data); idx != -1 {
+		text, rem, ok := o.extractTmuxPassthrough(data, idx)
+		if ok {
+			return text, rem, true
+		}
+		// Incomplete tmux sequence - keep data from idx onwards
+		if idx > 0 {
+			return "", data[idx:], false
+		}
+		return "", data, false
+	}
+
+	// Look for direct OSC 52: \x1b]52;
+	idx := indexOSC52Start(data)
+	if idx == -1 {
+		// No OSC 52 start found - discard everything except last few bytes
+		// (which might be the start of an escape sequence)
+		if len(data) > 10 {
+			return "", data[len(data)-10:], false
+		}
+		return "", data, false
+	}
+
+	// Find the terminator (BEL \x07 or ST \x1b\\)
+	rest := data[idx:]
+	endIdx := -1
+	for i := 5; i < len(rest); i++ { // Start after "\x1b]52;"
+		if rest[i] == 0x07 { // BEL terminator
+			endIdx = i + 1
+			break
+		}
+		if rest[i] == 0x1b && i+1 < len(rest) && rest[i+1] == '\\' { // ST terminator
+			endIdx = i + 2
+			break
+		}
+	}
+
+	if endIdx == -1 {
+		// No terminator yet - keep buffering from OSC start
+		if idx > 0 {
+			return "", data[idx:], false
+		}
+		return "", data, false
+	}
+
+	// Parse the complete sequence: \x1b]52;X;BASE64<term>
+	seq := rest[:endIdx]
+	clipboardText = o.parseOSC52Payload(seq)
+
+	// Return remaining data after this sequence
+	return clipboardText, data[idx+endIdx:], true
+}
+
+// extractTmuxPassthrough handles tmux DCS passthrough format:
+// \x1bPtmux;\x1b\x1b]52;c;<base64>\x07\x1b\\
+func (o *osc52Scanner) extractTmuxPassthrough(data []byte, idx int) (clipboardText string, remaining []byte, found bool) {
+	rest := data[idx:]
+
+	// Minimum: \x1bPtmux;\x1b\x1b]52;c;\x07\x1b\\ = ~20 bytes
+	if len(rest) < 20 {
+		return "", nil, false
+	}
+
+	// Find the ST terminator for the DCS: \x1b\\
+	// The inner OSC 52 will have its own terminator (BEL or ST)
+	endIdx := -1
+	for i := 15; i < len(rest)-1; i++ {
+		if rest[i] == 0x1b && rest[i+1] == '\\' {
+			// Check if this is the outer DCS terminator (not inner ST)
+			// Inner ST would be doubled: \x1b\x1b\\
+			if i >= 2 && rest[i-1] == 0x1b {
+				continue // This is escaped, keep looking
+			}
+			endIdx = i + 2
+			break
+		}
+	}
+
+	if endIdx == -1 {
+		return "", nil, false
+	}
+
+	// Extract inner OSC 52 from tmux passthrough
+	// Format: \x1bPtmux;\x1b<inner>\x1b\\
+	// The inner content has doubled escapes
+	inner := rest[8 : endIdx-2] // Skip "\x1bPtmux;\x1b" and trailing "\x1b\\"
+
+	// Undouble the escapes in the inner content
+	undoubled := undoubleEscapes(inner)
+
+	// Now parse as regular OSC 52
+	if len(undoubled) > 5 && undoubled[0] == 0x1b && undoubled[1] == ']' {
+		clipboardText = o.parseOSC52Payload(undoubled)
+	}
+
+	return clipboardText, data[idx+endIdx:], true
+}
+
+// parseOSC52Payload extracts and decodes the base64 clipboard data from an OSC 52 sequence.
+// Input format: \x1b]52;c;<base64><terminator>
+func (o *osc52Scanner) parseOSC52Payload(seq []byte) string {
+	// Find the second semicolon (after "52;X")
+	secondSemi := -1
+	for i := 5; i < len(seq)-1; i++ {
+		if seq[i] == ';' {
+			secondSemi = i
+			break
+		}
+	}
+
+	if secondSemi == -1 || secondSemi >= len(seq)-1 {
+		return ""
+	}
+
+	// Determine terminator length
+	termLen := 1 // BEL
+	if len(seq) >= 2 && seq[len(seq)-2] == 0x1b {
+		termLen = 2 // ST (\x1b\\)
+	}
+
+	// Extract base64 data
+	if secondSemi+1 >= len(seq)-termLen {
+		return ""
+	}
+	b64Data := seq[secondSemi+1 : len(seq)-termLen]
+
+	if len(b64Data) == 0 {
+		return ""
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(string(b64Data))
+	if err != nil {
+		return ""
+	}
+
+	return string(decoded)
+}
+
+// indexOSC52Start finds the start of an OSC 52 sequence (\x1b]52;)
+func indexOSC52Start(data []byte) int {
+	for i := 0; i <= len(data)-5; i++ {
+		if data[i] == 0x1b && data[i+1] == ']' && data[i+2] == '5' && data[i+3] == '2' && data[i+4] == ';' {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexTmuxPassthrough finds the start of a tmux DCS passthrough (\x1bPtmux;)
+func indexTmuxPassthrough(data []byte) int {
+	for i := 0; i <= len(data)-7; i++ {
+		if data[i] == 0x1b && data[i+1] == 'P' &&
+			data[i+2] == 't' && data[i+3] == 'm' && data[i+4] == 'u' && data[i+5] == 'x' && data[i+6] == ';' {
+			return i
+		}
+	}
+	return -1
+}
+
+// undoubleEscapes converts doubled escape characters back to single escapes.
+// In tmux passthrough, ESC is represented as ESC ESC.
+func undoubleEscapes(data []byte) []byte {
+	result := make([]byte, 0, len(data))
+	for i := 0; i < len(data); i++ {
+		if data[i] == 0x1b && i+1 < len(data) && data[i+1] == 0x1b {
+			result = append(result, 0x1b)
+			i++ // Skip the doubled escape
+		} else {
+			result = append(result, data[i])
+		}
+	}
+	return result
 }
 
 // handleBrowse lists files in a directory for the download UI
