@@ -5234,22 +5234,14 @@ class TerminalMultiplexer {
             };
 
             // Handle clipboard content updates (wm copy or OSC 52 from terminal)
+            // Server-side clipboard is updated; browser clipboard is NOT touched
+            // to avoid overwriting user's system clipboard unexpectedly
             es.onmessage = async (e) => {
                 const encoded = e.data;
                 if (encoded) {
                     try {
-                        // Decode base64 to get original text
                         const text = atob(encoded);
-                        // Try to write to browser clipboard (may fail due to permissions)
-                        // This works in Chromium with granted permissions, fails elsewhere
-                        try {
-                            await navigator.clipboard.writeText(text);
-                            console.log('[clipboard] Updated browser clipboard:', text.length, 'chars');
-                        } catch (clipErr) {
-                            // Browser clipboard write failed - this is expected in most cases
-                            // Server-side clipboard is still updated, so wm paste will work
-                            console.log('[clipboard] Server clipboard updated:', text.length, 'chars (browser write failed)');
-                        }
+                        console.log('[clipboard] Server clipboard updated:', text.length, 'chars');
                     } catch (err) {
                         console.warn('[clipboard] Failed to decode clipboard data:', err);
                     }
