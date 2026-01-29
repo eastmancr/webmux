@@ -585,7 +585,7 @@ body.mobile-mode .sidebar-panel {
 .layout-vertical .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
 .layout-vertical .terminal-container.pane-1 { grid-column: 1; grid-row: 3; }
 
-/* Grid layout: 
+/* Grid layout:
    col 1 | divider | col 3
    row 1    [0]       [1]
    divider  ---       ---

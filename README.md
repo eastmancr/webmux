@@ -40,7 +40,7 @@ Inside webmux terminals, use `wm` to interact with the server:
 
 ```sh
 wm info                  # show server info
-wm ls                    # list sessions  
+wm ls                    # list sessions
 wm new [name]            # create session
 wm close <id>            # close session
 wm rename <id> <name>    # rename session

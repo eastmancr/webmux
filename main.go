@@ -43,6 +43,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	shellinit "webmux/internal/shell"
 )
 
 //go:embed static/*
@@ -541,16 +543,8 @@ func NewSessionManager(startPort int, shell, workDir, serverPort string) *Sessio
 	if sm.wmBinDir != "" {
 		wmPath := filepath.Join(sm.wmBinDir, "wm")
 		initPath := filepath.Join(sm.wmBinDir, "init.sh")
-		// Generate the init script content (same as `wm init` output)
-		// Also prepend wmBinDir to PATH so wl-copy/wl-paste wrappers are found first
-		initContent := fmt.Sprintf(`# webmux shell init
-_wm_bin=%q
-wm() {
-  "$_wm_bin" "$@"
-}
-# Add webmux bin dir to PATH for wl-copy/wl-paste wrappers
-export PATH=%q:"$PATH"
-`, wmPath, sm.wmBinDir)
+		// Generate the init script content using the shared shell package
+		initContent := shellinit.InitScript(wmPath, sm.wmBinDir)
 		if err := os.WriteFile(initPath, []byte(initContent), 0644); err != nil {
 			log.Printf("Warning: could not write init script: %v", err)
 		}

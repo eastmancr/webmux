@@ -27,6 +27,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"webmux/internal/shell"
 )
 
 const defaultPort = "8080"
@@ -580,13 +582,7 @@ func cmdInit() error {
 		wmBin, _ = os.Executable()
 	}
 
-	// Output POSIX-compatible shell function that wraps the wm binary
-	fmt.Printf(`# webmux shell wrapper
-_wm_bin=%q
-wm() {
-  "$_wm_bin" "$@"
-}
-`, wmBin)
+	fmt.Print(shell.InitScript(wmBin, ""))
 	return nil
 }
 

@@ -492,7 +492,7 @@ class TerminalMultiplexer {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-            const response = await fetch(this.url('/api/info'), { 
+            const response = await fetch(this.url('/api/info'), {
                 method: 'GET',
                 signal: controller.signal
             });
@@ -677,7 +677,7 @@ class TerminalMultiplexer {
                         g.layout = 'single';
                     }
                     // Reset invalid expandedQuadrant values
-                    if (g.expandedQuadrant !== undefined && 
+                    if (g.expandedQuadrant !== undefined &&
                         g.expandedQuadrant !== null &&
                         !['top', 'bottom', 'left', 'right'].includes(g.expandedQuadrant)) {
                         g.expandedQuadrant = null;
@@ -692,8 +692,8 @@ class TerminalMultiplexer {
             }
 
             // Validate groupCounter is a safe positive integer
-            if (typeof state.groupCounter !== 'number' || 
-                !Number.isSafeInteger(state.groupCounter) || 
+            if (typeof state.groupCounter !== 'number' ||
+                !Number.isSafeInteger(state.groupCounter) ||
                 state.groupCounter < 0) {
                 state.groupCounter = 0;
             }
@@ -1181,7 +1181,7 @@ class TerminalMultiplexer {
         this.fileInfoScratchBtn.addEventListener('click', () => this.sendFileInfoToScratch());
         // Close popup when clicking outside
         document.addEventListener('click', (e) => {
-            if (!this.fileInfoPopup.classList.contains('hidden') && 
+            if (!this.fileInfoPopup.classList.contains('hidden') &&
                 !this.fileInfoPopup.contains(e.target) &&
                 !e.target.closest('.file-item')) {
                 this.hideFileInfoPopup();
@@ -1749,7 +1749,7 @@ class TerminalMultiplexer {
                 : `<span class="name">${this.escapeHtml(displayName)}${processHtml}</span>`;
 
             return `
-                <div class="session-item ${this.activeGroupId === group.id ? 'active' : ''}" 
+                <div class="session-item ${this.activeGroupId === group.id ? 'active' : ''}"
                      data-group-id="${group.id}" data-session-id="${session?.id}" draggable="${!isRenaming}"
                      role="button" aria-label="Terminal session: ${this.escapeHtml(displayName)}">
                     <svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -2163,8 +2163,8 @@ class TerminalMultiplexer {
         this.updateMobileToolbar();
 
         // Focus the specified session, or the first one if not specified
-        const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId) 
-            ? focusSessionId 
+        const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId)
+            ? focusSessionId
             : group.sessionIds[0];
         this.focusTerminal(sessionToFocus);
     }
@@ -2680,7 +2680,7 @@ class TerminalMultiplexer {
                 break;
 
             // 3-pane layout changes - remap so terminals only move cardinally
-            // 
+            //
             // Each 3-pane layout has one wide pane and two small panes.
             // When switching layouts, we pick the small terminal closest to the
             // target edge to become wide. Terminals only move cardinally.
@@ -2688,7 +2688,7 @@ class TerminalMultiplexer {
             // Pane index positions by expandDir:
             //   bottom: pane0=TL, pane1=TR, pane2=wide-bottom
             //   top:    pane0=wide-top, pane1=BL, pane2=BR
-            //   right:  pane0=TL, pane1=wide-right, pane2=BL  
+            //   right:  pane0=TL, pane1=wide-right, pane2=BL
             //   left:   pane0=wide-left, pane1=TR, pane2=BR
             case 'expand-top':
             case 'expand-bottom':
@@ -2702,7 +2702,7 @@ class TerminalMultiplexer {
                         // Precomputed transition table for cardinal movement
                         // transitions[oldDir][newDir] = new cellMapping indices
                         // Each array shows: [newPane0, newPane1, newPane2] = [cm[x], cm[y], cm[z]]
-                        // 
+                        //
                         // Layout pane positions:
                         //   bottom: pane0=TL, pane1=TR, pane2=wide-bottom
                         //   top:    pane0=wide-top, pane1=BL, pane2=BR
@@ -3280,7 +3280,7 @@ class TerminalMultiplexer {
                 // Dropping on a small pane - move wide pane to opposite side
                 let wideNewQuad;
                 if (expandDir === 'bottom' || expandDir === 'top') {
-                    wideNewQuad = targetQuad.includes('left') 
+                    wideNewQuad = targetQuad.includes('left')
                         ? wideQuads.find(q => q.includes('right'))
                         : wideQuads.find(q => q.includes('left'));
                 } else {
@@ -3583,7 +3583,7 @@ class TerminalMultiplexer {
                 : '<path fill="currentColor" d="M17 3H7c-1.1 0-2 .9-2 2v16l7-3 7 3V5c0-1.1-.9-2-2-2zm0 15l-5-2.18L7 18V5h10v13z"/>';
             // Mark button - shown for all except parent dir, disabled for non-regular files
             const markBtn = isParent ? '' : `
-                <button class="action-btn mark-btn ${isMarked ? 'marked' : ''} ${!canMark ? 'disabled' : ''}" 
+                <button class="action-btn mark-btn ${isMarked ? 'marked' : ''} ${!canMark ? 'disabled' : ''}"
                         title="${!canMark ? 'Cannot mark this file type' : (isMarked ? 'Unmark' : 'Mark for download')}"
                         aria-label="${isMarked ? 'Unmark' : 'Mark'} ${this.escapeHtml(file.name)} for download"
                         ${!canMark ? 'disabled' : ''}>
@@ -3595,7 +3595,7 @@ class TerminalMultiplexer {
                  role="row" aria-label="${file.isDir ? 'Directory' : 'File'}: ${this.escapeHtml(file.name)}">
                 ${markBtn}
                 <svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                    ${file.isDir 
+                    ${file.isDir
                         ? '<path fill="currentColor" d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>'
                         : '<path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>'}
                 </svg>
@@ -3701,8 +3701,8 @@ class TerminalMultiplexer {
         this.fileInfoName.textContent = file.name;
         this.fileInfoPath.textContent = file.path;
         this.fileInfoSize.textContent = this.formatSize(file.size);
-        this.fileInfoModified.textContent = file.modTime 
-            ? new Date(file.modTime * 1000).toLocaleString() 
+        this.fileInfoModified.textContent = file.modTime
+            ? new Date(file.modTime * 1000).toLocaleString()
             : '—';
 
         // Update icon for directory
@@ -3777,8 +3777,8 @@ class TerminalMultiplexer {
             const currentText = data.text || '';
 
             // Append path on new line
-            const newText = currentText 
-                ? currentText + '\n' + this.currentFileInfo.path 
+            const newText = currentText
+                ? currentText + '\n' + this.currentFileInfo.path
                 : this.currentFileInfo.path;
 
             // Save back
@@ -3878,7 +3878,7 @@ class TerminalMultiplexer {
     validateKeyCombo(keys) {
         // Valid key combinations:
         // - C-x (Ctrl + key)
-        // - M-x (Alt/Meta + key) 
+        // - M-x (Alt/Meta + key)
         // - S-x (Shift + key)
         // - C-M-x (Ctrl + Alt + key)
         // - C-S-x (Ctrl + Shift + key)
@@ -4154,8 +4154,8 @@ class TerminalMultiplexer {
         });
 
         // Include keybar settings from current state
-        settings.keybar = { 
-            buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons 
+        settings.keybar = {
+            buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons
         };
 
         return settings;
@@ -4505,8 +4505,8 @@ class TerminalMultiplexer {
                 return;
             }
             // Send as text sequence rather than keys
-            await this.sendKeysToActiveSession({ 
-                sequence: [{ type: 'text', value: text }] 
+            await this.sendKeysToActiveSession({
+                sequence: [{ type: 'text', value: text }]
             });
         } catch (err) {
             console.error('[clipboard] Failed to paste:', err);
@@ -5179,7 +5179,7 @@ class TerminalMultiplexer {
         }
 
         // Update content
-        toast.querySelector('.marked-toast-count').textContent = 
+        toast.querySelector('.marked-toast-count').textContent =
             `${count} file${count !== 1 ? 's' : ''} marked`;
         toast.querySelector('.marked-toast-latest').textContent = latest.name;
     }
@@ -5273,7 +5273,7 @@ class TerminalMultiplexer {
         // Firefox requires user gesture for each read and shows a context menu on failure
         // Safari has similar limitations
         // For non-Chrome browsers, we skip browser clipboard entirely and use server-side
-        this.isChromium = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent) 
+        this.isChromium = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent)
             || /Chromium/.test(navigator.userAgent)
             || /Edg/.test(navigator.userAgent);  // Edge is Chromium-based
 

@@ -11,7 +11,7 @@ This codebase uses section comment markers to help AI agents quickly locate rele
 # Core data structures and types
 grep -n "SECTION: TYPES" *.go cmd/wm/main.go
 
-# HTTP API endpoints and handlers  
+# HTTP API endpoints and handlers
 grep -n "SECTION: API" *.go
 
 # Session management and lifecycle
