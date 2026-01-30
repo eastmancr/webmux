@@ -481,7 +481,6 @@ type SessionManager struct {
 	mu              sync.RWMutex
 	nextPort        int32
 	startPort       int32 // Initial port to reset to when all sessions close
-	nextNameNum     int32 // Atomic counter for default session names
 	shell           string
 	workDir         string // Starting directory for new sessions
 	tmuxConfigPath  string
@@ -760,8 +759,16 @@ func (sm *SessionManager) CreateSession(name string) (*Session, error) {
 	tmuxSession := fmt.Sprintf("mux-%d", port)
 
 	if name == "" {
-		nameNum := atomic.AddInt32(&sm.nextNameNum, 1)
-		name = fmt.Sprintf("%d", nameNum)
+		// Find the highest numeric name among active sessions and increment from there
+		sm.mu.RLock()
+		maxNum := 0
+		for _, s := range sm.sessions {
+			if num, err := strconv.Atoi(s.Name); err == nil && num > maxNum {
+				maxNum = num
+			}
+		}
+		sm.mu.RUnlock()
+		name = strconv.Itoa(maxNum + 1)
 	}
 
 	tmuxSocket := sm.tmuxSocketPath()
@@ -1123,12 +1130,11 @@ func (sm *SessionManager) CloseSession(id string) error {
 	return nil
 }
 
-// resetCounters resets port and name counters to initial values
+// resetCounters resets port counter to initial value
 // Called when all sessions have been closed to allow port reuse
 func (sm *SessionManager) resetCounters() {
 	atomic.StoreInt32(&sm.nextPort, sm.startPort)
-	atomic.StoreInt32(&sm.nextNameNum, 0)
-	log.Printf("All sessions closed, reset counters (port=%d, name=0)", sm.startPort)
+	log.Printf("All sessions closed, reset port counter to %d", sm.startPort)
 }
 
 // deleteSession removes a session from the map and notifies the callback
