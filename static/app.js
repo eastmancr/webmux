@@ -166,7 +166,8 @@ class TerminalMultiplexer {
 
     // SECTION: MOBILE
 
-    // ============ Mobile Mode Detection ============
+    // Mobile Mode Detection
+    // =====================
 
     setupMobileModeDetection() {
         // Initial check
@@ -208,7 +209,8 @@ class TerminalMultiplexer {
         this.closeMobileDrawer();
     }
 
-    // ============ Mobile Drawer ============
+    // Mobile Drawer
+    // =============
 
     openMobileDrawer() {
         document.body.classList.add('mobile-drawer-open');
@@ -246,7 +248,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Mobile Toolbar ============
+    // Mobile Toolbar
+    // ==============
 
     updateMobileToolbar() {
         if (!this.mobileMode) {
@@ -282,7 +285,8 @@ class TerminalMultiplexer {
         this.openMobileDrawer();
     }
 
-    // ============ Mobile Swipe Navigation ============
+    // Mobile Swipe Navigation
+    // =======================
 
     setupMobileSwipeNavigation() {
         // Only setup swipe navigation if we have the mobile toolbar
@@ -400,7 +404,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Mobile Marked Files ============
+    // Mobile Marked Files
+    // ===================
 
     toggleMobileMarkedDrawer() {
         if (!this.mobileMode) return;
@@ -484,7 +489,8 @@ class TerminalMultiplexer {
         });
     }
 
-    // ============ Server Connection ============
+    // Server Connection
+    // =================
 
     async checkServerConnection() {
         try {
@@ -608,7 +614,8 @@ class TerminalMultiplexer {
 
     // SECTION: API
 
-    // ============ Server Connection ============
+    // Server Connection
+    // =================
 
     startAutoSave() {
         // Save state every 5 seconds
@@ -1104,12 +1111,6 @@ class TerminalMultiplexer {
         this.newSessionBtn.addEventListener('click', () => this.createNewSessionAndGroup());
         this.createFirstBtn.addEventListener('click', () => this.createNewSessionAndGroup());
 
-        // Clipboard permission button
-        const clipboardPermBtn = document.getElementById('clipboard-permission-btn');
-        if (clipboardPermBtn) {
-            clipboardPermBtn.addEventListener('click', () => this.requestClipboardPermission());
-        }
-
         // Upload modal
         this.openUploadBtn.addEventListener('click', () => this.openModal(this.uploadModal));
         this.dropZone.addEventListener('click', () => this.fileInput.click());
@@ -1296,7 +1297,8 @@ class TerminalMultiplexer {
 
     // SECTION: SESSIONS
 
-    // ============ Group & Session Management ============
+    // Group & Session Management
+    // ==========================
 
     async loadSessions() {
         try {
@@ -1694,7 +1696,8 @@ class TerminalMultiplexer {
 
     // SECTION: SIDEBAR
 
-    // ============ Sidebar UI ============
+    // Sidebar UI
+    // ==========
 
     addGroupToSidebar(group) {
         const container = document.createElement('div');
@@ -2006,7 +2009,8 @@ class TerminalMultiplexer {
         });
     }
 
-    // ============ Inline Rename ============
+    // Inline Rename
+    // =============
 
     startInlineRename(sessionId) {
         const session = this.sessions.get(sessionId);
@@ -2075,7 +2079,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Popout Management ============
+    // Popout Management
+    // =================
 
     popOutSession(sessionId) {
         const session = this.sessions.get(sessionId);
@@ -2138,7 +2143,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Terminal Rendering ============
+    // Terminal Rendering
+    // ==================
 
     activateGroup(groupId, focusSessionId = null) {
         const group = this.groups.get(groupId);
@@ -2823,7 +2829,8 @@ class TerminalMultiplexer {
         document.addEventListener('mouseup', onMouseUp);
     }
 
-    // ============ Split/Drop Handling ============
+    // Split/Drop Handling
+    // ===================
 
     setupTerminalDragTarget() {
         document.addEventListener('dragstart', () => {
@@ -3009,7 +3016,8 @@ class TerminalMultiplexer {
         });
     }
 
-    // ============ Sidebar Reordering ============
+    // Sidebar Reordering
+    // ==================
 
     updateSidebarDropIndicator(container, e) {
         const rect = container.getBoundingClientRect();
@@ -3337,7 +3345,8 @@ class TerminalMultiplexer {
         this.saveUIState();
     }
 
-    // ============ Modals & Utilities ============
+    // Modals & Utilities
+    // ==================
 
     toggleSidebar() {
         this.sidebar.classList.toggle('collapsed');
@@ -3368,7 +3377,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Logs Modal ============
+    // Logs Modal
+    // ==========
 
     openLogsModal() {
         this.openModal(this.logsModal);
@@ -3451,7 +3461,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ File Upload/Download ============
+    // File Upload/Download
+    // ====================
 
     handleFileSelect(event) {
         const files = event.target.files;
@@ -3692,7 +3703,8 @@ class TerminalMultiplexer {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
     }
 
-    // ============ File Info Popup ============
+    // File Info Popup
+    // ===============
 
     showFileInfoPopup(file, event) {
         this.currentFileInfo = file;
@@ -3797,7 +3809,8 @@ class TerminalMultiplexer {
 
     // SECTION: SETTINGS
 
-    // ============ Settings ============
+    // Settings
+    // ========
 
     async loadSettings() {
         try {
@@ -4214,7 +4227,8 @@ class TerminalMultiplexer {
         this.previewSettings();
     }
 
-    // ============ Keybar Settings ============
+    // Keybar Settings
+    // ===============
 
     populateKeybarButtons() {
         const buttonsList = document.getElementById('keybar-buttons-list');
@@ -4489,28 +4503,25 @@ class TerminalMultiplexer {
         this.sendKeysToActiveSession({ keys: [keys] });
     }
 
-    // Paste system clipboard content to active terminal
-    // Only works reliably on Chromium browsers; Firefox shows a context menu
+    // Paste server-side clipboard content to active terminal
     async pasteFromClipboard() {
-        // On non-Chromium browsers, direct them to use keyboard shortcut
-        if (!this.isChromium) {
-            this.toastWarning('Use Ctrl+Shift+V to paste in this browser');
-            return;
-        }
-
         try {
-            const text = await navigator.clipboard.readText();
+            const resp = await fetch(this.url('/api/clipboard'));
+            if (!resp.ok) {
+                this.toastError('Failed to read clipboard');
+                return;
+            }
+            const text = await resp.text();
             if (!text) {
                 this.toastWarning('Clipboard is empty');
                 return;
             }
-            // Send as text sequence rather than keys
             await this.sendKeysToActiveSession({
                 sequence: [{ type: 'text', value: text }]
             });
         } catch (err) {
             console.error('[clipboard] Failed to paste:', err);
-            this.toastError('Failed to read clipboard. Grant permission in browser settings.');
+            this.toastError('Failed to read clipboard');
         }
     }
 
@@ -4700,7 +4711,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Toast Notifications ============
+    // Toast Notifications
+    // ===================
 
     toast(message, type = 'info', duration = 4000) {
         const container = document.getElementById('toast-container');
@@ -4762,7 +4774,8 @@ class TerminalMultiplexer {
         return this.toast(message, type, duration);
     }
 
-    // ============ Scratch Pad ============
+    // Scratch Pad
+    // ===========
 
     showScratchPad(text = '') {
         const container = document.getElementById('toast-container');
@@ -4973,7 +4986,8 @@ class TerminalMultiplexer {
         }
     }
 
-    // ============ Marked Files ============
+    // Marked Files
+    // ============
 
     connectMarkedEvents() {
         // Connect to SSE for marked files updates with exponential backoff
@@ -5212,181 +5226,73 @@ class TerminalMultiplexer {
         return this.markedFiles.some(f => f.path === path);
     }
 
-    // ============ Clipboard Integration ============
+    // Clipboard Integration
+    // =====================
+
+    // Get contentWindows of all terminal iframes in the active group.
+    // In split views, multiple iframes exist but only one has focus.
+    // Clipboard operations are broadcast to all so the focused one can handle them.
+    getAllTerminalIframes() {
+        const group = this.groups.get(this.activeGroupId);
+        if (!group || group.sessionIds.length === 0) return [];
+        const wins = [];
+        for (const sessionId of group.sessionIds) {
+            const container = document.getElementById(`terminal-${sessionId}`);
+            if (!container) continue;
+            const iframe = container.querySelector('iframe');
+            if (iframe?.contentWindow) wins.push(iframe.contentWindow);
+        }
+        return wins;
+    }
+
+    // Write to browser clipboard via terminal iframes.
+    // Broadcasts to all iframes; the focused one will succeed.
+    writeClipboardViaIframes(text) {
+        const iframes = this.getAllTerminalIframes();
+        for (const win of iframes) {
+            win.postMessage({ type: 'clipboard-write', text: text }, '*');
+        }
+    }
 
     connectClipboardEvents() {
-        // Connect to SSE for clipboard updates from wm CLI
-        // Handles two event types:
-        // 1. Default message: clipboard content update (base64-encoded)
-        // 2. clipboard-request: server requesting browser clipboard for wm paste
-        let retryDelay = 1000;
-        const maxRetryDelay = 30000;
+        // Poll for clipboard changes and write to browser clipboard via iframes.
+        // Polling is used instead of SSE because reverse proxies buffer SSE events.
+        this.startClipboardPolling();
+    }
 
-        // Track clipboard-read permission state
-        this.clipboardReadPermission = 'prompt'; // 'granted', 'prompt', or 'denied'
-        this.initClipboardPermission();
+    // Poll /api/clipboard/version to detect clipboard changes.
+    // When the version changes, fetch the full content and write to system clipboard.
+    // This bypasses reverse proxy SSE buffering since each poll is a complete HTTP request.
+    startClipboardPolling() {
+        let knownVersion = -1;
 
-        const connect = () => {
-            const es = new EventSource(this.url('/api/clipboard/events'));
-
-            es.onopen = () => {
-                retryDelay = 1000;
-            };
-
-            // Handle clipboard content updates (wm copy or OSC 52 from terminal)
-            // Server-side clipboard is updated; browser clipboard is NOT touched
-            // to avoid overwriting user's system clipboard unexpectedly
-            es.onmessage = async (e) => {
-                const encoded = e.data;
-                if (encoded) {
-                    try {
-                        const text = atob(encoded);
-                        console.log('[clipboard] Server clipboard updated:', text.length, 'chars');
-                    } catch (err) {
-                        console.warn('[clipboard] Failed to decode clipboard data:', err);
+        const poll = async () => {
+            try {
+                const resp = await fetch(this.url('/api/clipboard/version'));
+                if (!resp.ok) return;
+                const version = parseInt(await resp.text(), 10);
+                if (version !== knownVersion) {
+                    if (knownVersion !== -1) {
+                        // Version changed -- fetch the new content and write to system clipboard
+                        const contentResp = await fetch(this.url('/api/clipboard'));
+                        if (contentResp.ok) {
+                            const text = await contentResp.text();
+                            this.writeClipboardViaIframes(text);
+                        }
                     }
+                    knownVersion = version;
                 }
-            };
-
-            // Handle clipboard read requests (wm paste)
-            es.addEventListener('clipboard-request', async (e) => {
-                const requestId = e.data;
-                console.log('[clipboard] Received request:', requestId);
-                await this.handleClipboardRequest(requestId);
-            });
-
-            es.onerror = () => {
-                es.close();
-                setTimeout(connect, retryDelay);
-                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
-            };
-
-            this.clipboardEventSource = es;
+            } catch (err) {
+                // Fetch failed (server down, network issue) -- ignore, will retry
+            }
         };
 
-        connect();
+        // Poll every 300ms for low latency
+        setInterval(poll, 300);
+        // Initial poll immediately
+        poll();
     }
 
-    // Initialize clipboard permission tracking (Chrome/Chromium only)
-    async initClipboardPermission() {
-        // Only Chrome/Chromium supports seamless clipboard read with persistent permissions
-        // Firefox requires user gesture for each read and shows a context menu on failure
-        // Safari has similar limitations
-        // For non-Chrome browsers, we skip browser clipboard entirely and use server-side
-        this.isChromium = /Chrome/.test(navigator.userAgent) && !/Edg/.test(navigator.userAgent)
-            || /Chromium/.test(navigator.userAgent)
-            || /Edg/.test(navigator.userAgent);  // Edge is Chromium-based
-
-        if (!this.isChromium) {
-            this.clipboardReadPermission = 'unsupported';
-            this.updateClipboardPermissionUI();
-            return;
-        }
-
-        try {
-            const result = await navigator.permissions.query({ name: 'clipboard-read' });
-            this.clipboardReadPermission = result.state;
-            this.updateClipboardPermissionUI();
-
-            // Listen for permission changes
-            result.addEventListener('change', () => {
-                this.clipboardReadPermission = result.state;
-                this.updateClipboardPermissionUI();
-                console.log('[clipboard] Permission changed to:', result.state);
-            });
-        } catch (err) {
-            // Permissions API query failed
-            this.clipboardReadPermission = 'unsupported';
-            this.updateClipboardPermissionUI();
-        }
-    }
-
-    // Update UI based on clipboard permission state
-    updateClipboardPermissionUI() {
-        const btn = document.getElementById('clipboard-permission-btn');
-        if (!btn) return;
-
-        // Only show button for Chromium browsers where permission can be granted
-        if (this.clipboardReadPermission === 'unsupported') {
-            btn.style.display = 'none';
-            return;
-        }
-
-        if (this.clipboardReadPermission === 'denied') {
-            btn.style.display = 'flex';
-            btn.title = 'Clipboard access denied - click to enable for wm paste';
-        } else if (this.clipboardReadPermission === 'prompt') {
-            btn.style.display = 'flex';
-            btn.title = 'Click to enable clipboard access for wm paste';
-        } else {
-            btn.style.display = 'none';
-        }
-    }
-
-    // Handle clipboard read request from server (for wm paste)
-    async handleClipboardRequest(requestId) {
-        // Only attempt browser clipboard read on Chromium with granted permission
-        // Other browsers fall back to server-side clipboard immediately
-        if (!this.isChromium || this.clipboardReadPermission !== 'granted') {
-            await fetch(this.url(`/api/clipboard/response/${requestId}?error=1`), {
-                method: 'POST'
-            });
-            return;
-        }
-
-        // Dedupe: track handled requests to avoid double-handling
-        // (can happen with multiple tabs or SSE reconnects)
-        if (!this.handledClipboardRequests) {
-            this.handledClipboardRequests = new Set();
-        }
-        if (this.handledClipboardRequests.has(requestId)) {
-            return;
-        }
-        this.handledClipboardRequests.add(requestId);
-
-        // Clean up old request IDs (keep last 100)
-        if (this.handledClipboardRequests.size > 100) {
-            const arr = Array.from(this.handledClipboardRequests);
-            this.handledClipboardRequests = new Set(arr.slice(-50));
-        }
-
-        try {
-            const text = await navigator.clipboard.readText();
-            await fetch(this.url(`/api/clipboard/response/${requestId}`), {
-                method: 'POST',
-                body: text
-            });
-            console.log('[clipboard] Sent browser clipboard to wm paste:', text.length, 'chars');
-        } catch (err) {
-            console.log('[clipboard] Browser clipboard read failed, using server fallback');
-            await fetch(this.url(`/api/clipboard/response/${requestId}?error=1`), {
-                method: 'POST'
-            });
-        }
-    }
-
-    // Request clipboard permission via user interaction (Chrome/Edge)
-    async requestClipboardPermission() {
-        if (!this.isChromium) {
-            this.toastWarning('Clipboard sync not supported in this browser. Use Ctrl+Shift+V to paste.');
-            return;
-        }
-
-        try {
-            // This will prompt the user if in 'prompt' state
-            await navigator.clipboard.readText();
-            // If successful, permission was granted
-            this.clipboardReadPermission = 'granted';
-            this.updateClipboardPermissionUI();
-            this.toastSuccess('Clipboard access enabled');
-        } catch (err) {
-            if (err.name === 'NotAllowedError') {
-                this.toastError('Clipboard access denied. Check browser settings.');
-            }
-            // Re-query permission state
-            this.initClipboardPermission();
-        }
-    }
 }
 
 // Initialize app

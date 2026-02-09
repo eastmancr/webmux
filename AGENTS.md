@@ -8,6 +8,9 @@ This codebase uses section comment markers to help AI agents quickly locate rele
 
 ### Go Files (main.go, cmd/wm/main.go)
 ```bash
+# Logging infrastructure
+grep -n "SECTION: LOGGING" *.go
+
 # Core data structures and types
 grep -n "SECTION: TYPES" *.go cmd/wm/main.go
 
@@ -22,6 +25,9 @@ grep -n "SECTION: SERVER" *.go
 
 # Settings and configuration
 grep -n "SECTION: SETTINGS" *.go
+
+# Clipboard (polling-based sync, server-side storage)
+grep -n "SECTION: CLIPBOARD" *.go
 
 # File operations (upload/download)
 grep -n "SECTION: FILES" *.go
@@ -46,9 +52,6 @@ grep -n "SECTION: SESSIONS" static/app.js
 
 # Sidebar UI and interactions
 grep -n "SECTION: SIDEBAR" static/app.js
-
-# Terminal layout and display
-grep -n "SECTION: TERMINAL" static/app.js
 
 # File browser and marked files
 grep -n "SECTION: FILES" static/app.js
@@ -84,12 +87,16 @@ grep -n "mobileMode\|Mobile" static/app.js # Find mobile-specific code
 - `main.go` - HTTP server, session management, ttyd process lifecycle
 - `dev.go` / `nodev.go` - Build tags for dev mode (live reload) vs production (embedded)
 - `cmd/wm/main.go` - CLI helper for terminal-to-browser interaction
+- `internal/shell/init.go` - Shell initialization scripts for webmux terminals
 - `static/` - Frontend SPA (vanilla JS, no framework)
   - `app.js` - Single class `TerminalMultiplexer` managing all UI state
   - `index.html` - Modals and layout structure
   - `style.css` - CSS variables for theming, Catppuccin-inspired defaults
   - `tmux.conf` - Injected into each session
   - `wm` - Built CLI binary (embedded in production builds)
+
+## Clipboard
+Clipboard sync uses polling (`/api/clipboard/version`) instead of SSE due to reverse proxy buffering issues. See `docs/SSE.md` for the removed SSE architecture and rationale.
 
 ## Style
 - Go: Standard library preferred, minimal dependencies

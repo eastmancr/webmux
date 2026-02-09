@@ -19,6 +19,7 @@ package main
 
 import (
 	"archive/zip"
+	"compress/gzip"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
@@ -1390,47 +1391,34 @@ type UIState struct {
 
 // Server holds the HTTP server and session manager
 type Server struct {
-	manager            *SessionManager
-	uploadDir          string
-	settings           *Settings
-	settingsMu         sync.RWMutex
-	scratchText        string
-	scratchMu          sync.RWMutex
-	scratchSubs        map[chan string]struct{} // SSE subscribers
-	scratchSubMu       sync.Mutex
-	markedFiles        []MarkedFile // Files marked for download
-	markedMu           sync.RWMutex
-	markedSubs         map[chan string]struct{} // SSE subscribers for marked files
-	markedSubMu        sync.Mutex
-	uiState            *UIState // UI layout state (groups, order, etc.)
-	uiStateMu          sync.RWMutex
-	clipboard          string                   // Server-side clipboard for wm CLI
-	clipboardMu        sync.RWMutex             // Protects clipboard
-	clipboardClients   map[chan string]struct{} // SSE subscribers for clipboard updates
-	clipboardClientsMu sync.RWMutex             // Protects clipboardClients
-
-	// Clipboard request/response for wm paste (to read browser clipboard)
-	clipboardRequests   map[string]chan clipboardResponse // Pending requests by ID
-	clipboardRequestsMu sync.Mutex
-}
-
-// clipboardResponse holds the result of a browser clipboard read
-type clipboardResponse struct {
-	Content string // The clipboard content (empty if error)
-	Error   bool   // True if browser couldn't read clipboard
+	manager          *SessionManager
+	uploadDir        string
+	settings         *Settings
+	settingsMu       sync.RWMutex
+	scratchText      string
+	scratchMu        sync.RWMutex
+	scratchSubs      map[chan string]struct{} // SSE subscribers
+	scratchSubMu     sync.Mutex
+	markedFiles      []MarkedFile // Files marked for download
+	markedMu         sync.RWMutex
+	markedSubs       map[chan string]struct{} // SSE subscribers for marked files
+	markedSubMu      sync.Mutex
+	uiState          *UIState // UI layout state (groups, order, etc.)
+	uiStateMu        sync.RWMutex
+	clipboard        string       // Server-side clipboard for wm CLI
+	clipboardVersion uint64       // Increments on each clipboard change
+	clipboardMu      sync.RWMutex // Protects clipboard and clipboardVersion
 }
 
 // NewServer creates a new server instance
 func NewServer(manager *SessionManager, uploadDir string) *Server {
 	s := &Server{
-		manager:           manager,
-		uploadDir:         uploadDir,
-		settings:          LoadSettings(),
-		scratchSubs:       make(map[chan string]struct{}),
-		markedFiles:       make([]MarkedFile, 0),
-		markedSubs:        make(map[chan string]struct{}),
-		clipboardClients:  make(map[chan string]struct{}),
-		clipboardRequests: make(map[string]chan clipboardResponse),
+		manager:     manager,
+		uploadDir:   uploadDir,
+		settings:    LoadSettings(),
+		scratchSubs: make(map[chan string]struct{}),
+		markedFiles: make([]MarkedFile, 0),
+		markedSubs:  make(map[chan string]struct{}),
 		uiState: &UIState{
 			Groups:     make([]UIGroup, 0),
 			GroupOrder: make([]string, 0),
@@ -1580,6 +1568,7 @@ func (s *Server) handleScratchEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable reverse proxy buffering (nginx)
 
 	// Create channel for this subscriber
 	ch := make(chan string, 10)
@@ -1711,9 +1700,8 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 		}
 		s.clipboardMu.Lock()
 		s.clipboard = string(body)
+		s.clipboardVersion++
 		s.clipboardMu.Unlock()
-		// Also broadcast to all connected clients to update their browser clipboard
-		s.broadcastClipboard(string(body))
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -1721,206 +1709,19 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// broadcastClipboard sends clipboard content to all connected SSE clients
-func (s *Server) broadcastClipboard(content string) {
-	s.clipboardClientsMu.RLock()
-	defer s.clipboardClientsMu.RUnlock()
-	for ch := range s.clipboardClients {
-		select {
-		case ch <- content:
-		default:
-			// Client not ready, skip
-		}
-	}
-}
-
-// handleClipboardEvents provides SSE stream for clipboard updates
-// When wm copy is called, this broadcasts to all connected browsers
-// Content is base64-encoded to handle newlines and special characters safely
-func (s *Server) handleClipboardEvents(w http.ResponseWriter, r *http.Request) {
-	// Set SSE headers
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+// handleClipboardVersion returns the current clipboard version number.
+// The browser polls this to detect clipboard changes without SSE buffering issues.
+func (s *Server) handleClipboardVersion(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	// Create channel for this client
-	clientChan := make(chan string, 10)
-	s.clipboardClientsMu.Lock()
-	s.clipboardClients[clientChan] = struct{}{}
-	s.clipboardClientsMu.Unlock()
-
-	defer func() {
-		s.clipboardClientsMu.Lock()
-		delete(s.clipboardClients, clientChan)
-		s.clipboardClientsMu.Unlock()
-		close(clientChan)
-	}()
-
-	// Helper to send SSE event
-	// Format: "event:type\ndata:content\n\n" for typed events
-	// or "data:content\n\n" for default events
-	sendEvent := func(eventType, content string) {
-		if eventType != "" {
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventType, content)
-		} else {
-			fmt.Fprintf(w, "data: %s\n\n", content)
-		}
-		flusher.Flush()
-	}
-
-	// Send initial clipboard content (base64-encoded)
 	s.clipboardMu.RLock()
-	if s.clipboard != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(s.clipboard))
-		sendEvent("", encoded)
-	}
+	v := s.clipboardVersion
 	s.clipboardMu.RUnlock()
-
-	// Stream updates
-	for {
-		select {
-		case msg := <-clientChan:
-			if strings.HasPrefix(msg, "REQUEST:") {
-				// Clipboard read request - send as named event with request ID
-				requestID := strings.TrimPrefix(msg, "REQUEST:")
-				sendEvent("clipboard-request", requestID)
-			} else {
-				// Regular clipboard update - base64 encode
-				encoded := base64.StdEncoding.EncodeToString([]byte(msg))
-				sendEvent("", encoded)
-			}
-		case <-r.Context().Done():
-			return
-		}
-	}
-}
-
-// handleClipboardRequest initiates a browser clipboard read request
-// Called by wm paste to get the actual browser clipboard content
-// Returns immediately with browser clipboard if available, falls back to server clipboard
-func (s *Server) handleClipboardRequest(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Generate unique request ID
-	requestID := fmt.Sprintf("%d", time.Now().UnixNano())
-
-	// Create response channel
-	responseChan := make(chan clipboardResponse, 1)
-	s.clipboardRequestsMu.Lock()
-	s.clipboardRequests[requestID] = responseChan
-	s.clipboardRequestsMu.Unlock()
-
-	// Clean up when done
-	defer func() {
-		s.clipboardRequestsMu.Lock()
-		delete(s.clipboardRequests, requestID)
-		s.clipboardRequestsMu.Unlock()
-	}()
-
-	// Broadcast request to all connected browsers
-	s.broadcastClipboardRequest(requestID)
-
-	// Wait for response with timeout
-	// Short timeout since browser should respond almost instantly if it can
-	select {
-	case resp := <-responseChan:
-		if resp.Error {
-			// Browser couldn't read clipboard, return server-side clipboard
-			w.Header().Set("X-Clipboard-Source", "server")
-			s.clipboardMu.RLock()
-			content := s.clipboard
-			s.clipboardMu.RUnlock()
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Write([]byte(content))
-		} else {
-			// Got browser clipboard
-			w.Header().Set("X-Clipboard-Source", "browser")
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.Write([]byte(resp.Content))
-		}
-	case <-time.After(500 * time.Millisecond):
-		// No browser responded in time, return server-side clipboard
-		w.Header().Set("X-Clipboard-Source", "server")
-		s.clipboardMu.RLock()
-		content := s.clipboard
-		s.clipboardMu.RUnlock()
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(content))
-	case <-r.Context().Done():
-		return
-	}
-}
-
-// handleClipboardResponse receives clipboard content from browser
-// Called by browser after reading clipboard in response to a request
-func (s *Server) handleClipboardResponse(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Extract request ID from path: /api/clipboard/response/{id}
-	path := r.URL.Path
-	prefix := "/api/clipboard/response/"
-	if !strings.HasPrefix(path, prefix) {
-		http.Error(w, "Invalid path", http.StatusBadRequest)
-		return
-	}
-	requestID := strings.TrimPrefix(path, prefix)
-	if requestID == "" {
-		http.Error(w, "Missing request ID", http.StatusBadRequest)
-		return
-	}
-
-	// Check if this is an error response
-	isError := r.URL.Query().Get("error") == "1"
-
-	var content string
-	if !isError {
-		body, err := io.ReadAll(io.LimitReader(r.Body, maxClipboardSize))
-		if err != nil {
-			http.Error(w, "Failed to read body", http.StatusBadRequest)
-			return
-		}
-		content = string(body)
-	}
-
-	// Find and respond to the waiting request
-	s.clipboardRequestsMu.Lock()
-	responseChan, ok := s.clipboardRequests[requestID]
-	s.clipboardRequestsMu.Unlock()
-
-	if ok {
-		select {
-		case responseChan <- clipboardResponse{Content: content, Error: isError}:
-		default:
-			// Channel full or closed, ignore
-		}
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
-// broadcastClipboardRequest sends a clipboard read request to all connected browsers
-func (s *Server) broadcastClipboardRequest(requestID string) {
-	s.clipboardClientsMu.RLock()
-	defer s.clipboardClientsMu.RUnlock()
-	for ch := range s.clipboardClients {
-		select {
-		case ch <- "REQUEST:" + requestID:
-		default:
-			// Client not ready, skip
-		}
-	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	fmt.Fprintf(w, "%d", v)
 }
 
 // handleUIState handles GET/POST for UI layout state
@@ -2528,6 +2329,46 @@ const ttydHeadScript = `<head><script>
     window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
     window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
     console.log('[webmux] WebSocket interceptor installed');
+
+    // Clipboard bridge - parent delegates clipboard API calls to this iframe
+    // because the Clipboard API requires the calling document to have focus,
+    // and the terminal iframe holds focus during normal use
+    var hasClipboardAPI = !!(navigator.clipboard && navigator.clipboard.writeText);
+
+    // execCommand fallback for clipboard write
+    function execCommandCopy(text) {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = false;
+        try { ok = document.execCommand('copy'); } catch(e) {}
+        document.body.removeChild(ta);
+        return ok;
+    }
+
+    window.addEventListener('message', function(e) {
+        if (e.source !== window.parent) return;
+        var msg = e.data;
+        if (!msg || !msg.type) return;
+
+        if (msg.type === 'clipboard-write') {
+            if (!document.hasFocus()) return;
+            if (hasClipboardAPI) {
+                navigator.clipboard.writeText(msg.text).then(function() {
+                    window.parent.postMessage({ type: 'clipboard-write-result', success: true }, '*');
+                }).catch(function() {
+                    var ok = execCommandCopy(msg.text);
+                    window.parent.postMessage({ type: 'clipboard-write-result', success: ok, fallback: true }, '*');
+                });
+            } else {
+                var ok = execCommandCopy(msg.text);
+                window.parent.postMessage({ type: 'clipboard-write-result', success: ok, fallback: true }, '*');
+            }
+        }
+    });
 })();
 </script>`
 
@@ -2590,17 +2431,59 @@ func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 
-			// Read the body
-			body, err := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if err != nil {
-				return err
+			// Read the body, decompressing gzip if needed
+			var body []byte
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				gr, err := gzip.NewReader(resp.Body)
+				if err != nil {
+					resp.Body.Close()
+					return err
+				}
+				body, err = io.ReadAll(gr)
+				gr.Close()
+				resp.Body.Close()
+				if err != nil {
+					return err
+				}
+				// Remove gzip encoding since we'll serve uncompressed
+				resp.Header.Del("Content-Encoding")
+			} else {
+				var err error
+				body, err = io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					return err
+				}
 			}
 
-			// Inject WebSocket fix at start of <head> (must run before ttyd's JS)
-			content := strings.Replace(string(body), "<head>", ttydHeadScript, 1)
+			// Inject WebSocket/clipboard fix at start of <head> (must run before ttyd's JS)
+			// Use case-insensitive search since ttyd may output <head>, <HEAD>, etc.
+			bodyStr := string(body)
+			bodyLower := strings.ToLower(bodyStr)
+			headIdx := strings.Index(bodyLower, "<head>")
+			var content string
+			if headIdx != -1 {
+				// Replace the <head> tag (preserving original case) with our script + <head>
+				content = bodyStr[:headIdx] + ttydHeadScript + bodyStr[headIdx+6:]
+				log.Printf("[inject] Script injected into ttyd HTML at offset %d (%d -> %d bytes)", headIdx, len(body), len(content))
+			} else {
+				// No <head> found at all; try injecting after <html> or at the start
+				htmlIdx := strings.Index(bodyLower, "<html")
+				if htmlIdx != -1 {
+					closeIdx := strings.Index(bodyStr[htmlIdx:], ">")
+					if closeIdx != -1 {
+						insertAt := htmlIdx + closeIdx + 1
+						content = bodyStr[:insertAt] + ttydHeadScript + bodyStr[insertAt:]
+						log.Printf("[inject] Script injected after <html> tag at offset %d (%d -> %d bytes)", insertAt, len(body), len(content))
+					}
+				}
+				if content == "" {
+					content = bodyStr
+					log.Printf("[inject] WARNING: no injection point found in ttyd HTML (first 200 bytes: %q)", bodyStr[:min(200, len(bodyStr))])
+				}
+			}
 
-			// Update the response
+			// Update the response (served uncompressed)
 			resp.Body = io.NopCloser(strings.NewReader(content))
 			resp.ContentLength = int64(len(content))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(content)))
@@ -2763,8 +2646,8 @@ func (o *osc52Scanner) Scan(data []byte) {
 		if clipboardText != "" && len(clipboardText) <= osc52MaxClipboardSize {
 			o.server.clipboardMu.Lock()
 			o.server.clipboard = clipboardText
+			o.server.clipboardVersion++
 			o.server.clipboardMu.Unlock()
-			o.server.broadcastClipboard(clipboardText)
 		}
 
 		o.buf = remaining
@@ -3160,6 +3043,7 @@ func (s *Server) handleMarkedEvents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable reverse proxy buffering (nginx)
 
 	// Create channel for this subscriber
 	ch := make(chan string, 10)
@@ -3538,9 +3422,7 @@ func main() {
 	mux.HandleFunc("/api/marked/events", server.handleMarkedEvents)
 	mux.HandleFunc("/api/marked/download", server.handleMarkedDownload)
 	mux.HandleFunc("/api/clipboard", server.handleClipboard)
-	mux.HandleFunc("/api/clipboard/events", server.handleClipboardEvents)
-	mux.HandleFunc("/api/clipboard/request", server.handleClipboardRequest)
-	mux.HandleFunc("/api/clipboard/response/", server.handleClipboardResponse)
+	mux.HandleFunc("/api/clipboard/version", server.handleClipboardVersion)
 
 	// Terminal proxy - forwards requests to ttyd instances
 	mux.HandleFunc("/t/", server.handleTerminalProxy)

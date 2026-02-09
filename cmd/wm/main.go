@@ -640,10 +640,7 @@ func cmdCopy(args []string) error {
 
 // cmdPaste reads from the server-side clipboard via HTTP API
 // Outputs the clipboard contents to stdout
-// Uses /api/clipboard/request to request the browser's actual clipboard
-// Falls back to server-side clipboard if browser can't provide it
 func cmdPaste() error {
-	// Determine host from environment
 	host := os.Getenv("WEBMUX_HOST")
 	if host == "" {
 		port := os.Getenv("WEBMUX_PORT")
@@ -653,8 +650,7 @@ func cmdPaste() error {
 		host = "localhost:" + port
 	}
 
-	// POST to clipboard request API - this asks browser for clipboard
-	resp, err := http.Post(fmt.Sprintf("http://%s/api/clipboard/request", host), "text/plain", nil)
+	resp, err := http.Get(fmt.Sprintf("http://%s/api/clipboard", host))
 	if err != nil {
 		return fmt.Errorf("failed to get clipboard: %w", err)
 	}
@@ -665,7 +661,6 @@ func cmdPaste() error {
 		return fmt.Errorf("failed to get clipboard: %s", string(body))
 	}
 
-	// Copy clipboard content to stdout
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
 }
