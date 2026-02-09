@@ -4,16 +4,17 @@ Browser-based terminal multiplexer. Go backend proxies to per-session ttyd insta
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.25+
 - [ttyd](https://github.com/tsl0922/ttyd)
 - [tmux](https://github.com/tmux/tmux)
 
 ## Build
 
 ```sh
-make        # production build (embeds static/)
+make build  # production build (embeds static/)
 make dev    # dev build (serves from disk with live reload)
 make check  # verify compilation without producing binaries
+make clean  # remove build artifacts
 ```
 
 ## Usage
@@ -40,19 +41,31 @@ Inside webmux terminals, use `wm` to interact with the server:
 
 ```sh
 wm info                  # show server info
-wm ls                    # list sessions
+wm ls                    # list sessions (alias: wm list)
 wm new [name]            # create session
 wm close <id>            # close session
 wm rename <id> <name>    # rename session
 wm upload <file>...      # upload files
-wm scratch [text]        # get/set scratch pad
+wm scratch               # get scratch pad
+wm scratch [text]        # set scratch pad
 wm scratch -             # send stdin to scratch pad
-wm scratch clear         # clear scratch pad
+wm scratch clear         # clear and close scratch pad
 wm mark                  # list marked files
 wm mark <file|dir>...    # mark files/directories for download
 wm mark unmark <path>    # unmark a file/directory
 wm mark clear            # clear all marked files
+wm copy [text]           # copy text to server clipboard (alias: wm c)
+wm paste                 # paste server clipboard (aliases: wm p, wm v)
+wm init                  # output shell init script (wm wrapper)
 ```
+
+`wm copy` updates a server-side clipboard that browser tabs poll and sync to the system clipboard (permission required).
+`wm paste` returns the server-side clipboard; to paste your system clipboard into a terminal, use Ctrl+Shift+V.
+
+In webmux terminals, wrapper scripts for `wl-copy`, `wl-paste`, `xclip`, `xsel`, `pbcopy`, and `pbpaste` call
+`wm copy`/`wm paste` so TUI tools work without extra configuration.
+
+To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_PORT`) to point it at the server.
 
 ## Features
 
@@ -68,7 +81,7 @@ wm mark clear            # clear all marked files
 - File upload via drag-and-drop or file picker
 - Scratch pad for CLI-browser text exchange
 - Customizable UI and terminal colors (Base24 theme support)
-- Clipboard integration via OSC 52
+- Clipboard sync with OSC 52 support plus `wm copy`/`wm paste`
 - Keyboard shortcuts (Ctrl+Shift+T for new session, etc.)
 
 ## Files
@@ -77,9 +90,9 @@ Settings and data follow XDG conventions:
 
 | Path | Description |
 |------|-------------|
-| `~/.config/webmux/settings.json` | UI and terminal color settings |
-| `~/.local/share/webmux/uploads` | Default upload directory |
-| `$XDG_RUNTIME_DIR/webmux-tmux.sock` | Tmux socket |
+| `$XDG_CONFIG_HOME/webmux/settings.json` | UI and terminal color settings (defaults to `~/.config`) |
+| `$XDG_DATA_HOME/webmux/uploads` | Default upload directory (defaults to `~/.local/share`) |
+| `$XDG_DATA_HOME/webmux/tmux.sock` | Tmux socket (defaults to `~/.local/share`) |
 
 ## License
 

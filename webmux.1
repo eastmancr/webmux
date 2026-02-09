@@ -1,4 +1,4 @@
-.TH WEBMUX 1 "November 2025" "0.1" "Webmux Manual"
+.TH WEBMUX 1 "February 2026" "0.2" "Webmux Manual"
 .SH NAME
 webmux \- browser-based terminal multiplexer
 .SH SYNOPSIS
@@ -27,10 +27,10 @@ Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
 Inside webmux terminals, the \fBwm\fR command is available as a shell function:
 .TP
 .B wm info
-Show server information (port, sessions, paths).
+Show server info (upload dir, work dir).
 .TP
 .B wm ls
-List all active sessions.
+List all active sessions. Alias: \fBwm list\fR.
 .TP
 .B wm new \fR[\fIname\fR]
 Create a new session with optional name.
@@ -45,27 +45,30 @@ Rename a session.
 Upload files to the server.
 .TP
 .B wm scratch \fR[\fItext\fR]
-Get or set scratch pad content. Use \fB-\fR to read from stdin, \fBclear\fR to clear.
+Get or set scratch pad content. With no args or \fBget\fR, prints current text. Use \fB-\fR to read from stdin, \fBclear\fR to clear and close.
 .TP
 .B wm mark \fR[\fIfile\fR...]
 List or mark files for download. Use \fBunmark\fR to remove, \fBclear\fR to clear all.
 .TP
 .B wm copy \fR[\fItext\fR]
-Copy text to browser clipboard via OSC 52. Reads from stdin if no arguments.
+Copy text to the server-side clipboard (reads from stdin if no arguments). Alias: \fBwm c\fR.
 .TP
 .B wm paste
-Output browser clipboard contents to stdout via OSC 52 query.
+Output server-side clipboard contents (last text copied via \fBwm copy\fR). Does not read the system clipboard. Aliases: \fBwm p\fR, \fBwm v\fR.
+.TP
+.B wm init
+Output shell code that defines the wm wrapper function.
 
 .SH FILES
 .TP
-.B ~/.config/webmux/settings.json
-UI and terminal color configuration.
+.B $XDG_CONFIG_HOME/webmux/settings.json
+UI and terminal color configuration. Defaults to \fB~/.config\fR.
 .TP
-.B ~/.local/share/webmux/uploads
-Default upload directory.
+.B $XDG_DATA_HOME/webmux/uploads
+Default upload directory. Defaults to \fB~/.local/share\fR.
 .TP
-.B $XDG_RUNTIME_DIR/webmux-tmux.sock
-Tmux socket for session management.
+.B $XDG_DATA_HOME/webmux/tmux.sock
+Tmux socket for session management. Defaults to \fB~/.local/share\fR.
 
 .SH FEATURES
 .TP
@@ -85,9 +88,9 @@ Exchange text between CLI and browser. Send from terminal with \fBwm scratch\fR,
 Customizable UI and terminal colors using Base24 color schemes. Settings are persisted to disk.
 .TP
 .B Clipboard
-Full OSC 52 clipboard integration for copy and paste. TUI applications (neovim, etc.) can use
-OSC 52 to read/write the browser clipboard. The \fBwm copy\fR and \fBwm paste\fR commands
-provide CLI access. Native browser paste (Ctrl+Shift+V) also works.
+Clipboard sync via OSC 52 and a server-side clipboard API. \fBwm copy\fR/\fBwm paste\fR and wrapper
+scripts for wl-copy, wl-paste, xclip, xsel, pbcopy, and pbpaste provide CLI/TUI integration.
+Browser tabs poll and sync it to the system clipboard; use Ctrl+Shift+V to paste from the system clipboard.
 
 .SH EXAMPLES
 .TP
@@ -105,6 +108,9 @@ Use zsh as the default shell:
 
 .SH ENVIRONMENT
 .TP
+.B WEBMUX_HOST
+Full server address (host:port). Overrides \fBWEBMUX_PORT\fR for the \fBwm\fR command.
+.TP
 .B WEBMUX_PORT
 Set automatically in webmux terminals. Used by the \fBwm\fR command to connect to the server.
 .TP
@@ -113,6 +119,9 @@ Set automatically in webmux terminals. The current session ID.
 .TP
 .B WEBMUX_INIT
 Set automatically in webmux terminals. Path to the shell init script.
+.TP
+.B WEBMUX_CLIPBOARD
+Clipboard mode indicator. Set to \fBosc52\fR in webmux terminals.
 
 .SH REQUIREMENTS
 .B webmux
