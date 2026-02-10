@@ -35,6 +35,9 @@ class TerminalMultiplexer {
         // Track which group is active
         this.activeGroupId = null;
 
+        // Track which session is focused within a split group (for keybar targeting)
+        this.focusedSessionId = null;
+
         // Track custom names (to know whether to show process name)
         this.customNames = new Set();
 
@@ -1438,6 +1441,11 @@ class TerminalMultiplexer {
         const idx = group.sessionIds.indexOf(sessionId);
         if (idx === -1) return false;
 
+        // Clear focused session if it's the one being removed
+        if (this.focusedSessionId === sessionId) {
+            this.focusedSessionId = null;
+        }
+
         group.sessionIds.splice(idx, 1);
 
         // Update cellMapping: remove the session's pane and adjust remaining indices
@@ -1606,9 +1614,10 @@ class TerminalMultiplexer {
             return false;
         }
 
-        // Send to the first session in the active group
-        // TODO: Track which pane is "focused" within a split group
-        const activeSessionId = activeGroup.sessionIds[0];
+        // Send to the focused session within the group, falling back to the first
+        const activeSessionId = (this.focusedSessionId && activeGroup.sessionIds.includes(this.focusedSessionId))
+            ? this.focusedSessionId
+            : activeGroup.sessionIds[0];
         return this.sendKeysToSession(activeSessionId, payload);
     }
 
@@ -1646,6 +1655,7 @@ class TerminalMultiplexer {
             if (nextGroupId) {
                 this.activateGroup(nextGroupId);
             } else {
+                this.focusedSessionId = null;
                 this.updateTerminalLayout();
                 this.noSessionEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
@@ -2178,6 +2188,9 @@ class TerminalMultiplexer {
     focusTerminal(sessionId) {
         const container = document.getElementById(`terminal-${sessionId}`);
         if (!container) return;
+
+        // Track focused session for keybar targeting in split groups
+        this.focusedSessionId = sessionId;
 
         // Don't focus if popped out
         if (container.classList.contains('popped-out')) return;
