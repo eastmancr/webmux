@@ -2244,6 +2244,17 @@ class TerminalMultiplexer {
                 initialLoad = false;
                 // Remove loading state once terminal loads
                 container.classList.remove('loading');
+
+                // Track focus changes inside the iframe for keybar targeting.
+                // Clicks inside an iframe don't propagate to the parent document,
+                // so without this the keybar sends keys to the previously-focused pane.
+                try {
+                    iframe.contentWindow.addEventListener('focus', () => {
+                        this.focusedSessionId = session.id;
+                    });
+                } catch (e) {
+                    // Cross-origin fallback - shouldn't happen since we proxy ttyd
+                }
                 return;
             }
             // iframe reloaded - session likely died, check immediately
