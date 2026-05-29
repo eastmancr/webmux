@@ -336,6 +336,16 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return value;
   }
 
+  var OriginalRequest = window.Request;
+  window.Request = function(input, init) {
+    if (!(input instanceof OriginalRequest)) {
+      input = prefixAbsoluteURL(input instanceof URL ? input.toString() : input);
+    }
+    return new OriginalRequest(input, init);
+  };
+  window.Request.prototype = OriginalRequest.prototype;
+  try { Object.setPrototypeOf(window.Request, OriginalRequest); } catch (e) {}
+
   function patchURLProperty(proto, property) {
     var descriptor = Object.getOwnPropertyDescriptor(proto, property);
     if (!descriptor || !descriptor.set || !descriptor.get) return;
@@ -369,9 +379,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
 
   window.fetch = function(input, init) {
-    if (input instanceof Request) {
-      input = new Request(prefixAbsoluteURL(input.url), input);
-    } else {
+    if (!(input instanceof OriginalRequest)) {
       input = prefixAbsoluteURL(input);
     }
     return originalFetch.call(this, input, init);
