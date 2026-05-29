@@ -1096,6 +1096,7 @@ class TerminalMultiplexer {
         this.mobileBottomToolbar = document.getElementById('mobile-bottom-toolbar');
         this.mobilePanePicker = document.getElementById('mobile-pane-picker');
         this.mobilePaneName = document.querySelector('.mobile-pane-name');
+        this.mobileArrowPad = document.getElementById('mobile-arrow-pad');
         this.mobileScratchBtn = document.getElementById('mobile-scratch');
 
     }
@@ -1477,6 +1478,7 @@ class TerminalMultiplexer {
 
         // Mobile keybar events will be bound dynamically after settings are loaded
         this.bindMobileKeybarEvents();
+        this.bindMobileArrowPadEvents();
 
         // Mobile utility buttons
         if (this.mobileScratchBtn) {
@@ -5812,6 +5814,78 @@ class TerminalMultiplexer {
 
         scroll.addEventListener('pointerup', finishPointer);
         scroll.addEventListener('pointercancel', resetPointer);
+    }
+
+    bindMobileArrowPadEvents() {
+        if (!this.mobileArrowPad || this.mobileArrowPad.dataset.bound === 'true') return;
+
+        this.mobileArrowPad.dataset.bound = 'true';
+        const initialThreshold = 22;
+        const repeatThreshold = 36;
+        const dominance = 1.25;
+        let activePointerId = null;
+        let startX = 0;
+        let startY = 0;
+        let suppressClick = false;
+        let hasSent = false;
+
+        const reset = (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            this.mobileArrowPad.classList.remove('active');
+            if (this.mobileArrowPad.hasPointerCapture?.(e.pointerId)) {
+                this.mobileArrowPad.releasePointerCapture(e.pointerId);
+            }
+            activePointerId = null;
+        };
+
+        this.mobileArrowPad.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+            e.preventDefault();
+            activePointerId = e.pointerId;
+            startX = e.clientX;
+            startY = e.clientY;
+            suppressClick = false;
+            hasSent = false;
+            this.mobileArrowPad.classList.add('active');
+            this.mobileArrowPad.setPointerCapture?.(e.pointerId);
+        });
+
+        this.mobileArrowPad.addEventListener('pointermove', (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            const absX = Math.abs(dx);
+            const absY = Math.abs(dy);
+            const threshold = hasSent ? repeatThreshold : initialThreshold;
+            let key = null;
+
+            if (absX >= threshold && absX >= absY * dominance) {
+                key = dx > 0 ? 'Right' : 'Left';
+            } else if (absY >= threshold && absY >= absX * dominance) {
+                key = dy > 0 ? 'Down' : 'Up';
+            }
+
+            if (!key) return;
+
+            suppressClick = true;
+            hasSent = true;
+            e.preventDefault();
+            this.handleKeybarAction(key);
+            startX = e.clientX;
+            startY = e.clientY;
+        });
+
+        this.mobileArrowPad.addEventListener('pointerup', reset);
+        this.mobileArrowPad.addEventListener('pointercancel', reset);
+        this.mobileArrowPad.addEventListener('click', (e) => {
+            if (suppressClick) {
+                e.preventDefault();
+                suppressClick = false;
+            }
+        });
     }
 
     async exportSettings() {

@@ -3379,6 +3379,10 @@ body.mobile-mode #terminal-container {
     flex: 0 0 auto;
 }
 
+.mobile-toolbar-arrows {
+    flex: 0 0 auto;
+}
+
 .mobile-toolbar-btn {
     display: flex;
     align-items: center;
@@ -3426,6 +3430,10 @@ body.mobile-mode #terminal-container {
     width: 100%;
 }
 
+.mobile-bottom-toolbar.mobile-keybar-hidden .mobile-toolbar-arrows {
+    flex: 0 0 44px;
+}
+
 .mobile-bottom-toolbar.mobile-keybar-hidden .mobile-pane-name {
     max-width: none;
 }
@@ -3450,6 +3458,34 @@ body.mobile-mode #terminal-container {
 body.mobile-drawer-open .mobile-dropdown-icon {
     /* Arrow points right (away from sidebar) when open */
     transform: rotate(-90deg);
+}
+
+.mobile-arrow-pad {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-primary);
+    cursor: pointer;
+    touch-action: none;
+    user-select: none;
+    transition: all var(--transition-speed);
+}
+
+.mobile-arrow-pad:hover {
+    background: var(--border);
+    border-color: var(--accent);
+}
+
+.mobile-arrow-pad.active {
+    background: var(--accent);
+    color: var(--bg-primary);
+    border-color: var(--accent);
 }
 
 /* Mobile keybar in bottom toolbar */
