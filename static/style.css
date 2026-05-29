@@ -1,5 +1,5 @@
 /*
- * Webmux - a browser-based terminal multiplexer
+ * Webmux - a browser-based pane multiplexer
  * Copyright (C) 2026  Webmux contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -143,7 +143,7 @@ body {
     display: none;
 }
 
-/* Session panel - right side */
+/* Pane panel - right side */
 .sidebar-panel {
     flex: 1;
     display: flex;
@@ -175,10 +175,102 @@ body.mobile-mode .sidebar-panel {
 
 .sidebar-actions {
     padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 .sidebar-actions .btn {
     width: 100%;
+}
+
+.new-pane-split {
+    position: relative;
+    display: flex;
+    width: min(220px, 100%);
+}
+
+.new-pane-split .btn {
+    border-radius: 0;
+}
+
+.new-pane-split .new-pane-main {
+    flex: 1;
+    border-radius: 6px 0 0 6px;
+    justify-content: center;
+}
+
+.new-pane-split .new-pane-toggle {
+    width: 38px;
+    flex: 0 0 38px;
+    border-left: 1px solid var(--bg-primary);
+    border-radius: 0 6px 6px 0;
+    padding-inline: 0;
+}
+
+.new-pane-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
+}
+
+.new-pane-menu.hidden {
+    display: none;
+}
+
+.new-pane-option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.new-pane-option:hover,
+.new-pane-option:focus-visible {
+    background: var(--bg-tertiary);
+    outline: none;
+}
+
+.new-pane-option:disabled {
+    color: var(--text-muted);
+    cursor: not-allowed;
+    opacity: 0.55;
+}
+
+.new-pane-option:disabled:hover {
+    background: transparent;
+}
+
+.pane-type-icon-opencode {
+    color: #f1ecec;
+}
+
+.pane-item .pane-type-icon-opencode {
+    color: #f1ecec;
+    opacity: 0.8;
+}
+
+.pane-item.active .pane-type-icon-opencode {
+    color: #f1ecec;
+    opacity: 1;
 }
 
 .session-list {
@@ -205,7 +297,7 @@ body.mobile-mode .sidebar-panel {
     margin-bottom: 4px;
 }
 
-/* Group header (for multi-session groups) */
+/* Group header (for multi-pane groups) */
 .group-header {
     display: flex;
     align-items: center;
@@ -260,6 +352,12 @@ body.mobile-mode .sidebar-panel {
 .group-header.compact {
     padding: 4px 8px;
     gap: 6px;
+    background: transparent;
+}
+
+.group-header.compact:hover,
+.group-header.compact.active {
+    background: var(--border);
 }
 
 .group-header.compact .name {
@@ -273,15 +371,15 @@ body.mobile-mode .sidebar-panel {
     padding: 1px;
 }
 
-/* Group sessions (nested under header) */
-.group-sessions {
+/* Group panes (nested under header) */
+.group-panes {
     padding-left: 12px;
     border-left: 2px solid var(--border);
     margin-left: 20px;
 }
 
-/* Session items */
-.session-item {
+/* Pane items */
+.pane-item {
     display: flex;
     align-items: center;
     padding: 10px 12px;
@@ -292,35 +390,35 @@ body.mobile-mode .sidebar-panel {
     gap: 10px;
 }
 
-.session-item:hover {
+.pane-item:hover {
     background: var(--bg-tertiary);
 }
 
-.session-item.active {
+.pane-item.active {
     background: var(--bg-tertiary);
     border-left: 3px solid var(--accent);
 }
 
-.session-item.sub-item {
+.pane-item.sub-item {
     padding: 8px 10px;
     font-size: 13px;
 }
 
-.session-item.sub-item .icon {
+.pane-item.sub-item .icon {
     width: 16px;
     height: 16px;
 }
 
-.session-item .icon {
+.pane-item .icon {
     color: var(--text-muted);
     flex-shrink: 0;
 }
 
-.session-item.active .icon {
+.pane-item.active .icon {
     color: var(--accent);
 }
 
-.session-item .name {
+.pane-item .name {
     flex: 1;
     font-size: 14px;
     white-space: nowrap;
@@ -328,12 +426,12 @@ body.mobile-mode .sidebar-panel {
     text-overflow: ellipsis;
 }
 
-.session-item .name .process-name {
+.pane-item .name .process-name {
     color: var(--text-muted);
     font-weight: 400;
 }
 
-.session-item .actions {
+.pane-item .actions {
     display: none;
     gap: 4px;
     position: absolute;
@@ -343,24 +441,25 @@ body.mobile-mode .sidebar-panel {
     border-radius: 4px;
 }
 
-.session-item {
+.pane-item {
     position: relative;
 }
 
-.session-item:hover .actions {
+.pane-item:hover .actions,
+.pane-item.menu-open .actions {
     display: flex;
 }
 
-/* Hide popout button for non-active sessions */
-.session-item .action-btn.popout {
+/* Hide popout button for non-active panes */
+.pane-item .action-btn.popout {
     display: none;
 }
 
-.session-item.active .action-btn.popout {
+.pane-item.active .action-btn.popout {
     display: flex;
 }
 
-.session-item .action-btn,
+.pane-item .action-btn,
 .group-header .action-btn {
     padding: 4px;
     border: none;
@@ -373,15 +472,62 @@ body.mobile-mode .sidebar-panel {
     justify-content: center;
 }
 
-.session-item .action-btn:hover,
+.pane-item .action-btn:hover,
 .group-header .action-btn:hover {
     background: var(--bg-primary);
     color: var(--text-primary);
 }
 
-.session-item .action-btn.close:hover,
+.pane-item .action-btn.close:hover,
 .group-header .action-btn.close:hover {
     color: var(--danger);
+}
+
+.pane-action-menu-wrapper {
+    position: relative;
+}
+
+.pane-action-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 20;
+    min-width: 120px;
+    padding: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.pane-action-menu.hidden {
+    display: none;
+}
+
+.pane-menu-item {
+    width: 100%;
+    padding: 6px 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 12px;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.pane-menu-item svg {
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+
+.pane-menu-item:hover {
+    background: var(--bg-primary);
+    color: var(--text-primary);
 }
 
 /* Inline rename input */
@@ -403,7 +549,7 @@ body.mobile-mode .sidebar-panel {
 }
 
 /* Dragging state */
-.session-item.dragging,
+.pane-item.dragging,
 .group-container.dragging {
     opacity: 0.5;
 }
@@ -538,7 +684,7 @@ body.mobile-mode .sidebar-panel {
     /* both set by JS */
 }
 
-/* Terminal containers - one per session, never moved */
+/* Terminal containers - one per pane, never moved */
 .terminal-container {
     position: relative;
     overflow: hidden;
@@ -580,6 +726,48 @@ body.mobile-mode .sidebar-panel {
     display: block;
     /* Ensure iframe background matches */
     background: #1e1e2e;
+}
+
+.shared-iframe-layer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.shared-iframe-layer iframe {
+    position: absolute;
+    border: none;
+    display: block;
+    background: #1e1e2e;
+    pointer-events: auto;
+}
+
+.shared-mirror-placeholder {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 24px;
+    text-align: center;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+}
+
+.shared-mirror-placeholder p {
+    color: var(--text-secondary);
+    font-size: 14px;
+}
+
+.shared-mirror-placeholder small {
+    font-size: 12px;
+}
+
+.shared-mirror-placeholder.hidden {
+    display: none;
 }
 
 /* Popout placeholder */
@@ -1171,7 +1359,7 @@ body.mobile-mode .sidebar-panel {
     outline-offset: -3px;
 }
 
-/* Drag capture overlay - appears when dragging a session */
+/* Drag capture overlay - appears when dragging a pane */
 #drag-capture-overlay {
     display: none;
     position: absolute !important;
@@ -1262,8 +1450,10 @@ body.mobile-mode .sidebar-panel {
     border-radius: 6px;
 }
 
-/* No session placeholder */
+/* No pane placeholder */
 .no-session {
+    position: absolute;
+    inset: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1271,6 +1461,8 @@ body.mobile-mode .sidebar-panel {
     height: 100%;
     gap: 16px;
     color: var(--text-muted);
+    background: var(--bg-primary);
+    z-index: 20;
 }
 
 .no-session p {
@@ -2993,8 +3185,8 @@ body.mobile-mode .split-divider-v {
     height: calc(var(--split-gap) + 2px);
 }
 
-/* Mobile session actions - always visible */
-body.mobile-mode .session-item .actions,
+/* Mobile pane actions - always visible */
+body.mobile-mode .pane-item .actions,
 body.mobile-mode .group-header .actions {
     display: flex !important;
     position: static;
@@ -3006,7 +3198,7 @@ body.mobile-mode .group-header .actions {
     justify-content: flex-end;
 }
 
-body.mobile-mode .session-item .action-btn,
+body.mobile-mode .pane-item .action-btn,
 body.mobile-mode .group-header .action-btn {
     padding: 8px;
     min-width: 40px;
@@ -3097,7 +3289,7 @@ body.mobile-mode #terminal-container {
     border-color: var(--accent);
 }
 
-.mobile-session-name {
+.mobile-pane-name {
     max-width: 100px;
     overflow: hidden;
     text-overflow: ellipsis;

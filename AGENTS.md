@@ -1,6 +1,6 @@
 # Webmux
 
-Browser-based terminal multiplexer. Go backend proxies to per-session ttyd instances with tmux for persistence.
+Browser-based pane multiplexer. The Go backend manages local pane backends and proxies them into a shared browser workspace.
 
 ## AI Agent Navigation
 
@@ -17,8 +17,8 @@ grep -n "SECTION: TYPES" *.go cmd/wm/main.go
 # HTTP API endpoints and handlers
 grep -n "SECTION: API" *.go
 
-# Session management and lifecycle
-grep -n "SECTION: SESSIONS" *.go
+# Pane management and lifecycle
+grep -n "SECTION: PANES" *.go
 
 # Server initialization and main
 grep -n "SECTION: SERVER" *.go
@@ -35,6 +35,9 @@ grep -n "SECTION: FILES" *.go
 # WebSocket proxy and terminal handling
 grep -n "SECTION: TERMINAL" *.go
 
+# OpenCode managed backend and proxying
+grep -n "SECTION: OPENCODE" *.go
+
 # CLI commands and helpers
 grep -n "SECTION: CLI" cmd/wm/main.go
 ```
@@ -47,8 +50,8 @@ grep -n "SECTION: CORE" static/app.js
 # Mobile UI and touch handling
 grep -n "SECTION: MOBILE" static/app.js
 
-# Session and group management
-grep -n "SECTION: SESSIONS" static/app.js
+# Pane and group management
+grep -n "SECTION: PANES" static/app.js
 
 # Sidebar UI and interactions
 grep -n "SECTION: SIDEBAR" static/app.js
@@ -74,9 +77,9 @@ grep -n "SECTION: EVENTS" static/app.js
 
 ### Example Workflow
 ```bash
-# Want to modify session creation?
-grep -n "SECTION: SESSIONS" *.go          # Find session-related Go code
-grep -n "createSession\|CreateSession" *.go  # Look for creation functions
+# Want to modify pane creation?
+grep -n "SECTION: PANES" *.go             # Find pane-related Go code
+grep -n "CreatePane\|handlePanes" *.go    # Look for creation functions/routes
 
 # Want to modify mobile UI?
 grep -n "SECTION: MOBILE" static/app.js   # Jump to mobile section
@@ -84,15 +87,19 @@ grep -n "mobileMode\|Mobile" static/app.js # Find mobile-specific code
 ```
 
 ## Structure
-- `main.go` - HTTP server, session management, ttyd process lifecycle
+- `main.go` - HTTP server, top-level API routes, settings, files, clipboard
 - `dev.go` / `nodev.go` - Build tags for dev mode (live reload) vs production (embedded)
 - `cmd/wm/main.go` - CLI helper for terminal-to-browser interaction
 - `internal/shell/init.go` - Shell initialization scripts for webmux terminals
+- `panes.go` - Generic pane model, manager, UI state types
+- `terminal_runtime.go` / `terminal_proxy.go` / `terminal_input.go` - Terminal pane runtime, ttyd proxying, tmux input
+- `opencode_runtime.go` / `opencode_proxy.go` - Managed OpenCode shared backend and URL/storage proxy shims
+- `proxy.go` / `proxy_helpers.go` - Generic pane HTTP/WebSocket proxy pipeline
 - `static/` - Frontend SPA (vanilla JS, no framework)
   - `app.js` - Single class `TerminalMultiplexer` managing all UI state
   - `index.html` - Modals and layout structure
   - `style.css` - CSS variables for theming, Catppuccin-inspired defaults
-  - `tmux.conf` - Injected into each session
+  - `tmux.conf` - Injected into each terminal pane
   - `wm` - Built CLI binary (embedded in production builds)
 
 ## Clipboard

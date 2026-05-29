@@ -1,5 +1,5 @@
 /*
- * Webmux - a browser-based terminal multiplexer
+ * Webmux - a browser-based pane multiplexer
  * Copyright (C) 2026  Webmux contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -22,11 +22,12 @@
 
 class TerminalMultiplexer {
     constructor() {
-        // Sessions: individual terminal sessions from the backend
-        this.sessions = new Map();
+        // Panes: individual terminal panes from the backend
+        this.panes = new Map();
+        this.closingPaneIds = new Set();
 
-        // Groups: visual groupings of sessions (1-4 sessions per group)
-        // Structure: { id, name, sessionIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
+        // Groups: visual groupings of panes (1-4 panes per group)
+        // Structure: { id, name, paneIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
         this.groups = new Map();
 
         // Ordered list of group IDs (for sidebar ordering)
@@ -35,21 +36,33 @@ class TerminalMultiplexer {
         // Track which group is active
         this.activeGroupId = null;
 
-        // Track which session is focused within a split group (for keybar targeting)
-        this.focusedSessionId = null;
+        // Track which pane is focused within a split group (for keybar targeting)
+        this.focusedPaneId = null;
 
         // Track custom names (to know whether to show process name)
         this.customNames = new Set();
 
         // Drag state for sidebar
-        this.draggedSessionId = null;
+        this.draggedPaneId = null;
         this.draggedGroupId = null;
 
         // Group counter for unique IDs
         this.groupCounter = 0;
 
-        // Track popped out windows: sessionId -> Window object
+        // Track popped out windows: paneId -> Window object
         this.popoutWindows = new Map();
+        this.popoutIntervals = new Map();
+        this.popoutStates = new Map();
+        this.pendingPopoutAlives = new Map();
+        this.pendingPopoutCloses = new Map();
+        this.popoutChannel = null;
+        this.popoutStorageKey = 'webmux.popouts';
+        this.popoutStaleMs = 5000;
+
+        // Shared backend panes reuse one live iframe so mirrors do not reconnect.
+        this.sharedIframes = new Map();
+        this.sharedIframePositionFrame = null;
+        this.sharedIframeResizeObserver = null;
 
         // Sidebar collapsed state
         this.sidebarCollapsed = false;
@@ -57,6 +70,10 @@ class TerminalMultiplexer {
         // Server connection state
         this.serverConnected = true;
         this.connectionCheckInterval = null;
+        this.paneTypes = [
+            { type: 'terminal', label: 'Terminal', backendScope: 'dedicated', supportsKeybar: true, available: true },
+            { type: 'opencode', label: 'OpenCode', backendScope: 'shared', supportsKeybar: false, available: true },
+        ];
 
         // Base path for proxy support (detected from current URL)
         this.basePath = this.detectBasePath();
@@ -116,6 +133,7 @@ class TerminalMultiplexer {
         this.bindElements();
         this.bindEvents();
         this.setupTerminalDragTarget();
+        this.setupPopoutRegistry();
 
         // Setup mobile mode detection
         this.setupMobileModeDetection();
@@ -130,12 +148,12 @@ class TerminalMultiplexer {
         if (connected) {
             await this.loadSettings();
             await this.loadServerInfo();
-            await this.loadUIState(); // Load saved UI state from server before loading sessions
-            await this.loadSessions();
+            await this.loadUIState(); // Load saved UI state from server before loading panes
+            await this.loadPanes();
         }
 
         if (this.groups.size === 0) {
-            document.getElementById('no-session').classList.remove('hidden');
+            document.getElementById('no-pane').classList.remove('hidden');
             document.getElementById('keybar').classList.add('hidden');
             document.getElementById('toggle-keybar').classList.remove('active');
         }
@@ -146,8 +164,8 @@ class TerminalMultiplexer {
             this.startIconFadeTimer();
         }
 
-        // Start polling for dead sessions (also checks connection)
-        this.startSessionHealthCheck();
+        // Start polling for dead panes (also checks connection)
+        this.startPaneHealthCheck();
 
         // Save state periodically and on changes
         this.startAutoSave();
@@ -162,9 +180,9 @@ class TerminalMultiplexer {
         this.connectClipboardEvents();
     }
 
-    startSessionHealthCheck() {
-        // Check for dead sessions every 500ms
-        setInterval(() => this.checkSessionHealth(), 500);
+    startPaneHealthCheck() {
+        // Check for dead panes every 500ms
+        setInterval(() => this.checkPaneHealth(), 500);
     }
 
     // SECTION: MOBILE
@@ -269,22 +287,22 @@ class TerminalMultiplexer {
         }
 
         const activeGroup = this.groups.get(this.activeGroupId);
-        if (activeGroup && this.mobileSessionName) {
-            // Update session name display
-            if (activeGroup.sessionIds.length === 1) {
-                const session = this.sessions.get(activeGroup.sessionIds[0]);
-                this.mobileSessionName.textContent = session ? session.name : 'Terminal';
+        if (activeGroup && this.mobilePaneName) {
+            // Update pane name display
+            if (activeGroup.paneIds.length === 1) {
+                const pane = this.panes.get(activeGroup.paneIds[0]);
+                this.mobilePaneName.textContent = pane ? this.getPaneDisplayName(pane) : 'Pane';
             } else {
-                this.mobileSessionName.textContent = activeGroup.name || `Split (${activeGroup.sessionIds.length})`;
+                this.mobilePaneName.textContent = activeGroup.name || `Split (${activeGroup.paneIds.length})`;
             }
-        } else if (this.mobileSessionName) {
-            // No active session
-            this.mobileSessionName.textContent = 'Sessions';
+        } else if (this.mobilePaneName) {
+            // No active pane
+            this.mobilePaneName.textContent = 'Panes';
         }
     }
 
-    showMobileSessionPicker() {
-        // Open the mobile drawer to show the session list
+    showMobilePanePicker() {
+        // Open the mobile drawer to show the pane list
         this.openMobileDrawer();
     }
 
@@ -532,8 +550,8 @@ class TerminalMultiplexer {
             this.showDisconnectionWarning();
         } else {
             this.hideDisconnectionWarning();
-            // Reload UI state and sessions when reconnected
-            this.loadUIState().then(() => this.loadSessions());
+            // Reload UI state and panes when reconnected
+            this.loadUIState().then(() => this.loadPanes());
         }
     }
 
@@ -542,11 +560,13 @@ class TerminalMultiplexer {
 
         // Disable buttons that require server connection
         const serverButtons = [
-            this.newSessionBtn,
-            this.createFirstBtn,
             this.openUploadBtn,
             this.openDownloadBtn,
         ];
+
+        this.newPaneSplits.forEach(split => {
+            serverButtons.push(...split.querySelectorAll('button'));
+        });
 
         serverButtons.forEach(btn => {
             if (btn) {
@@ -556,7 +576,7 @@ class TerminalMultiplexer {
         });
 
         // Update sidebar action buttons
-        this.sessionList?.querySelectorAll('.action-btn').forEach(btn => {
+        this.paneList?.querySelectorAll('.action-btn').forEach(btn => {
             btn.disabled = disabled;
             btn.classList.toggle('disabled', disabled);
         });
@@ -633,7 +653,7 @@ class TerminalMultiplexer {
             groups: Array.from(this.groups.entries()).map(([id, g]) => ({
                 id: g.id,
                 name: g.name,
-                sessionIds: g.sessionIds,
+                paneIds: g.paneIds,
                 layout: g.layout,
                 expandedQuadrant: g.expandedQuadrant,
                 splitRatio: g.splitRatio,
@@ -681,7 +701,7 @@ class TerminalMultiplexer {
                 state.groups = state.groups.filter(g => {
                     if (!g || typeof g !== 'object') return false;
                     if (typeof g.id !== 'string') return false;
-                    if (!Array.isArray(g.sessionIds)) return false;
+                    if (!Array.isArray(g.paneIds)) return false;
                     // Reset invalid layout values
                     if (g.layout && !['single', 'horizontal', 'vertical', 'grid'].includes(g.layout)) {
                         g.layout = 'single';
@@ -718,28 +738,39 @@ class TerminalMultiplexer {
         }
     }
 
-    async checkSessionHealth() {
+    async checkPaneHealth() {
         try {
-            const response = await fetch(this.url('/api/sessions'));
+            const response = await fetch(this.url('/api/panes'));
 
             // Update connection status on successful response
             if (!this.serverConnected) {
                 this.setServerConnected(true);
             }
 
-            const sessions = await response.json();
+            const panes = await response.json();
 
-            // Build a map of server sessions and update session data
-            const serverSessionIds = new Set();
+            // Build a map of server panes and update pane data
+            const serverPaneIds = new Set();
             let needsRefresh = false;
 
-            for (const session of sessions) {
-                serverSessionIds.add(session.id);
+            for (const pane of panes) {
+                serverPaneIds.add(pane.id);
+                if (this.closingPaneIds.has(pane.id)) {
+                    continue;
+                }
 
-                // Update session data (including currentProcess)
-                const existing = this.sessions.get(session.id);
-                if (existing && existing.currentProcess !== session.currentProcess) {
-                    existing.currentProcess = session.currentProcess;
+                // Update pane data (including currentProcess)
+                const existing = this.panes.get(pane.id);
+                if (!existing) {
+                    pane._addedAt = Date.now();
+                    this.panes.set(pane.id, pane);
+                    const group = this.createGroup([pane.id]);
+                    this.addGroupToSidebar(group);
+                    needsRefresh = true;
+                    continue;
+                }
+                if (existing.currentProcess !== pane.currentProcess || existing.name !== pane.name || existing.type !== pane.type) {
+                    Object.assign(existing, pane);
                     needsRefresh = true;
                 }
             }
@@ -749,21 +780,27 @@ class TerminalMultiplexer {
                 this.refreshSidebar();
             }
 
-            // Find and clean up sessions that no longer exist on server
-            const currentSessionIds = Array.from(this.sessions.keys());
-            for (const sessionId of currentSessionIds) {
-                if (!serverSessionIds.has(sessionId)) {
-                    // Don't remove sessions that were just created (< 3 seconds ago)
+            // Find and clean up panes that no longer exist on server
+            const currentPaneIds = Array.from(this.panes.keys());
+            for (const paneId of currentPaneIds) {
+                if (!serverPaneIds.has(paneId)) {
+                    // Don't remove panes that were just created (< 3 seconds ago)
                     // This prevents race conditions where the health check runs before
-                    // the server has fully registered the session
-                    const session = this.sessions.get(sessionId);
-                    const addedAt = session?._addedAt || 0;
+                    // the server has fully registered the pane
+                    const pane = this.panes.get(paneId);
+                    const addedAt = pane?._addedAt || 0;
                     if (Date.now() - addedAt < 3000) {
-                        console.log(`Session ${sessionId} not on server but was just created, waiting...`);
+                        console.log(`Pane ${paneId} not on server but was just created, waiting...`);
                         continue;
                     }
-                    console.log(`Session ${sessionId} no longer exists on server, cleaning up`);
-                    this.handleSessionDied(sessionId);
+                    console.log(`Pane ${paneId} no longer exists on server, cleaning up`);
+                    this.handlePaneDied(paneId);
+                }
+            }
+
+            for (const paneId of Array.from(this.closingPaneIds)) {
+                if (!serverPaneIds.has(paneId)) {
+                    this.closingPaneIds.delete(paneId);
                 }
             }
         } catch (error) {
@@ -781,37 +818,26 @@ class TerminalMultiplexer {
         }
     }
 
-    handleSessionDied(sessionId) {
-        // Guard: only process if we still have this session
-        if (!this.sessions.has(sessionId)) {
+    handlePaneDied(paneId) {
+        // Guard: only process if we still have this pane
+        if (!this.panes.has(paneId)) {
             return;
         }
 
-        this.sessions.delete(sessionId);
-        this.customNames.delete(sessionId);
-
-        // Close popout window if exists
-        const popoutWindow = this.popoutWindows.get(sessionId);
-        if (popoutWindow && !popoutWindow.closed) {
-            popoutWindow.close();
-        }
-        this.popoutWindows.delete(sessionId);
-
-        // Remove the terminal container from DOM
-        this.removeSessionContainer(sessionId);
+        this.removePaneLocalState(paneId);
 
         // Remove from any group that contains it
         for (const [groupId, group] of this.groups) {
-            const sessionIndex = group.sessionIds.indexOf(sessionId);
-            if (sessionIndex === -1) continue;
+            const paneIndexInGroup = group.paneIds.indexOf(paneId);
+            if (paneIndexInGroup === -1) continue;
 
-            // Find which pane this session was in (for selecting next in visual order)
-            const cm = group.cellMapping || group.sessionIds.map((_, i) => i);
-            const paneIndex = cm.indexOf(sessionIndex);
+            // Find which pane this pane was in (for selecting next in visual order)
+            const cm = group.cellMapping || group.paneIds.map((_, i) => i);
+            const paneIndex = cm.indexOf(paneIndexInGroup);
 
-            if (!this.removeSessionFromGroup(group, sessionId)) break;
+            if (!this.removePaneFromGroup(group, paneId)) break;
 
-            if (group.sessionIds.length === 0) {
+            if (group.paneIds.length === 0) {
                 // Find the index of this group before removing it
                 const groupIndex = this.groupOrder.indexOf(groupId);
 
@@ -829,10 +855,10 @@ class TerminalMultiplexer {
                 this.activateGroup(nextGroupId);
             } else {
                 this.updateTerminalLayout();
-                this.noSessionEl.classList.remove('hidden');
+                this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
-                // Keep expand button visible when no sessions
+                // Keep expand button visible when no panes
                 this.clearIconFade?.();
             }
                 }
@@ -841,12 +867,12 @@ class TerminalMultiplexer {
                 this.updateGroupInSidebar(group);
                 if (this.activeGroupId === groupId) {
                     this.updateTerminalLayout();
-                    // Focus the next session in pane order, or previous if we closed the last
-                    const newCm = group.cellMapping || group.sessionIds.map((_, i) => i);
-                    const nextPaneIndex = Math.min(paneIndex, newCm.length - 1);
-                    const nextSessionIndex = newCm[nextPaneIndex];
-                    if (nextSessionIndex !== undefined) {
-                        this.focusTerminal(group.sessionIds[nextSessionIndex]);
+                    // Focus the next pane in pane order, or previous if we closed the last
+                    const newCm = group.cellMapping || group.paneIds.map((_, i) => i);
+                    const nextPanePosition = Math.min(paneIndex, newCm.length - 1);
+                    const nextPaneIndex = newCm[nextPanePosition];
+                    if (nextPaneIndex !== undefined) {
+                        this.focusPane(group.paneIds[nextPaneIndex]);
                     }
                 }
             }
@@ -859,11 +885,14 @@ class TerminalMultiplexer {
         this.sidebarIcons = document.querySelector('.sidebar-icons');
         this.toggleSidebarBtn = document.getElementById('toggle-sidebar');
         this.openSettingsBtn = document.getElementById('open-settings');
-        this.sessionList = document.getElementById('session-list');
-        this.newSessionBtn = document.getElementById('new-session');
-        this.createFirstBtn = document.getElementById('create-first-session');
+        this.paneList = document.getElementById('pane-list');
+        this.newPaneSplits = Array.from(document.querySelectorAll('.new-pane-split'));
         this.terminalsContainer = document.getElementById('terminals');
-        this.noSessionEl = document.getElementById('no-session');
+        this.noPaneEl = document.getElementById('no-pane');
+
+        this.sharedIframeLayer = document.createElement('div');
+        this.sharedIframeLayer.className = 'shared-iframe-layer';
+        this.terminalsContainer.appendChild(this.sharedIframeLayer);
 
         // Modals
         this.uploadModal = document.getElementById('upload-modal');
@@ -917,7 +946,7 @@ class TerminalMultiplexer {
         this.currentFileInfo = null; // Store current file data for actions
 
         // Inline rename state
-        this.renamingSessionId = null;
+        this.renamingPaneId = null;
 
         // Settings modal
         this.settingsModal = document.getElementById('settings-modal');
@@ -950,8 +979,8 @@ class TerminalMultiplexer {
 
         // Mobile bottom toolbar
         this.mobileBottomToolbar = document.getElementById('mobile-bottom-toolbar');
-        this.mobileSessionPicker = document.getElementById('mobile-session-picker');
-        this.mobileSessionName = document.querySelector('.mobile-session-name');
+        this.mobilePanePicker = document.getElementById('mobile-pane-picker');
+        this.mobilePaneName = document.querySelector('.mobile-pane-name');
         this.mobileScratchBtn = document.getElementById('mobile-scratch');
 
     }
@@ -959,6 +988,12 @@ class TerminalMultiplexer {
     // SECTION: EVENTS
 
     bindEvents() {
+        window.addEventListener('resize', () => this.scheduleSharedIframePosition());
+        if ('ResizeObserver' in window) {
+            this.sharedIframeResizeObserver = new ResizeObserver(() => this.scheduleSharedIframePosition());
+            this.sharedIframeResizeObserver.observe(this.terminalsContainer);
+        }
+
         // Sidebar toggle
         this.toggleSidebarBtn.addEventListener('click', () => {
             if (this.mobileMode) {
@@ -973,10 +1008,10 @@ class TerminalMultiplexer {
         this.startIconFadeTimer = () => {
             clearTimeout(iconFadeTimeout);
             this.sidebarIcons.classList.remove('faded');
-            // Don't fade if no sessions active
-            if (this.sessions.size === 0) return;
+            // Don't fade if no panes active
+            if (this.panes.size === 0) return;
             iconFadeTimeout = setTimeout(() => {
-                if (this.sidebar.classList.contains('collapsed') && this.sessions.size > 0) {
+                if (this.sidebar.classList.contains('collapsed') && this.panes.size > 0) {
                     this.sidebarIcons.classList.add('faded');
                 }
             }, 2000);
@@ -1110,9 +1145,28 @@ class TerminalMultiplexer {
             });
         });
 
-        // Session management
-        this.newSessionBtn.addEventListener('click', () => this.createNewSessionAndGroup());
-        this.createFirstBtn.addEventListener('click', () => this.createNewSessionAndGroup());
+        // Pane management
+        this.bindNewPaneSplits();
+        document.addEventListener('click', (e) => {
+            const activeSplit = e.target.closest('.new-pane-split');
+            this.closeNewPaneMenus(activeSplit);
+            if (!e.target.closest('.pane-action-menu-wrapper')) {
+                this.closePaneActionMenus();
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            this.closeNewPaneMenus();
+            this.closePaneActionMenus();
+        });
+
+        window.addEventListener('message', (e) => {
+            const msg = e.data;
+            if (!msg || msg.type !== 'webmux-clipboard-write') return;
+            const text = String(msg.text || '');
+            fetch(this.url('/api/clipboard'), { method: 'POST', body: text }).catch(() => {});
+            navigator.clipboard?.writeText(text).catch(() => {});
+        });
 
         // Upload modal
         this.openUploadBtn.addEventListener('click', () => this.openModal(this.uploadModal));
@@ -1239,7 +1293,7 @@ class TerminalMultiplexer {
         document.addEventListener('keydown', (e) => {
             if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
                 e.preventDefault();
-                this.createNewSessionAndGroup();
+                this.createNewPaneAndGroup();
             }
 
             if (e.key === 'Escape') {
@@ -1261,7 +1315,7 @@ class TerminalMultiplexer {
 
         // Global dragend to clean up state
         document.addEventListener('dragend', () => {
-            this.draggedSessionId = null;
+            this.draggedPaneId = null;
             this.hideDragOverlay();
             document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging'));
         });
@@ -1271,18 +1325,18 @@ class TerminalMultiplexer {
 
         // Keybar toggle (in sidebar)
         this.keybarToggle.addEventListener('click', () => {
-            // Only toggle if there are active sessions
+            // Only toggle if there are active panes
             if (this.groups.size > 0) {
                 this.keybarUserHidden = !this.keybarUserHidden;
-                this.keybar.classList.toggle('hidden', this.keybarUserHidden);
-                this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
+                this.updateKeybarVisibility();
+                this.scheduleSharedIframePosition();
             }
         });
 
         // Mobile toolbar event handlers
-        if (this.mobileSessionPicker) {
-            this.mobileSessionPicker.addEventListener('click', () => {
-                this.showMobileSessionPicker();
+        if (this.mobilePanePicker) {
+            this.mobilePanePicker.addEventListener('click', () => {
+                this.showMobilePanePicker();
             });
         }
 
@@ -1298,36 +1352,37 @@ class TerminalMultiplexer {
         }
     }
 
-    // SECTION: SESSIONS
+    // SECTION: PANES
 
-    // Group & Session Management
+    // Group & Pane Management
     // ==========================
 
-    async loadSessions() {
+    async loadPanes() {
         try {
-            const response = await fetch(this.url('/api/sessions'));
-            const serverSessions = await response.json();
+            const response = await fetch(this.url('/api/panes'));
+            const serverPanes = await response.json();
 
             // Clear existing state before loading
-            this.sessions.clear();
+            this.panes.clear();
             this.groups.clear();
             this.groupOrder = [];
-            this.sessionList.innerHTML = '';
+            this.paneList.innerHTML = '';
 
-            // Build map of server sessions
-            const serverSessionMap = new Map();
-            for (const session of serverSessions) {
-                serverSessionMap.set(session.id, session);
-                this.sessions.set(session.id, session);
+            // Build map of server panes
+            const serverPaneMap = new Map();
+            for (const pane of serverPanes) {
+                serverPaneMap.set(pane.id, pane);
+                this.panes.set(pane.id, pane);
             }
+            this.reconcilePopoutStates();
 
             // Try to restore saved state from server
             if (this.savedState && this.savedState.groups && this.savedState.groups.length > 0) {
-                this.reconcileWithSavedState(serverSessionMap);
+                this.reconcileWithSavedState(serverPaneMap);
             } else {
-                // No saved state - create a group for each session
-                for (const session of serverSessionMap.values()) {
-                    const group = this.createGroup([session.id]);
+                // No saved state - create a group for each pane
+                for (const pane of serverPaneMap.values()) {
+                    const group = this.createGroup([pane.id]);
                     this.addGroupToSidebar(group);
                 }
             }
@@ -1345,33 +1400,33 @@ class TerminalMultiplexer {
             // Clear saved state after reconciliation
             this.savedState = null;
         } catch (error) {
-            console.error('Failed to load sessions:', error);
+            console.error('Failed to load panes:', error);
         }
     }
 
-    reconcileWithSavedState(serverSessionMap) {
+    reconcileWithSavedState(serverPaneMap) {
         const savedGroups = this.savedState.groups || [];
         const savedOrder = this.savedState.groupOrder || [];
-        const usedSessionIds = new Set();
+        const usedPaneIds = new Set();
 
-        // Restore groups, filtering out dead sessions
+        // Restore groups, filtering out dead panes
         for (const savedGroup of savedGroups) {
-            const validSessionIds = savedGroup.sessionIds.filter(id => serverSessionMap.has(id));
+            const validPaneIds = savedGroup.paneIds.filter(id => serverPaneMap.has(id));
 
-            if (validSessionIds.length === 0) continue;
+            if (validPaneIds.length === 0) continue;
 
-            validSessionIds.forEach(id => usedSessionIds.add(id));
+            validPaneIds.forEach(id => usedPaneIds.add(id));
 
             // Recreate group with saved properties
-            const sameSessionCount = validSessionIds.length === savedGroup.sessionIds.length;
+            const samePaneCount = validPaneIds.length === savedGroup.paneIds.length;
             const group = {
                 id: savedGroup.id,
                 name: savedGroup.name,
-                sessionIds: validSessionIds,
-                layout: sameSessionCount ? savedGroup.layout : this.getDefaultLayout(validSessionIds.length),
+                paneIds: validPaneIds,
+                layout: samePaneCount ? savedGroup.layout : this.getDefaultLayout(validPaneIds.length),
                 expandedQuadrant: savedGroup.expandedQuadrant,
-                splitRatio: sameSessionCount ? savedGroup.splitRatio : this.getDefaultSplitRatio(validSessionIds.length),
-                cellMapping: sameSessionCount ? savedGroup.cellMapping : null
+                splitRatio: samePaneCount ? savedGroup.splitRatio : this.getDefaultSplitRatio(validPaneIds.length),
+                cellMapping: samePaneCount ? savedGroup.cellMapping : null
             };
 
             this.groups.set(group.id, group);
@@ -1393,11 +1448,10 @@ class TerminalMultiplexer {
             }
         }
 
-        // Create groups for any sessions not in saved state (new sessions)
-        for (const [sessionId, session] of serverSessionMap) {
-            if (!usedSessionIds.has(sessionId)) {
-                const group = this.createGroup([sessionId]);
-                this.groupOrder.push(group.id);
+        // Create groups for any panes not in saved state (new panes)
+        for (const [paneId, pane] of serverPaneMap) {
+            if (!usedPaneIds.has(paneId)) {
+                this.createGroup([paneId]);
             }
         }
 
@@ -1408,15 +1462,15 @@ class TerminalMultiplexer {
         }
     }
 
-    createGroup(sessionIds, name = null) {
+    createGroup(paneIds, name = null) {
         const id = `group-${++this.groupCounter}`;
         const group = {
             id,
-            name: name || this.generateGroupName(sessionIds),
-            sessionIds: [...sessionIds],
-            layout: sessionIds.length === 1 ? 'single' : this.getDefaultLayout(sessionIds.length),
+            name: name || this.generateGroupName(paneIds),
+            paneIds: [...paneIds],
+            layout: paneIds.length === 1 ? 'single' : this.getDefaultLayout(paneIds.length),
             expandedQuadrant: null,
-            splitRatio: this.getDefaultSplitRatio(sessionIds.length),
+            splitRatio: this.getDefaultSplitRatio(paneIds.length),
             cellMapping: null // null means identity mapping
         };
         this.groups.set(id, group);
@@ -1436,24 +1490,24 @@ class TerminalMultiplexer {
         }
     }
 
-    // Remove a session from a group, updating cellMapping appropriately
-    removeSessionFromGroup(group, sessionId) {
-        const idx = group.sessionIds.indexOf(sessionId);
+    // Remove a pane from a group, updating cellMapping appropriately
+    removePaneFromGroup(group, paneId) {
+        const idx = group.paneIds.indexOf(paneId);
         if (idx === -1) return false;
 
-        // Clear focused session if it's the one being removed
-        if (this.focusedSessionId === sessionId) {
-            this.focusedSessionId = null;
+        // Clear focused pane if it's the one being removed
+        if (this.focusedPaneId === paneId) {
+            this.focusedPaneId = null;
         }
 
-        group.sessionIds.splice(idx, 1);
+        group.paneIds.splice(idx, 1);
 
-        // Update cellMapping: remove the session's pane and adjust remaining indices
+        // Update cellMapping: remove the pane's pane and adjust remaining indices
         if (group.cellMapping) {
             const paneIdx = group.cellMapping.indexOf(idx);
             const newMapping = group.cellMapping
                 .filter((_, i) => i !== paneIdx)
-                .map(sessionIdx => sessionIdx > idx ? sessionIdx - 1 : sessionIdx);
+                .map(paneIdx => paneIdx > idx ? paneIdx - 1 : paneIdx);
             group.cellMapping = newMapping.length > 0 ? newMapping : null;
         }
 
@@ -1461,7 +1515,7 @@ class TerminalMultiplexer {
     }
 
     updateGroupLayout(group) {
-        const count = group.sessionIds.length;
+        const count = group.paneIds.length;
         group.layout = this.getDefaultLayout(count);
         group.splitRatio = this.getDefaultSplitRatio(count);
 
@@ -1473,12 +1527,12 @@ class TerminalMultiplexer {
         }
     }
 
-    generateGroupName(sessionIds) {
-        if (sessionIds.length === 1) {
-            const session = this.sessions.get(sessionIds[0]);
-            return session ? session.name : 'Terminal';
+    generateGroupName(paneIds) {
+        if (paneIds.length === 1) {
+            const pane = this.panes.get(paneIds[0]);
+            return pane ? this.getPaneDisplayName(pane) : 'Pane';
         }
-        return `Split (${sessionIds.length})`;
+        return `Split (${paneIds.length})`;
     }
 
     getDefaultLayout(count) {
@@ -1491,104 +1545,175 @@ class TerminalMultiplexer {
         }
     }
 
-    async createNewSessionAndGroup() {
+    bindNewPaneSplits() {
+        this.newPaneSplits.forEach(split => {
+            const mainButton = split.querySelector('.new-pane-main');
+            const toggleButton = split.querySelector('.new-pane-toggle');
+            const menu = split.querySelector('.new-pane-menu');
+
+            mainButton?.addEventListener('click', () => this.createNewPaneAndGroup('terminal'));
+            toggleButton?.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeNewPaneMenus(split);
+                this.togglePaneMenu(menu, toggleButton);
+            });
+
+            menu?.addEventListener('click', (e) => {
+                const option = e.target.closest('.new-pane-option');
+                if (!option || option.disabled) return;
+                e.stopPropagation();
+                this.closePaneMenu(menu, toggleButton);
+                this.createNewPaneAndGroup(option.dataset.paneType || 'terminal');
+            });
+        });
+    }
+
+    renderPaneTypeMenus() {
+        const paneTypes = this.paneTypes.filter(paneType => paneType.type !== 'terminal' || paneType.available !== false);
+        const html = paneTypes.map(paneType => {
+            const disabled = paneType.available === false;
+            const reason = disabled && paneType.unavailableReason ? ` title="${this.escapeHtml(paneType.unavailableReason)}"` : '';
+            return `
+                <button class="new-pane-option" data-pane-type="${this.escapeHtml(paneType.type)}" role="menuitem" ${disabled ? 'disabled aria-disabled="true"' : ''}${reason}>
+                    ${this.getPaneTypeIconSvg(paneType.type, 18)}
+                    <span>${this.escapeHtml(paneType.label || paneType.type)}</span>
+                </button>
+            `;
+        }).join('');
+
+        this.newPaneSplits.forEach(split => {
+            const menu = split.querySelector('.new-pane-menu');
+            if (menu) menu.innerHTML = html;
+        });
+    }
+
+    closeNewPaneMenus(exceptSplit = null) {
+        this.newPaneSplits.forEach(split => {
+            if (split === exceptSplit) return;
+            this.closePaneMenu(split.querySelector('.new-pane-menu'), split.querySelector('.new-pane-toggle'));
+        });
+    }
+
+    togglePaneMenu(menu, toggle) {
+        if (!menu || !toggle) return;
+        const isOpen = !menu.classList.contains('hidden');
+        menu.classList.toggle('hidden', isOpen);
+        toggle.setAttribute('aria-expanded', String(!isOpen));
+        if (isOpen) return;
+        menu.querySelector('.new-pane-option')?.focus();
+    }
+
+    closePaneMenu(menu, toggle) {
+        menu?.classList.add('hidden');
+        toggle?.setAttribute('aria-expanded', 'false');
+    }
+
+    async createNewPaneAndGroup(paneType = 'terminal') {
         if (!this.serverConnected) {
-            this.toastError('Cannot create terminal: server disconnected');
+            this.toastError('Cannot create pane: server disconnected');
             return;
         }
-        const session = await this.createSession();
-        if (session) {
-            const group = this.createGroup([session.id]);
+        const pane = await this.createPane('', paneType);
+        if (pane) {
+            const group = this.createGroup([pane.id]);
             this.addGroupToSidebar(group);
             this.activateGroup(group.id);
-            // noSessionEl and keybar are handled by activateGroup
+            requestAnimationFrame(() => {
+                this.updateTerminalLayout();
+                this.focusPane(pane.id);
+            });
         }
     }
 
-    async createSession(name = '') {
+    async createPane(name = '', type = 'terminal') {
         try {
-            const response = await fetch(this.url('/api/sessions'), {
+            const response = await fetch(this.url('/api/panes'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
+                body: JSON.stringify({ name, type })
             });
 
-            if (!response.ok) throw new Error('Failed to create session');
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Failed to create pane');
+            }
 
-            const session = await response.json();
+            const pane = await response.json();
 
-            // Check for duplicate session ID (shouldn't happen, but guard against it)
-            if (this.sessions.has(session.id)) {
-                console.warn(`Session ${session.id} already exists, skipping duplicate`);
+            // Check for duplicate pane ID (shouldn't happen, but guard against it)
+            if (this.panes.has(pane.id)) {
+                console.warn(`Pane ${pane.id} already exists, skipping duplicate`);
                 return null;
             }
 
-            // Mark when this session was added to the frontend (for race condition protection)
-            session._addedAt = Date.now();
-            this.sessions.set(session.id, session);
-            return session;
+            // Mark when this pane was added to the frontend (for race condition protection)
+            pane._addedAt = Date.now();
+            this.panes.set(pane.id, pane);
+            return pane;
         } catch (error) {
-            console.error('Failed to create session:', error);
-            this.toastError('Failed to create terminal session. Is the server running?');
+            console.error('Failed to create pane:', error);
+            this.toastError(`Failed to create pane: ${error.message}`);
             return null;
         }
     }
 
-    async closeSession(sessionId) {
-        try {
-            await fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' });
-            this.sessions.delete(sessionId);
-            this.customNames.delete(sessionId);
+    async closePane(paneId) {
+        this.closingPaneIds.add(paneId);
 
-            // Close popout window if exists
-            const popoutWindow = this.popoutWindows.get(sessionId);
-            if (popoutWindow && !popoutWindow.closed) {
-                popoutWindow.close();
-            }
-            this.popoutWindows.delete(sessionId);
+        for (const [groupId, group] of this.groups) {
+            const paneIndexInGroup = group.paneIds.indexOf(paneId);
+            if (paneIndexInGroup === -1) continue;
 
-            this.removeSessionContainer(sessionId);
+            // Find which pane this pane was in (for selecting next in visual order)
+            const cm = group.cellMapping || group.paneIds.map((_, i) => i);
+            const paneIndex = cm.indexOf(paneIndexInGroup);
 
-            for (const [groupId, group] of this.groups) {
-                const sessionIndex = group.sessionIds.indexOf(sessionId);
-                if (sessionIndex === -1) continue;
+            if (!this.removePaneFromGroup(group, paneId)) break;
+            this.removePaneLocalState(paneId);
 
-                // Find which pane this session was in (for selecting next in visual order)
-                const cm = group.cellMapping || group.sessionIds.map((_, i) => i);
-                const paneIndex = cm.indexOf(sessionIndex);
-
-                if (!this.removeSessionFromGroup(group, sessionId)) break;
-
-                if (group.sessionIds.length === 0) {
-                    this.closeGroup(groupId);
-                } else {
-                    this.updateGroupLayout(group);
-                    this.updateGroupInSidebar(group);
-                    if (this.activeGroupId === groupId) {
-                        this.updateTerminalLayout();
-                        // Focus the next session in pane order, or previous if we closed the last
-                        const newCm = group.cellMapping || group.sessionIds.map((_, i) => i);
-                        const nextPaneIndex = Math.min(paneIndex, newCm.length - 1);
-                        const nextSessionIndex = newCm[nextPaneIndex];
-                        if (nextSessionIndex !== undefined) {
-                            this.focusTerminal(group.sessionIds[nextSessionIndex]);
-                        }
+            if (group.paneIds.length === 0) {
+                this.closeGroup(groupId, { skipPaneIds: new Set([paneId]) });
+            } else {
+                this.updateGroupLayout(group);
+                this.updateGroupInSidebar(group);
+                if (this.activeGroupId === groupId) {
+                    this.updateTerminalLayout();
+                    // Focus the next pane in pane order, or previous if we closed the last
+                    const newCm = group.cellMapping || group.paneIds.map((_, i) => i);
+                    const nextPanePosition = Math.min(paneIndex, newCm.length - 1);
+                    const nextPaneIndex = newCm[nextPanePosition];
+                    if (nextPaneIndex !== undefined) {
+                        this.focusPane(group.paneIds[nextPaneIndex]);
                     }
                 }
-                break;
+            }
+            break;
+        }
+
+        try {
+            const response = await fetch(this.url(`/api/panes/${paneId}`), { method: 'DELETE' });
+            if (!response.ok && response.status !== 404) {
+                console.error('Failed to close pane:', await response.text());
+                this.closingPaneIds.delete(paneId);
             }
         } catch (error) {
-            console.error('Failed to close session:', error);
+            console.error('Failed to close pane:', error);
+            this.closingPaneIds.delete(paneId);
         }
     }
 
-    // Send keys to a session via the terminal key API
+    // Send input to a pane via the pane input API
     // payload can be:
     //   - Simple: { keys: ['C-c', 'C-d'] }
     //   - Extended: { sequence: [{type: 'key', value: 'C-c'}, {type: 'text', value: 'hello\n'}] }
-    async sendKeysToSession(sessionId, payload) {
+    async sendInputToPane(paneId, payload) {
+        const pane = this.panes.get(paneId);
+        if (!this.paneSupportsKeybarInput(pane)) {
+            return false;
+        }
+
         try {
-            const response = await fetch(this.url(`/api/sessions/${sessionId}/keys`), {
+            const response = await fetch(this.url(`/api/panes/${paneId}/input`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
@@ -1596,51 +1721,50 @@ class TerminalMultiplexer {
 
             if (!response.ok) {
                 const errorText = await response.text();
-                throw new Error(errorText || 'Failed to send keys');
+                throw new Error(errorText || 'Failed to send input');
             }
 
             return true;
         } catch (error) {
-            console.error('Failed to send keys:', error);
+            console.error('Failed to send input:', error);
             return false;
         }
     }
 
-    // Send keys to the currently active session
-    async sendKeysToActiveSession(payload) {
+    // Send input to the currently active pane
+    async sendInputToActivePane(payload) {
         const activeGroup = this.groups.get(this.activeGroupId);
-        if (!activeGroup || activeGroup.sessionIds.length === 0) {
-            console.warn('No active session to send keys to');
+        if (!activeGroup || activeGroup.paneIds.length === 0) {
+            console.warn('No active pane to send input to');
             return false;
         }
 
-        // Send to the focused session within the group, falling back to the first
-        const activeSessionId = (this.focusedSessionId && activeGroup.sessionIds.includes(this.focusedSessionId))
-            ? this.focusedSessionId
-            : activeGroup.sessionIds[0];
-        return this.sendKeysToSession(activeSessionId, payload);
+        // Send to the focused pane within the group, falling back to the first
+        const activePaneId = (this.focusedPaneId && activeGroup.paneIds.includes(this.focusedPaneId))
+            ? this.focusedPaneId
+            : activeGroup.paneIds[0];
+        return this.sendInputToPane(activePaneId, payload);
     }
 
-    closeGroup(groupId) {
+    closeGroup(groupId, options = {}) {
         const group = this.groups.get(groupId);
         if (!group) return;
 
         // Find the index of this group before removing it
         const groupIndex = this.groupOrder.indexOf(groupId);
 
-        for (const sessionId of group.sessionIds) {
-            fetch(this.url(`/api/sessions/${sessionId}`), { method: 'DELETE' }).catch(() => {});
-            this.sessions.delete(sessionId);
-            this.customNames.delete(sessionId);
-
-            // Close popout window if exists
-            const popoutWindow = this.popoutWindows.get(sessionId);
-            if (popoutWindow && !popoutWindow.closed) {
-                popoutWindow.close();
+        for (const paneId of [...group.paneIds]) {
+            if (!options.skipPaneIds?.has(paneId)) {
+                this.closingPaneIds.add(paneId);
+                fetch(this.url(`/api/panes/${paneId}`), { method: 'DELETE' })
+                    .then(response => {
+                        if (!response.ok && response.status !== 404) {
+                            this.closingPaneIds.delete(paneId);
+                        }
+                    })
+                    .catch(() => this.closingPaneIds.delete(paneId));
             }
-            this.popoutWindows.delete(sessionId);
-
-            this.removeSessionContainer(sessionId);
+            this.removePaneLocalState(paneId);
         }
 
         this.groups.delete(groupId);
@@ -1655,9 +1779,9 @@ class TerminalMultiplexer {
             if (nextGroupId) {
                 this.activateGroup(nextGroupId);
             } else {
-                this.focusedSessionId = null;
+                this.focusedPaneId = null;
                 this.updateTerminalLayout();
-                this.noSessionEl.classList.remove('hidden');
+                this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
                 this.clearIconFade?.();
@@ -1667,33 +1791,58 @@ class TerminalMultiplexer {
         this.saveUIState();
     }
 
-    breakOutSession(sessionId, groupId) {
-        const group = this.groups.get(groupId);
-        if (!group || group.sessionIds.length <= 1) return;
+    removePaneLocalState(paneId) {
+        const pane = this.panes.get(paneId);
+        if (!pane) return null;
 
-        if (!this.removeSessionFromGroup(group, sessionId)) return;
+        const popoutKey = this.getPopoutKey(pane);
+        this.panes.delete(paneId);
+        this.customNames.delete(paneId);
+
+        const hasRemainingMirror = this.isSharedPane(pane) && Array.from(this.panes.values()).some(p => p.backendId === pane.backendId);
+        this.cleanupPanePopout(popoutKey, hasRemainingMirror);
+        this.removePaneContainer(paneId);
+
+        return pane;
+    }
+
+    cleanupPanePopout(popoutKey, keepAlive = false) {
+        if (!popoutKey || keepAlive) return;
+
+        const popoutWindow = this.popoutWindows.get(popoutKey);
+        if (popoutWindow && !popoutWindow.closed) {
+            popoutWindow.close();
+        }
+        this.clearPopoutTracking(popoutKey);
+    }
+
+    breakOutPane(paneId, groupId) {
+        const group = this.groups.get(groupId);
+        if (!group || group.paneIds.length <= 1) return;
+
+        if (!this.removePaneFromGroup(group, paneId)) return;
 
         this.updateGroupLayout(group);
         this.updateGroupInSidebar(group);
 
-        const newGroup = this.createGroup([sessionId]);
+        const newGroup = this.createGroup([paneId]);
         this.addGroupToSidebar(newGroup);
 
         this.activateGroup(newGroup.id);
     }
 
-    breakOutAllSessions(groupId) {
+    breakOutAllPanes(groupId) {
         const group = this.groups.get(groupId);
-        if (!group || group.sessionIds.length <= 1) return;
+        if (!group || group.paneIds.length <= 1) return;
 
-        const sessionIds = [...group.sessionIds];
+        const paneIds = [...group.paneIds];
 
         this.groups.delete(groupId);
         document.getElementById(`group-${groupId}`)?.remove();
 
         let firstNewGroup = null;
-        for (const sessionId of sessionIds) {
-            const newGroup = this.createGroup([sessionId]);
+        for (const paneId of paneIds) {
+            const newGroup = this.createGroup([paneId]);
             this.addGroupToSidebar(newGroup);
             if (!firstNewGroup) firstNewGroup = newGroup;
         }
@@ -1716,7 +1865,7 @@ class TerminalMultiplexer {
         container.innerHTML = this.renderGroupSidebarHTML(group);
 
         this.bindGroupEvents(container, group);
-        this.sessionList.appendChild(container);
+        this.paneList.appendChild(container);
     }
 
     updateGroupInSidebar(group) {
@@ -1724,7 +1873,7 @@ class TerminalMultiplexer {
         if (!container) return;
 
         // Don't re-render if we're in the middle of renaming
-        if (this.renamingSessionId && group.sessionIds.includes(this.renamingSessionId)) {
+        if (this.renamingPaneId && group.paneIds.includes(this.renamingPaneId)) {
             return;
         }
 
@@ -1733,118 +1882,148 @@ class TerminalMultiplexer {
     }
 
     renderGroupSidebarHTML(group) {
-        // Filter out any session IDs that no longer exist
-        const validSessionIds = group.sessionIds.filter(id => this.sessions.has(id));
-        if (validSessionIds.length !== group.sessionIds.length) {
-            // Update group with only valid sessions
-            group.sessionIds = validSessionIds;
+        // Filter out any pane IDs that no longer exist
+        const validPaneIds = group.paneIds.filter(id => this.panes.has(id));
+        if (validPaneIds.length !== group.paneIds.length) {
+            // Update group with only valid panes
+            group.paneIds = validPaneIds;
             // Reset cellMapping since we can't easily remap after arbitrary removals
             group.cellMapping = null;
-            if (validSessionIds.length === 0) {
+            if (validPaneIds.length === 0) {
                 // Schedule group removal (can't do it during render)
                 setTimeout(() => this.closeGroup(group.id), 0);
-                return '<div class="session-item">Closing...</div>';
+                return '<div class="pane-item">Closing...</div>';
             }
             this.updateGroupLayout(group);
         }
 
-        const isMulti = validSessionIds.length > 1;
+        const isMulti = validPaneIds.length > 1;
+        const activePaneInGroup = this.activeGroupId === group.id && validPaneIds.includes(this.focusedPaneId);
 
         if (!isMulti) {
-            const session = this.sessions.get(validSessionIds[0]);
-            const displayName = this.getSessionDisplayName(session);
-            const processName = this.getSessionProcessDisplay(session);
+            const pane = this.panes.get(validPaneIds[0]);
+            const displayName = this.getPaneDisplayName(pane);
+            const processName = this.getPaneProcessDisplay(pane);
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
-            const isRenaming = this.renamingSessionId === session?.id;
+            const isRenaming = this.renamingPaneId === pane?.id;
+            const paneTypeLabel = this.getPaneTypeLabel(pane);
 
             const nameHtml = isRenaming
-                ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-session-id="${session?.id}">`
+                ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-pane-id="${pane?.id}">`
                 : `<span class="name">${this.escapeHtml(displayName)}${processHtml}</span>`;
 
             return `
-                <div class="session-item ${this.activeGroupId === group.id ? 'active' : ''}"
-                     data-group-id="${group.id}" data-session-id="${session?.id}" draggable="${!isRenaming}"
-                     role="button" aria-label="Terminal session: ${this.escapeHtml(displayName)}">
-                    <svg class="icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                        <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
-                    </svg>
+                <div class="pane-item ${activePaneInGroup ? 'active' : ''}"
+                     data-group-id="${group.id}" data-pane-id="${pane?.id}" draggable="${!isRenaming}"
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}">
+                    ${this.getPaneIconSvg(pane, 18)}
                     ${nameHtml}
-                    <div class="actions">
-                        <button class="action-btn popout" title="Pop out" data-session-id="${session?.id}" aria-label="Pop out terminal">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                            </svg>
-                        </button>
-                        <button class="action-btn rename" title="Rename" data-session-id="${session?.id}" aria-label="Rename terminal">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25z"/>
-                            </svg>
-                        </button>
-                        <button class="action-btn close" title="Close" data-group-id="${group.id}" aria-label="Close terminal">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                            </svg>
-                        </button>
-                    </div>
+                    ${this.renderPaneActions(pane, group.id, { closeGroup: true, active: activePaneInGroup })}
                 </div>
             `;
         }
 
-        const sessionItems = validSessionIds.map(sid => {
-            const session = this.sessions.get(sid);
-            const displayName = this.getSessionDisplayName(session);
-            const processName = this.getSessionProcessDisplay(session);
+        const paneItems = validPaneIds.map(sid => {
+            const pane = this.panes.get(sid);
+            const displayName = this.getPaneDisplayName(pane);
+            const processName = this.getPaneProcessDisplay(pane);
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
+            const paneTypeLabel = this.getPaneTypeLabel(pane);
+            const isActivePane = activePaneInGroup && this.focusedPaneId === sid;
             return `
-                <div class="session-item sub-item" data-session-id="${sid}" data-group-id="${group.id}" draggable="true"
-                     role="button" aria-label="Terminal session: ${this.escapeHtml(displayName)}">
-                    <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-                        <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
-                    </svg>
+                <div class="pane-item sub-item ${isActivePane ? 'active' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}">
+                    ${this.getPaneIconSvg(pane, 16)}
                     <span class="name">${this.escapeHtml(displayName)}${processHtml}</span>
-                    <div class="actions">
-                        <button class="action-btn popout" title="Pop out" data-session-id="${sid}" aria-label="Pop out terminal">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
-                            </svg>
-                        </button>
-                        <button class="action-btn breakout" title="Break out from split" data-session-id="${sid}" data-group-id="${group.id}" aria-label="Break out from split">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M4 4h7V2H4a2 2 0 0 0-2 2v7h2V4zm6 12l-4 4h3v2H2v-7h2v3l4-4 2 2zm8-6l4-4v3h2V2h-7v2h3l-4 4 2 2z"/>
-                            </svg>
-                        </button>
-                        <button class="action-btn close" title="Close" data-session-id="${sid}" aria-label="Close terminal">
-                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
-                                <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-                            </svg>
-                        </button>
-                    </div>
+                    ${this.renderPaneActions(pane, group.id, { breakout: true, active: isActivePane })}
                 </div>
             `;
         }).join('');
 
         return `
-            <div class="group-header compact ${this.activeGroupId === group.id ? 'active' : ''}" data-group-id="${group.id}" draggable="true"
-                 role="button" aria-label="Terminal group: ${this.escapeHtml(group.name)}">
+            <div class="group-header compact ${activePaneInGroup ? 'active' : ''}" data-group-id="${group.id}" draggable="true"
+                 role="button" aria-label="Pane group: ${this.escapeHtml(group.name)}">
                 <svg class="icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M3 5v14h18V5H3zm8 12H5v-5h6v5zm0-7H5V5h6v5zm8 7h-6v-5h6v5zm0-7h-6V5h6v5z"/>
                 </svg>
                 <span class="name">Split</span>
                 <div class="actions">
-                    <button class="action-btn breakout-all" title="Break out all" data-group-id="${group.id}" aria-label="Break out all terminals">
+                    <button class="action-btn breakout-all" title="Break out all" data-group-id="${group.id}" aria-label="Break out all panes">
                         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
                             <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
                         </svg>
                     </button>
-                    <button class="action-btn close" title="Close all" data-group-id="${group.id}" aria-label="Close all terminals in group">
+                    <button class="action-btn close" title="Close all" data-group-id="${group.id}" aria-label="Close all panes in group">
                         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
                             <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                         </svg>
                     </button>
                 </div>
             </div>
-            <div class="group-sessions">
-                ${sessionItems}
+            <div class="group-panes">
+                ${paneItems}
+            </div>
+        `;
+    }
+
+    renderPaneActions(pane, groupId, options = {}) {
+        const paneId = pane?.id || '';
+        const paneTypeLabel = this.getPaneTypeLabel(pane);
+        const closeAttr = options.closeGroup
+            ? `data-group-id="${this.escapeHtml(groupId)}"`
+            : `data-pane-id="${this.escapeHtml(paneId)}"`;
+        const breakoutItem = options.breakout ? `
+            <button class="pane-menu-item" data-action="breakout" data-pane-id="${this.escapeHtml(paneId)}" data-group-id="${this.escapeHtml(groupId)}" role="menuitem">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path fill="currentColor" d="M4 4h7V2H4a2 2 0 0 0-2 2v7h2V4zm6 12l-4 4h3v2H2v-7h2v3l4-4 2 2zm8-6l4-4v3h2V2h-7v2h3l-4 4 2 2z"/>
+                </svg>
+                Break out
+            </button>
+        ` : '';
+        const popoutMenuItem = options.active ? '' : `
+            <button class="pane-menu-item" data-action="popout" data-pane-id="${this.escapeHtml(paneId)}" role="menuitem">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                </svg>
+                Pop out
+            </button>
+        `;
+
+        return `
+            <div class="actions">
+                <div class="pane-action-menu-wrapper">
+                    <button class="action-btn pane-menu-toggle" title="More actions" data-pane-id="${this.escapeHtml(paneId)}" aria-label="More actions for ${paneTypeLabel} pane" aria-haspopup="menu" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                            <path fill="currentColor" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+                        </svg>
+                    </button>
+                    <div class="pane-action-menu hidden" role="menu">
+                        <button class="pane-menu-item" data-action="refresh" data-pane-id="${this.escapeHtml(paneId)}" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                                <path fill="currentColor" d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.45 5.08h-2.12A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h8V3l-3.35 3.35z"/>
+                            </svg>
+                            Refresh
+                        </button>
+                        ${popoutMenuItem}
+                        <button class="pane-menu-item" data-action="rename" data-pane-id="${this.escapeHtml(paneId)}" role="menuitem">
+                            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                                <path fill="currentColor" d="M20.71 7.04c.39-.39.39-1.04 0-1.41l-2.34-2.34c-.37-.39-1.02-.39-1.41 0l-1.84 1.83 3.75 3.75M3 17.25V21h3.75L17.81 9.93l-3.75-3.75L3 17.25z"/>
+                            </svg>
+                            Rename
+                        </button>
+                        ${breakoutItem}
+                    </div>
+                </div>
+                <button class="action-btn popout" title="Pop out" data-pane-id="${this.escapeHtml(paneId)}" aria-label="Pop out ${paneTypeLabel} pane">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
+                    </svg>
+                </button>
+                <button class="action-btn close" title="Close" ${closeAttr} aria-label="Close ${paneTypeLabel} pane">
+                    <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                        <path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                    </svg>
+                </button>
             </div>
         `;
     }
@@ -1853,52 +2032,52 @@ class TerminalMultiplexer {
         const header = container.querySelector('.group-header');
         if (header) {
             header.addEventListener('click', (e) => {
-                if (!e.target.closest('.action-btn')) {
-                    // Focus first session when clicking group header
-                    this.activateGroup(group.id, group.sessionIds[0]);
+                if (!e.target.closest('.actions')) {
+                    // Focus first pane when clicking group header
+                    this.activateGroup(group.id, group.paneIds[0]);
                 }
             });
         }
 
-        const singleItem = container.querySelector('.session-item:not(.sub-item)');
+        const singleItem = container.querySelector('.pane-item:not(.sub-item)');
         if (singleItem && !header) {
             singleItem.addEventListener('click', (e) => {
-                if (!e.target.closest('.action-btn') && !e.target.closest('.inline-rename-input')) {
-                    const sessionId = singleItem.dataset.sessionId;
-                    this.activateGroup(group.id, sessionId);
+                if (!e.target.closest('.actions') && !e.target.closest('.inline-rename-input')) {
+                    const paneId = singleItem.dataset.paneId;
+                    this.activateGroup(group.id, paneId);
                 }
             });
         }
 
-        container.querySelectorAll('.session-item.sub-item').forEach(item => {
+        container.querySelectorAll('.pane-item.sub-item').forEach(item => {
             item.addEventListener('click', (e) => {
-                if (!e.target.closest('.action-btn')) {
-                    const sessionId = item.dataset.sessionId;
-                    this.activateGroup(group.id, sessionId);
+                if (!e.target.closest('.actions')) {
+                    const paneId = item.dataset.paneId;
+                    this.activateGroup(group.id, paneId);
                 }
             });
 
             item.addEventListener('mouseenter', () => {
-                const sessionId = item.dataset.sessionId;
-                this.highlightTerminalInGroup(sessionId, true);
+                const paneId = item.dataset.paneId;
+                this.highlightPaneInGroup(paneId, true);
             });
             item.addEventListener('mouseleave', () => {
-                const sessionId = item.dataset.sessionId;
-                this.highlightTerminalInGroup(sessionId, false);
+                const paneId = item.dataset.paneId;
+                this.highlightPaneInGroup(paneId, false);
             });
         });
 
         container.querySelectorAll('[draggable="true"]').forEach(item => {
             item.addEventListener('dragstart', (e) => {
-                this.draggedSessionId = item.dataset.sessionId;
+                this.draggedPaneId = item.dataset.paneId;
                 this.draggedGroupId = item.dataset.groupId;
                 item.classList.add('dragging');
                 e.dataTransfer.effectAllowed = 'move';
-                e.dataTransfer.setData('text/plain', this.draggedSessionId || this.draggedGroupId);
+                e.dataTransfer.setData('text/plain', this.draggedPaneId || this.draggedGroupId);
             });
             item.addEventListener('dragend', () => {
                 item.classList.remove('dragging');
-                this.draggedSessionId = null;
+                this.draggedPaneId = null;
                 this.draggedGroupId = null;
                 this.hideDragOverlay();
                 this.clearSidebarDropIndicators();
@@ -1906,7 +2085,7 @@ class TerminalMultiplexer {
         });
 
         container.addEventListener('dragover', (e) => {
-            if (!this.draggedSessionId && !this.draggedGroupId) return;
+            if (!this.draggedPaneId && !this.draggedGroupId) return;
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             this.updateSidebarDropIndicator(container, e);
@@ -1926,12 +2105,42 @@ class TerminalMultiplexer {
         container.querySelectorAll('.action-btn.close').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const sessionId = btn.dataset.sessionId;
+                const paneId = btn.dataset.paneId;
                 const groupId = btn.dataset.groupId;
-                if (sessionId) {
-                    this.closeSession(sessionId);
+                if (paneId) {
+                    this.closePane(paneId);
                 } else if (groupId) {
                     this.closeGroup(groupId);
+                }
+            });
+        });
+
+        container.querySelectorAll('.pane-menu-toggle').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const menu = btn.closest('.pane-action-menu-wrapper')?.querySelector('.pane-action-menu');
+                const isOpen = menu && !menu.classList.contains('hidden');
+                this.closePaneActionMenus(menu);
+                menu?.classList.toggle('hidden', isOpen);
+                btn.setAttribute('aria-expanded', String(!isOpen));
+                btn.closest('.pane-item')?.classList.toggle('menu-open', !isOpen);
+            });
+        });
+
+        container.querySelectorAll('.pane-menu-item').forEach(item => {
+            item.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const paneId = item.dataset.paneId;
+                const action = item.dataset.action;
+                this.closePaneActionMenus();
+                if (action === 'refresh') {
+                    this.refreshPane(paneId);
+                } else if (action === 'popout') {
+                    this.popOutPane(paneId);
+                } else if (action === 'rename') {
+                    this.startInlineRename(paneId);
+                } else if (action === 'breakout') {
+                    this.breakOutPane(paneId, item.dataset.groupId);
                 }
             });
         });
@@ -1939,28 +2148,28 @@ class TerminalMultiplexer {
         container.querySelectorAll('.action-btn.rename').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.startInlineRename(btn.dataset.sessionId);
+                this.startInlineRename(btn.dataset.paneId);
             });
         });
 
         container.querySelectorAll('.action-btn.breakout').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.breakOutSession(btn.dataset.sessionId, btn.dataset.groupId);
+                this.breakOutPane(btn.dataset.paneId, btn.dataset.groupId);
             });
         });
 
         container.querySelectorAll('.action-btn.breakout-all').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.breakOutAllSessions(btn.dataset.groupId);
+                this.breakOutAllPanes(btn.dataset.groupId);
             });
         });
 
         container.querySelectorAll('.action-btn.popout').forEach(btn => {
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                this.popOutSession(btn.dataset.sessionId);
+                this.popOutPane(btn.dataset.paneId);
             });
         });
 
@@ -1984,7 +2193,7 @@ class TerminalMultiplexer {
             renameInput.addEventListener('blur', () => {
                 // Small delay to allow click events to process first
                 setTimeout(() => {
-                    if (this.renamingSessionId) {
+                    if (this.renamingPaneId) {
                         this.finishInlineRename(renameInput.value.trim());
                     }
                 }, 100);
@@ -1996,18 +2205,54 @@ class TerminalMultiplexer {
         }
     }
 
-    getSessionDisplayName(session) {
-        if (!session) return 'Terminal';
-        return session.name;
+    closePaneActionMenus(exceptMenu = null) {
+        document.querySelectorAll('.pane-action-menu').forEach(menu => {
+            if (menu === exceptMenu) return;
+            menu.classList.add('hidden');
+            menu.closest('.pane-action-menu-wrapper')?.querySelector('.pane-menu-toggle')?.setAttribute('aria-expanded', 'false');
+            menu.closest('.pane-item')?.classList.remove('menu-open');
+        });
     }
 
-    getSessionProcessDisplay(session) {
-        if (!session || !session.currentProcess) return '';
-        return session.currentProcess;
+    getPaneDisplayName(pane) {
+        if (!pane) return 'Pane';
+        return pane.name;
     }
 
-    highlightTerminalInGroup(sessionId, highlight) {
-        const container = document.getElementById(`terminal-${sessionId}`);
+    getPaneTypeLabel(pane) {
+        if (pane?.type === 'opencode') return 'OpenCode';
+        return 'Terminal';
+    }
+
+    getPaneIconSvg(pane, size = 18) {
+        return this.getPaneTypeIconSvg(pane?.type || 'terminal', size);
+    }
+
+    getPaneTypeIconSvg(paneType, size = 18) {
+        if (paneType === 'opencode') {
+            return `
+                <svg class="icon pane-type-icon pane-type-icon-opencode" viewBox="0 0 300 300" width="${size}" height="${size}" aria-hidden="true">
+                    <path d="M210 240H90V120h120v120Z" fill="currentColor" opacity="0.45"/>
+                    <path d="M210 60H90v180h120V60Zm60 240H30V0h240v300Z" fill="currentColor"/>
+                </svg>
+            `;
+        }
+
+        return `
+            <svg class="icon pane-type-icon pane-type-icon-terminal" viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">
+                <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
+            </svg>
+        `;
+    }
+
+    getPaneProcessDisplay(pane) {
+        if (this.isSharedPane(pane)) return this.getPaneTypeLabel(pane);
+        if (!pane || !pane.currentProcess) return '';
+        return pane.currentProcess;
+    }
+
+    highlightPaneInGroup(paneId, highlight) {
+        const container = document.getElementById(`terminal-${paneId}`);
         if (container) {
             container.classList.toggle('highlighted', highlight);
         }
@@ -2022,15 +2267,15 @@ class TerminalMultiplexer {
     // Inline Rename
     // =============
 
-    startInlineRename(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return;
+    startInlineRename(paneId) {
+        const pane = this.panes.get(paneId);
+        if (!pane) return;
 
-        this.renamingSessionId = sessionId;
+        this.renamingPaneId = paneId;
 
-        // Find the group containing this session and re-render
+        // Find the group containing this pane and re-render
         for (const group of this.groups.values()) {
-            if (group.sessionIds.includes(sessionId)) {
+            if (group.paneIds.includes(paneId)) {
                 const container = document.getElementById(`group-${group.id}`);
                 if (container) {
                     container.innerHTML = this.renderGroupSidebarHTML(group);
@@ -2042,32 +2287,32 @@ class TerminalMultiplexer {
     }
 
     async finishInlineRename(newName) {
-        if (!this.renamingSessionId) return;
+        if (!this.renamingPaneId) return;
 
-        const sessionId = this.renamingSessionId;
-        this.renamingSessionId = null;
+        const paneId = this.renamingPaneId;
+        this.renamingPaneId = null;
 
         if (newName) {
             try {
-                await fetch(this.url(`/api/sessions/${sessionId}`), {
+                await fetch(this.url(`/api/panes/${paneId}`), {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ name: newName })
                 });
 
-                const session = this.sessions.get(sessionId);
-                if (session) {
-                    session.name = newName;
-                    this.customNames.add(sessionId);
+                const pane = this.panes.get(paneId);
+                if (pane) {
+                    pane.name = newName;
+                    this.customNames.add(paneId);
                 }
             } catch (error) {
-                console.error('Failed to rename session:', error);
+                console.error('Failed to rename pane:', error);
             }
         }
 
         // Re-render the sidebar item
         for (const group of this.groups.values()) {
-            if (group.sessionIds.includes(sessionId)) {
+            if (group.paneIds.includes(paneId)) {
                 this.updateGroupInSidebar(group);
                 break;
             }
@@ -2075,14 +2320,14 @@ class TerminalMultiplexer {
     }
 
     cancelInlineRename() {
-        if (!this.renamingSessionId) return;
+        if (!this.renamingPaneId) return;
 
-        const sessionId = this.renamingSessionId;
-        this.renamingSessionId = null;
+        const paneId = this.renamingPaneId;
+        this.renamingPaneId = null;
 
         // Re-render without the input
         for (const group of this.groups.values()) {
-            if (group.sessionIds.includes(sessionId)) {
+            if (group.paneIds.includes(paneId)) {
                 this.updateGroupInSidebar(group);
                 break;
             }
@@ -2092,19 +2337,237 @@ class TerminalMultiplexer {
     // Popout Management
     // =================
 
-    popOutSession(sessionId) {
-        const session = this.sessions.get(sessionId);
-        if (!session) return;
+    setupPopoutRegistry() {
+        this.loadPopoutStates();
 
-        if (this.popoutWindows.has(sessionId)) {
-            const existingWindow = this.popoutWindows.get(sessionId);
-            if (existingWindow && !existingWindow.closed) {
-                existingWindow.focus();
-                return;
-            }
+        if ('BroadcastChannel' in window) {
+            this.popoutChannel = new BroadcastChannel('webmux-popouts');
+            this.popoutChannel.onmessage = (event) => this.handlePopoutMessage(event.data);
+            this.popoutChannel.postMessage({ type: 'webmux-popout-discover' });
         }
 
-        const container = document.getElementById(`terminal-${sessionId}`);
+        setInterval(() => this.pruneStalePopouts(), 1000);
+    }
+
+    loadPopoutStates() {
+        try {
+            const raw = localStorage.getItem(this.popoutStorageKey);
+            if (!raw) return;
+            const entries = JSON.parse(raw);
+            if (!Array.isArray(entries)) return;
+            const now = Date.now();
+            for (const entry of entries) {
+                if (!entry?.key || now - (entry.lastSeen || 0) > this.popoutStaleMs) continue;
+                this.popoutStates.set(entry.key, entry);
+            }
+        } catch (error) {
+            console.warn('Failed to load popout state:', error);
+        }
+    }
+
+    savePopoutStates() {
+        try {
+            localStorage.setItem(this.popoutStorageKey, JSON.stringify(Array.from(this.popoutStates.values())));
+        } catch (error) {
+            console.warn('Failed to save popout state:', error);
+        }
+    }
+
+    handlePopoutMessage(msg) {
+        if (!msg || !msg.type || !msg.paneId) return;
+
+        if (msg.type === 'webmux-popout-alive') {
+            this.registerPopoutAlive(msg);
+        } else if (msg.type === 'webmux-popout-closed') {
+            this.registerPopoutClosed(msg);
+        }
+    }
+
+    registerPopoutAlive(msg) {
+        const pane = this.panes.get(msg.paneId);
+        if (!pane) {
+            this.pendingPopoutAlives.set(msg.paneId, msg);
+            return;
+        }
+
+        const key = this.getPopoutKey(pane);
+        if (!key) return;
+
+        this.cancelPendingPopoutClose(key, msg.popoutId);
+
+        const wasPoppedOut = this.popoutStates.has(key);
+        this.popoutStates.set(key, {
+            key,
+            paneId: msg.paneId,
+            popoutId: msg.popoutId,
+            backendId: pane.backendId,
+            backendScope: pane.backendScope,
+            href: msg.href,
+            lastSeen: msg.lastSeen || Date.now(),
+        });
+        this.savePopoutStates();
+
+        this.setPoppedOutContainers(key);
+
+        if (!wasPoppedOut) {
+            this.updateTerminalLayout();
+        }
+    }
+
+    registerPopoutClosed(msg) {
+        const pane = this.panes.get(msg.paneId);
+        const key = pane ? this.getPopoutKey(pane) : this.findPopoutKeyByMessage(msg);
+        if (!key) return;
+
+        const state = this.popoutStates.get(key);
+        if (state?.popoutId && msg.popoutId && state.popoutId !== msg.popoutId) return;
+
+        this.cancelPendingPopoutClose(key);
+        const timer = setTimeout(() => {
+            const latestState = this.popoutStates.get(key);
+            if (latestState?.popoutId && msg.popoutId && latestState.popoutId !== msg.popoutId) return;
+            this.pendingPopoutCloses.delete(key);
+            this.clearPopoutTracking(key);
+            this.clearPoppedOutContainers(key);
+            this.updateTerminalLayout();
+        }, 1200);
+        this.pendingPopoutCloses.set(key, { timer, popoutId: msg.popoutId });
+    }
+
+    cancelPendingPopoutClose(key, popoutId = null) {
+        const pending = this.pendingPopoutCloses.get(key);
+        if (!pending) return;
+        if (popoutId && pending.popoutId && pending.popoutId !== popoutId) return;
+        clearTimeout(pending.timer);
+        this.pendingPopoutCloses.delete(key);
+    }
+
+    findPopoutKeyByMessage(msg) {
+        for (const [key, state] of this.popoutStates) {
+            if ((msg.popoutId && state.popoutId === msg.popoutId) || state.paneId === msg.paneId) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    reconcilePopoutStates() {
+        for (const msg of this.pendingPopoutAlives.values()) {
+            this.registerPopoutAlive(msg);
+        }
+        this.pendingPopoutAlives.clear();
+
+        for (const [key, state] of Array.from(this.popoutStates)) {
+            if (!this.popoutStateHasPane(key, state)) {
+                this.popoutStates.delete(key);
+            }
+        }
+        this.savePopoutStates();
+    }
+
+    popoutStateHasPane(key, state) {
+        if (key.startsWith('pane:')) {
+            return this.panes.has(state.paneId);
+        }
+        if (key.startsWith('backend:')) {
+            return Array.from(this.panes.values()).some(pane => pane.backendId === state.backendId);
+        }
+        return false;
+    }
+
+    pruneStalePopouts() {
+        const now = Date.now();
+        let changed = false;
+        for (const [key, state] of Array.from(this.popoutStates)) {
+            if (now - (state.lastSeen || 0) <= this.popoutStaleMs) continue;
+            this.clearPopoutTracking(key);
+            this.clearPoppedOutContainers(key);
+            changed = true;
+        }
+        if (changed) {
+            this.savePopoutStates();
+            this.updateTerminalLayout();
+        }
+    }
+
+    getPopoutKey(pane) {
+        if (!pane) return null;
+        return this.isSharedPane(pane) ? `backend:${pane.backendId}` : `pane:${pane.id}`;
+    }
+
+    getPopoutKeyForPaneId(paneId) {
+        return this.getPopoutKey(this.panes.get(paneId)) || `pane:${paneId}`;
+    }
+
+    isPanePoppedOut(pane) {
+        const key = this.getPopoutKey(pane);
+        if (!key) return false;
+        const popoutWindow = this.popoutWindows.get(key);
+        if (popoutWindow && !popoutWindow.closed) return true;
+        const state = this.popoutStates.get(key);
+        return !!state && Date.now() - (state.lastSeen || 0) <= this.popoutStaleMs;
+    }
+
+    clearPopoutTracking(popoutKey) {
+        if (!popoutKey) return;
+        this.cancelPendingPopoutClose(popoutKey);
+        const interval = this.popoutIntervals.get(popoutKey);
+        if (interval) {
+            clearInterval(interval);
+            this.popoutIntervals.delete(popoutKey);
+        }
+        this.popoutWindows.delete(popoutKey);
+        this.popoutStates.delete(popoutKey);
+        this.savePopoutStates();
+    }
+
+    setPoppedOutContainers(popoutKey) {
+        for (const pane of this.panes.values()) {
+            if (this.getPopoutKey(pane) === popoutKey) {
+                document.getElementById(`terminal-${pane.id}`)?.classList.add('popped-out');
+            }
+        }
+    }
+
+    clearPoppedOutContainers(popoutKey) {
+        for (const pane of this.panes.values()) {
+            if (this.getPopoutKey(pane) === popoutKey) {
+                document.getElementById(`terminal-${pane.id}`)?.classList.remove('popped-out');
+            }
+        }
+    }
+
+    handlePopoutClosed(popoutKey) {
+        const panesToReload = Array.from(this.panes.values()).filter(pane => this.getPopoutKey(pane) === popoutKey && this.isSharedPane(pane));
+        this.clearPopoutTracking(popoutKey);
+        this.clearPoppedOutContainers(popoutKey);
+        panesToReload.forEach(pane => this.reloadSharedPaneIframe(pane));
+        this.updateTerminalLayout();
+    }
+
+    popOutPane(paneId) {
+        const pane = this.panes.get(paneId);
+        if (!pane) return;
+
+        const popoutKey = this.getPopoutKey(pane);
+        if (!popoutKey) return;
+
+        const existingWindow = this.popoutWindows.get(popoutKey);
+        if (existingWindow && !existingWindow.closed) {
+            existingWindow.focus();
+            return;
+        }
+
+        if (this.isPanePoppedOut(pane)) {
+            this.popoutChannel?.postMessage({ type: 'webmux-popout-discover' });
+            return;
+        }
+
+        if (this.popoutWindows.has(popoutKey)) {
+            this.clearPopoutTracking(popoutKey);
+        }
+
+        const container = document.getElementById(`terminal-${paneId}`);
         if (!container) return;
 
         const width = 800;
@@ -2112,90 +2575,172 @@ class TerminalMultiplexer {
         const left = window.screenX + 50;
         const top = window.screenY + 50;
 
-        const popoutUrl = this.url(`/t/${session.id}/`);
+        const popoutUrl = this.url(`/p/${pane.id}/`);
         const popoutWindow = window.open(
             popoutUrl,
-            `terminal-${sessionId}`,
+            `webmux-${popoutKey.replace(/[^a-zA-Z0-9_-]/g, '-')}`,
             `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no,status=no`
         );
 
         if (popoutWindow) {
-            this.popoutWindows.set(sessionId, popoutWindow);
+            this.popoutWindows.set(popoutKey, popoutWindow);
+            this.popoutStates.set(popoutKey, {
+                key: popoutKey,
+                paneId: pane.id,
+                popoutId: null,
+                backendId: pane.backendId,
+                backendScope: pane.backendScope,
+                href: popoutUrl,
+                lastSeen: Date.now(),
+            });
+            this.savePopoutStates();
             container.classList.add('popped-out');
+            if (this.isSharedPane(pane)) {
+                this.updateTerminalLayout();
+            }
 
             const checkClosed = setInterval(() => {
                 if (popoutWindow.closed) {
-                    clearInterval(checkClosed);
-                    this.popInSession(sessionId);
+                    this.handlePopoutClosed(popoutKey);
                 }
             }, 500);
+            this.popoutIntervals.set(popoutKey, checkClosed);
         }
     }
 
-    popInSession(sessionId) {
-        const container = document.getElementById(`terminal-${sessionId}`);
+    popInPane(paneId) {
+        const container = document.getElementById(`terminal-${paneId}`);
         if (!container) return;
 
-        const popoutWindow = this.popoutWindows.get(sessionId);
+        const pane = this.panes.get(paneId);
+        const popoutKey = this.getPopoutKey(pane);
+
+        const popoutWindow = this.popoutWindows.get(popoutKey);
         if (popoutWindow && !popoutWindow.closed) {
             popoutWindow.close();
         }
-        this.popoutWindows.delete(sessionId);
+        const state = this.popoutStates.get(popoutKey);
+        if (state) {
+            this.popoutChannel?.postMessage({
+                type: 'webmux-popout-close',
+                paneId: state.paneId,
+                popoutId: state.popoutId,
+            });
+        }
+        this.clearPopoutTracking(popoutKey);
+        this.clearPoppedOutContainers(popoutKey);
 
         container.classList.remove('popped-out');
+
+        if (this.isSharedPane(pane)) {
+            this.reloadSharedPaneIframe(pane);
+            this.updateTerminalLayout();
+            return;
+        }
 
         const iframe = container.querySelector('iframe');
         if (iframe) {
             // Reset to the correct terminal URL (not whatever the iframe might have navigated to)
-            const correctSrc = this.url(`/t/${sessionId}/`);
+            const correctSrc = this.url(`/p/${paneId}/`);
             iframe.src = '';
             setTimeout(() => { iframe.src = correctSrc; }, 50);
         }
     }
 
+    refreshPane(paneId) {
+        const pane = this.panes.get(paneId);
+        if (!pane) return;
+
+        if (this.isSharedPane(pane)) {
+            const popoutKey = this.getPopoutKey(pane);
+            const popoutWindow = this.popoutWindows.get(popoutKey);
+            if (popoutWindow && !popoutWindow.closed) {
+                popoutWindow.location.href = this.url(`/p/${pane.id}/`);
+            }
+            this.reloadSharedPaneIframe(pane);
+            this.updateTerminalLayout();
+            return;
+        }
+
+        const container = document.getElementById(`terminal-${paneId}`);
+        const iframe = container?.querySelector('iframe');
+        if (!iframe) return;
+
+        container.classList.add('loading');
+        iframe.dataset.loaded = '';
+        iframe.src = '';
+        setTimeout(() => { iframe.src = this.url(`/p/${paneId}/`); }, 50);
+    }
+
     // Terminal Rendering
     // ==================
 
-    activateGroup(groupId, focusSessionId = null) {
+    activateGroup(groupId, focusPaneId = null) {
         const group = this.groups.get(groupId);
         if (!group) return;
 
+        const paneToFocus = focusPaneId && group.paneIds.includes(focusPaneId)
+            ? focusPaneId
+            : group.paneIds[0];
+
+        const pane = this.panes.get(paneToFocus);
+        if (this.activeGroupId === groupId && this.focusedPaneId === paneToFocus && this.isSharedPane(pane)) {
+            return;
+        }
+
         this.clearAllHighlights();
 
-        document.querySelectorAll('.group-container').forEach(el => {
-            const gid = el.id.replace('group-', '');
-            const isActive = gid === groupId;
-            el.querySelector('.group-header, .session-item')?.classList.toggle('active', isActive);
-        });
-
         this.activeGroupId = groupId;
+        this.focusedPaneId = paneToFocus;
+        this.updateSidebarActiveStates();
+        this.noPaneEl.classList.add('hidden');
+        this.updateKeybarVisibility();
         this.updateTerminalLayout();
-        this.noSessionEl.classList.add('hidden');
-        // Show keybar unless user manually hid it
-        this.keybar.classList.toggle('hidden', this.keybarUserHidden);
-        this.keybarToggle.classList.toggle('active', !this.keybarUserHidden);
 
         // Update mobile toolbar
         this.updateMobileToolbar();
 
-        // Focus the specified session, or the first one if not specified
-        const sessionToFocus = focusSessionId && group.sessionIds.includes(focusSessionId)
-            ? focusSessionId
-            : group.sessionIds[0];
-        this.focusTerminal(sessionToFocus);
+        this.focusPane(paneToFocus);
     }
 
-    focusTerminal(sessionId) {
-        const container = document.getElementById(`terminal-${sessionId}`);
+    updateSidebarActiveStates() {
+        document.querySelectorAll('.group-container').forEach(container => {
+            const groupId = container.id.replace('group-', '');
+            const group = this.groups.get(groupId);
+            const activePaneInGroup = this.activeGroupId === groupId && group?.paneIds.includes(this.focusedPaneId);
+
+            container.querySelector('.group-header')?.classList.toggle('active', !!activePaneInGroup);
+            container.querySelectorAll('.pane-item').forEach(item => {
+                const isSinglePaneItem = !item.classList.contains('sub-item');
+                const isActivePane = activePaneInGroup && item.dataset.paneId === this.focusedPaneId;
+                item.classList.toggle('active', isSinglePaneItem ? this.activeGroupId === groupId && isActivePane : isActivePane);
+            });
+        });
+    }
+
+    focusPane(paneId) {
+        const container = document.getElementById(`terminal-${paneId}`);
         if (!container) return;
 
-        // Track focused session for keybar targeting in split groups
-        this.focusedSessionId = sessionId;
+        // Track focused pane for keybar targeting in split groups
+        this.focusedPaneId = paneId;
+        this.updateSidebarActiveStates();
+        this.updateKeybarVisibility();
+
+        const pane = this.panes.get(paneId);
+        if (this.isSharedPane(pane)) {
+            const iframe = this.sharedIframes.get(pane.backendId);
+            if (!this.isPanePoppedOut(pane) && iframe?.dataset.activePaneId !== paneId) {
+                this.updateTerminalLayout();
+            }
+        }
 
         // Don't focus if popped out
         if (container.classList.contains('popped-out')) return;
 
-        const iframe = container.querySelector('iframe');
+        const iframe = this.isSharedPane(pane)
+            ? this.sharedIframes.get(pane.backendId)
+            : container.querySelector('iframe');
         if (!iframe) return;
 
         // Delay to ensure layout is complete after tab switch
@@ -2214,11 +2759,198 @@ class TerminalMultiplexer {
         }, 100);
     }
 
-    createSessionContainer(session) {
+    isSharedPane(pane) {
+        return pane?.backendScope === 'shared' && pane.backendId;
+    }
+
+    getPaneBackendKey(pane) {
+        return this.isSharedPane(pane) ? pane.backendId : pane?.id;
+    }
+
+    paneSupportsKeybarInput(pane) {
+        return pane?.type === 'terminal';
+    }
+
+    updateKeybarVisibility() {
+        const pane = this.panes.get(this.focusedPaneId);
+        const visible = !!pane && this.paneSupportsKeybarInput(pane) && !this.keybarUserHidden;
+        this.keybar.classList.toggle('hidden', !visible);
+        this.keybarToggle.classList.toggle('active', visible);
+    }
+
+    createPaneIframe(pane) {
+        const iframe = document.createElement('iframe');
+        iframe.className = 'terminal-iframe';
+        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
+        iframe.allow = 'clipboard-read; clipboard-write';
+        iframe.dataset.paneId = pane.id;
+        iframe.dataset.srcPaneId = pane.id;
+        iframe.dataset.backendId = this.getPaneBackendKey(pane) || pane.id;
+
+        // Listen for iframe navigation (happens when pane dies and ttyd redirects)
+        // Only trigger on subsequent loads (not the initial load)
+        let initialLoad = true;
+        iframe.addEventListener('load', () => {
+            iframe.dataset.loaded = 'true';
+            const hostContainer = iframe.closest('.terminal-container') || document.getElementById(`terminal-${iframe.dataset.activePaneId}`);
+            hostContainer?.classList.remove('loading');
+
+            if (initialLoad) {
+                initialLoad = false;
+
+                // Track focus changes inside the iframe for keybar targeting.
+                // Clicks inside an iframe don't propagate to the parent document,
+                // so without this the keybar sends keys to the previously-focused pane.
+                try {
+                    iframe.contentWindow.addEventListener('focus', () => {
+                        this.focusedPaneId = iframe.dataset.paneId;
+                    });
+                } catch (e) {
+                    // Cross-origin fallback - shouldn't happen since we proxy panes
+                }
+                return;
+            }
+            // iframe reloaded - pane likely died, check immediately
+            this.checkPaneHealth();
+        });
+
+        // Also listen for errors to show loading failed
+        iframe.addEventListener('error', () => {
+            if (!iframe.dataset.loaded) {
+                const hostContainer = iframe.closest('.terminal-container') || document.getElementById(`terminal-${iframe.dataset.activePaneId}`);
+                hostContainer?.querySelector('.terminal-loading p')?.replaceChildren('Failed to connect');
+            }
+        });
+
+        // Assign src after handlers are attached. Fast local panes can load
+        // before a later load listener is registered, leaving the iframe hidden.
+        iframe.src = this.url(`/p/${pane.id}/`);
+
+        return iframe;
+    }
+
+    getSharedPaneIframe(pane) {
+        const backendKey = this.getPaneBackendKey(pane);
+        let iframe = this.sharedIframes.get(backendKey);
+        if (!iframe) {
+            iframe = this.createPaneIframe(pane);
+            this.sharedIframes.set(backendKey, iframe);
+            this.sharedIframeLayer?.appendChild(iframe);
+        }
+        return iframe;
+    }
+
+    reloadSharedPaneIframe(pane) {
+        const backendKey = this.getPaneBackendKey(pane);
+        if (!backendKey) return;
+
+        const iframe = this.sharedIframes.get(backendKey);
+        if (iframe) {
+            iframe.remove();
+            this.sharedIframes.delete(backendKey);
+        }
+
+        for (const candidate of this.panes.values()) {
+            if (candidate.backendId !== pane.backendId) continue;
+            document.getElementById(`terminal-${candidate.id}`)?.classList.add('loading');
+        }
+    }
+
+    hideSharedIframes() {
+        for (const iframe of this.sharedIframes.values()) {
+            iframe.classList.add('hidden');
+            iframe.dataset.activePaneId = '';
+        }
+    }
+
+    mountSharedPaneIframe(pane, container) {
+        const iframe = this.getSharedPaneIframe(pane);
+
+        if (iframe.dataset.srcPaneId && !this.panes.has(iframe.dataset.srcPaneId)) {
+            iframe.dataset.loaded = '';
+            iframe.dataset.srcPaneId = pane.id;
+            iframe.src = this.url(`/p/${pane.id}/`);
+        }
+
+        iframe.dataset.paneId = pane.id;
+        iframe.dataset.activePaneId = pane.id;
+        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
+
+        this.positionSharedIframe(iframe, container);
+        iframe.classList.remove('hidden');
+
+        container.classList.toggle('loading', !iframe.dataset.loaded);
+    }
+
+    positionSharedIframes() {
+        this.sharedIframePositionFrame = null;
+        for (const iframe of this.sharedIframes.values()) {
+            const paneId = iframe.dataset.activePaneId;
+            if (!paneId) continue;
+            const container = document.getElementById(`terminal-${paneId}`);
+            if (container?.classList.contains('visible')) {
+                this.positionSharedIframe(iframe, container);
+            }
+        }
+    }
+
+    scheduleSharedIframePosition() {
+        if (this.sharedIframePositionFrame) return;
+        this.sharedIframePositionFrame = requestAnimationFrame(() => this.positionSharedIframes());
+    }
+
+    positionSharedIframe(iframe, container) {
+        const terminalsRect = this.terminalsContainer.getBoundingClientRect();
+        const containerRect = container.getBoundingClientRect();
+
+        const nextLeft = `${containerRect.left - terminalsRect.left}px`;
+        const nextTop = `${containerRect.top - terminalsRect.top}px`;
+        const nextWidth = `${containerRect.width}px`;
+        const nextHeight = `${containerRect.height}px`;
+
+        const changed = iframe.style.left !== nextLeft
+            || iframe.style.top !== nextTop
+            || iframe.style.width !== nextWidth
+            || iframe.style.height !== nextHeight;
+
+        iframe.style.left = nextLeft;
+        iframe.style.top = nextTop;
+        iframe.style.width = nextWidth;
+        iframe.style.height = nextHeight;
+
+        if (!changed) return;
+
+        requestAnimationFrame(() => {
+            try {
+                iframe.contentWindow?.dispatchEvent(new Event('resize'));
+            } catch (e) {
+                // Cross-origin fallback - browser layout still resizes the iframe element.
+            }
+        });
+    }
+
+    getLiveSharedPaneIds(paneIds) {
+        const liveByBackend = new Map();
+        for (const paneId of paneIds) {
+            const pane = this.panes.get(paneId);
+            if (this.isSharedPane(pane) && !liveByBackend.has(pane.backendId)) {
+                liveByBackend.set(pane.backendId, paneId);
+            }
+        }
+
+        const focusedPane = this.panes.get(this.focusedPaneId);
+        if (this.isSharedPane(focusedPane) && paneIds.includes(this.focusedPaneId)) {
+            liveByBackend.set(focusedPane.backendId, this.focusedPaneId);
+        }
+
+        return liveByBackend;
+    }
+
+    createPaneContainer(pane) {
         const container = document.createElement('div');
-        container.id = `terminal-${session.id}`;
+        container.id = `terminal-${pane.id}`;
         container.className = 'terminal-container loading';
-        container.dataset.sessionId = session.id;
+        container.dataset.paneId = pane.id;
 
         // Loading overlay shown while terminal connects
         const loadingOverlay = document.createElement('div');
@@ -2230,43 +2962,15 @@ class TerminalMultiplexer {
             <p>Connecting...</p>
         `;
 
-        const iframe = document.createElement('iframe');
-        iframe.src = this.url(`/t/${session.id}/`);
-        iframe.className = 'terminal-iframe';
-        iframe.title = `Terminal session: ${session.name}`;
-        iframe.allow = 'clipboard-read; clipboard-write';
+        const iframe = this.isSharedPane(pane) ? null : this.createPaneIframe(pane);
 
-        // Listen for iframe navigation (happens when session dies and ttyd redirects)
-        // Only trigger on subsequent loads (not the initial load)
-        let initialLoad = true;
-        iframe.addEventListener('load', () => {
-            if (initialLoad) {
-                initialLoad = false;
-                // Remove loading state once terminal loads
-                container.classList.remove('loading');
-
-                // Track focus changes inside the iframe for keybar targeting.
-                // Clicks inside an iframe don't propagate to the parent document,
-                // so without this the keybar sends keys to the previously-focused pane.
-                try {
-                    iframe.contentWindow.addEventListener('focus', () => {
-                        this.focusedSessionId = session.id;
-                    });
-                } catch (e) {
-                    // Cross-origin fallback - shouldn't happen since we proxy ttyd
-                }
-                return;
-            }
-            // iframe reloaded - session likely died, check immediately
-            this.checkSessionHealth();
-        });
-
-        // Also listen for errors to show loading failed
-        iframe.addEventListener('error', () => {
-            if (initialLoad) {
-                loadingOverlay.querySelector('p').textContent = 'Failed to connect';
-            }
-        });
+        const mirrorPlaceholder = document.createElement('div');
+        mirrorPlaceholder.className = 'shared-mirror-placeholder hidden';
+        mirrorPlaceholder.setAttribute('role', 'status');
+        mirrorPlaceholder.innerHTML = `
+            <p>${this.getPaneTypeLabel(pane)} is already active in this group</p>
+            <small>Focus this mirror to move the live view here.</small>
+        `;
 
         const placeholder = document.createElement('div');
         placeholder.className = 'popout-placeholder hidden';
@@ -2275,42 +2979,64 @@ class TerminalMultiplexer {
             <svg viewBox="0 0 24 24" width="48" height="48" aria-hidden="true">
                 <path fill="currentColor" d="M19 19H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/>
             </svg>
-            <p>Terminal popped out</p>
-            <button class="btn btn-secondary pop-back-in" data-session-id="${session.id}" aria-label="Pop terminal back into browser window">Pop back in</button>
+            <p>${this.getPaneTypeLabel(pane)} popped out</p>
+            <button class="btn btn-secondary pop-back-in" data-pane-id="${pane.id}" aria-label="Pop ${this.getPaneTypeLabel(pane)} pane back into browser window">Pop back in</button>
         `;
 
         placeholder.querySelector('.pop-back-in').addEventListener('click', () => {
-            this.popInSession(session.id);
+            this.popInPane(pane.id);
         });
 
         // Focus this terminal when clicking on the container (gaps/borders)
         container.addEventListener('click', () => {
-            this.focusTerminal(session.id);
+            this.focusPane(pane.id);
         });
 
         container.appendChild(loadingOverlay);
-        container.appendChild(iframe);
+        if (iframe) {
+            container.appendChild(iframe);
+        }
+        container.appendChild(mirrorPlaceholder);
         container.appendChild(placeholder);
         this.terminalsContainer.appendChild(container);
+
+        if (this.isPanePoppedOut(pane)) {
+            container.classList.add('popped-out');
+        }
 
         return container;
     }
 
-    getSessionContainer(sessionId) {
-        let container = document.getElementById(`terminal-${sessionId}`);
+    getPaneContainer(paneId) {
+        let container = document.getElementById(`terminal-${paneId}`);
         if (!container) {
-            const session = this.sessions.get(sessionId);
-            if (session) {
-                container = this.createSessionContainer(session);
+            const pane = this.panes.get(paneId);
+            if (pane) {
+                container = this.createPaneContainer(pane);
             }
         }
         return container;
     }
 
-    removeSessionContainer(sessionId) {
-        const container = document.getElementById(`terminal-${sessionId}`);
+    removePaneContainer(paneId) {
+        const container = document.getElementById(`terminal-${paneId}`);
         if (container) {
+            const iframe = container.querySelector('iframe');
+            const backendId = iframe?.dataset.backendId;
+            if (backendId && this.sharedIframes.get(backendId) === iframe) {
+                iframe.remove();
+                this.sharedIframes.delete(backendId);
+            }
             container.remove();
+        }
+
+        for (const [backendId, sharedIframe] of this.sharedIframes) {
+            if (sharedIframe.dataset.srcPaneId !== paneId) continue;
+            const hasRemainingPane = Array.from(this.panes.values()).some(pane => pane.backendId === backendId);
+            if (!hasRemainingPane) {
+                sharedIframe.remove();
+                this.sharedIframes.delete(backendId);
+            }
         }
     }
 
@@ -2320,28 +3046,34 @@ class TerminalMultiplexer {
         document.querySelectorAll('.terminal-container').forEach(el => {
             el.classList.remove('visible', 'pane-0', 'pane-1', 'pane-2', 'pane-3', 'expanded', 'expanded-top', 'expanded-left');
             el.style.gridArea = '';
+            el.querySelector('.shared-mirror-placeholder')?.classList.add('hidden');
         });
+
+        this.hideSharedIframes();
 
         document.querySelectorAll('.split-divider').forEach(el => el.remove());
         document.getElementById('divider-control')?.remove();
         this.ensureResizeOverlay();
 
-        if (!activeGroup) {
+        if (!activeGroup || activeGroup.paneIds.length === 0) {
             this.terminalsContainer.className = 'layout-single';
             this.terminalsContainer.style.gridTemplateColumns = '';
             this.terminalsContainer.style.gridTemplateRows = '';
+            this.noPaneEl?.classList.remove('hidden');
             return;
         }
 
-        const sessionCount = activeGroup.sessionIds.length;
+        this.noPaneEl?.classList.add('hidden');
+
+        const paneCount = activeGroup.paneIds.length;
         const layout = activeGroup.layout;
-        const ratio = activeGroup.splitRatio || this.getDefaultSplitRatio(sessionCount);
+        const ratio = activeGroup.splitRatio || this.getDefaultSplitRatio(paneCount);
 
         // For 3-pane, add modifier class for expansion direction
         let containerClass = `layout-${layout}`;
         const expandDir = activeGroup.expandedQuadrant; // 'bottom', 'top', 'left', 'right' or legacy number
 
-        if (sessionCount === 3 && layout === 'grid') {
+        if (paneCount === 3 && layout === 'grid') {
             // Convert legacy numeric values
             let dir = expandDir;
             if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
@@ -2352,23 +3084,26 @@ class TerminalMultiplexer {
         }
 
         this.terminalsContainer.className = containerClass;
-        this.applyGridTemplate(layout, ratio, sessionCount);
+        this.applyGridTemplate(layout, ratio, paneCount);
 
         // Force reflow to ensure grid template is applied before adding dividers
         this.terminalsContainer.offsetHeight;
 
-        // cellMapping maps pane positions to session indices
-        // If not set, use identity mapping (session 0 -> pane 0, etc.)
-        const cellMapping = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
+        // cellMapping maps pane positions to pane indices
+        // If not set, use identity mapping (pane 0 -> pane 0, etc.)
+        const cellMapping = activeGroup.cellMapping || activeGroup.paneIds.map((_, i) => i);
+        const liveSharedPaneIds = this.getLiveSharedPaneIds(activeGroup.paneIds);
 
-        activeGroup.sessionIds.forEach((sessionId, sessionIndex) => {
-            const container = this.getSessionContainer(sessionId);
+        activeGroup.paneIds.forEach((paneId, paneIndexInGroup) => {
+            const container = this.getPaneContainer(paneId);
             if (container) {
-                // Find which pane this session should occupy
-                const paneIndex = cellMapping.indexOf(sessionIndex);
+                const pane = this.panes.get(paneId);
+
+                // Find which pane this pane should occupy
+                const paneIndex = cellMapping.indexOf(paneIndexInGroup);
                 container.classList.add('visible', `pane-${paneIndex}`);
 
-                if (sessionCount === 3) {
+                if (paneCount === 3) {
                     // Convert legacy numeric values
                     let dir = expandDir;
                     if (dir === 2 || dir === undefined || dir === null) dir = 'bottom';
@@ -2387,10 +3122,29 @@ class TerminalMultiplexer {
                         container.classList.add('expanded-left');
                     }
                 }
+
+                if (this.isSharedPane(pane)) {
+                    const livePaneId = liveSharedPaneIds.get(pane.backendId);
+                    const placeholder = container.querySelector('.shared-mirror-placeholder');
+
+                    if (this.isPanePoppedOut(pane)) {
+                        container.classList.add('popped-out');
+                        container.classList.remove('loading');
+                        placeholder?.classList.add('hidden');
+                    } else if (paneId === livePaneId) {
+                        container.classList.remove('popped-out');
+                        placeholder?.classList.add('hidden');
+                        this.mountSharedPaneIframe(pane, container);
+                    } else {
+                        container.classList.remove('popped-out');
+                        container.classList.remove('loading');
+                        placeholder?.classList.remove('hidden');
+                    }
+                }
             }
         });
 
-        this.createDividers(layout, sessionCount, expandDir, keepControlVisible);
+        this.createDividers(layout, paneCount, expandDir, keepControlVisible);
     }
 
     ensureResizeOverlay() {
@@ -2401,7 +3155,7 @@ class TerminalMultiplexer {
         }
     }
 
-    applyGridTemplate(layout, ratio, sessionCount) {
+    applyGridTemplate(layout, ratio, paneCount) {
         const gap = 'var(--split-gap)';
 
         switch (layout) {
@@ -2426,9 +3180,10 @@ class TerminalMultiplexer {
                 this.terminalsContainer.style.gridTemplateRows = `${rowRatio}fr ${gap} ${1 - rowRatio}fr`;
                 break;
         }
+        this.scheduleSharedIframePosition();
     }
 
-    createDividers(layout, sessionCount, expandedQuadrant = 2, keepControlVisible = false) {
+    createDividers(layout, paneCount, expandedQuadrant = 2, keepControlVisible = false) {
         if (layout === 'single') return;
 
         if (layout === 'horizontal') {
@@ -2452,7 +3207,7 @@ class TerminalMultiplexer {
             this.bindDividerEvents(divider);
             this.createDividerControl('2-pane', null, keepControlVisible);
         } else if (layout === 'grid') {
-            const is3Pane = sessionCount === 3;
+            const is3Pane = paneCount === 3;
 
             const hDivider = document.createElement('div');
             hDivider.className = 'split-divider split-divider-h';
@@ -2493,7 +3248,7 @@ class TerminalMultiplexer {
         document.getElementById('divider-control')?.remove();
 
         const activeGroup = this.groups.get(this.activeGroupId);
-        if (!activeGroup || activeGroup.sessionIds.length < 2) return;
+        if (!activeGroup || activeGroup.paneIds.length < 2) return;
 
         const control = document.createElement('div');
         control.id = 'divider-control';
@@ -2680,10 +3435,10 @@ class TerminalMultiplexer {
         const activeGroup = this.groups.get(this.activeGroupId);
         if (!activeGroup) return;
 
-        const count = activeGroup.sessionIds.length;
-        // cellMapping maps pane positions to session indices
-        // Default is identity: [0,1,2,3] meaning session 0 in pane 0, etc.
-        const cm = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
+        const count = activeGroup.paneIds.length;
+        // cellMapping maps pane positions to pane indices
+        // Default is identity: [0,1,2,3] meaning pane 0 in pane 0, etc.
+        const cm = activeGroup.cellMapping || activeGroup.paneIds.map((_, i) => i);
 
         switch (action) {
             // 2-pane rotation
@@ -2836,7 +3591,7 @@ class TerminalMultiplexer {
             newRatio = Math.max(0.1, Math.min(0.9, newRatio));
 
             activeGroup.splitRatio[index] = newRatio;
-            this.applyGridTemplate(activeGroup.layout, activeGroup.splitRatio, activeGroup.sessionIds.length);
+            this.applyGridTemplate(activeGroup.layout, activeGroup.splitRatio, activeGroup.paneIds.length);
         };
 
         const onMouseUp = () => {
@@ -2859,7 +3614,7 @@ class TerminalMultiplexer {
     setupTerminalDragTarget() {
         document.addEventListener('dragstart', () => {
             setTimeout(() => {
-                if (this.draggedSessionId) {
+                if (this.draggedPaneId) {
                     this.showDragOverlay();
                 }
             }, 0);
@@ -2873,11 +3628,11 @@ class TerminalMultiplexer {
     showDragOverlay() {
         const activeGroup = this.groups.get(this.activeGroupId);
 
-        if (!activeGroup || activeGroup.sessionIds.length >= 4) {
+        if (!activeGroup || activeGroup.paneIds.length >= 4) {
             return;
         }
 
-        if (this.draggedSessionId && activeGroup.sessionIds.includes(this.draggedSessionId)) {
+        if (this.draggedPaneId && activeGroup.paneIds.includes(this.draggedPaneId)) {
             return;
         }
 
@@ -2899,14 +3654,14 @@ class TerminalMultiplexer {
             });
             zone.addEventListener('drop', (e) => {
                 e.preventDefault();
-                if (this.draggedSessionId) {
+                if (this.draggedPaneId) {
                     this.handleSplitDrop(e);
                 }
             });
         });
 
-        activeGroup.sessionIds.forEach(sessionId => {
-            const container = this.getSessionContainer(sessionId);
+        activeGroup.paneIds.forEach(paneId => {
+            const container = this.getPaneContainer(paneId);
             if (container) {
                 container.classList.add('drop-target');
             }
@@ -2916,20 +3671,20 @@ class TerminalMultiplexer {
     }
 
     generateDropZones(activeGroup) {
-        const count = activeGroup.sessionIds.length;
+        const count = activeGroup.paneIds.length;
         const ratio = activeGroup.splitRatio || [0.5, 0.5];
 
-        // Get label for a pane position (using cellMapping to find the session)
-        const cm = activeGroup.cellMapping || activeGroup.sessionIds.map((_, i) => i);
-        const getLabel = (paneIdx) => {
-            const sessionIdx = cm[paneIdx];
-            const sessionId = activeGroup.sessionIds[sessionIdx];
-            const session = this.sessions.get(sessionId);
-            return session ? session.name : `Terminal ${paneIdx + 1}`;
+        // Get label for a pane position (using cellMapping to find the pane)
+        const cm = activeGroup.cellMapping || activeGroup.paneIds.map((_, i) => i);
+        const getLabel = (panePosition) => {
+            const paneIdx = cm[panePosition];
+            const paneId = activeGroup.paneIds[paneIdx];
+            const pane = this.panes.get(paneId);
+            return pane ? this.getPaneDisplayName(pane) : `Pane ${paneIdx + 1}`;
         };
 
         if (count === 0) {
-            return `<div class="drop-zone drop-full" data-position="center" data-index="0" role="button" aria-label="Drop here to create first terminal">Drop here</div>`;
+            return `<div class="drop-zone drop-full" data-position="center" data-index="0" role="button" aria-label="Drop here to create first pane">Drop here</div>`;
         }
 
         if (count === 1) {
@@ -3069,9 +3824,9 @@ class TerminalMultiplexer {
         const dropAbove = e.clientY < rect.top + rect.height / 2;
 
         let sourceGroupId = this.draggedGroupId;
-        if (this.draggedSessionId) {
+        if (this.draggedPaneId) {
             for (const [gid, g] of this.groups) {
-                if (g.sessionIds.includes(this.draggedSessionId)) {
+                if (g.paneIds.includes(this.draggedPaneId)) {
                     sourceGroupId = gid;
                     break;
                 }
@@ -3101,12 +3856,12 @@ class TerminalMultiplexer {
     }
 
     rerenderSidebarOrder() {
-        const sessionList = this.sessionList;
+        const paneList = this.paneList;
 
         for (const groupId of this.groupOrder) {
             const container = document.getElementById(`group-${groupId}`);
             if (container) {
-                sessionList.appendChild(container);
+                paneList.appendChild(container);
             }
         }
     }
@@ -3118,14 +3873,14 @@ class TerminalMultiplexer {
         const position = dropZone.dataset.position;
         const dropIndex = parseInt(dropZone.dataset.index) || 0;
         const activeGroup = this.groups.get(this.activeGroupId);
-        if (!activeGroup || activeGroup.sessionIds.length >= 4) return;
+        if (!activeGroup || activeGroup.paneIds.length >= 4) return;
 
-        const draggedSessionId = this.draggedSessionId;
-        if (!draggedSessionId || activeGroup.sessionIds.includes(draggedSessionId)) return;
+        const draggedPaneId = this.draggedPaneId;
+        if (!draggedPaneId || activeGroup.paneIds.includes(draggedPaneId)) return;
 
         for (const [gid, g] of this.groups) {
-            if (this.removeSessionFromGroup(g, draggedSessionId)) {
-                if (g.sessionIds.length === 0) {
+            if (this.removePaneFromGroup(g, draggedPaneId)) {
+                if (g.paneIds.length === 0) {
                     this.groups.delete(gid);
                     this.groupOrder = this.groupOrder.filter(id => id !== gid);
                     document.getElementById(`group-${gid}`)?.remove();
@@ -3137,20 +3892,20 @@ class TerminalMultiplexer {
             }
         }
 
-        const currentCount = activeGroup.sessionIds.length;
+        const currentCount = activeGroup.paneIds.length;
 
         if (currentCount === 0 || position === 'center') {
-            activeGroup.sessionIds.push(draggedSessionId);
+            activeGroup.paneIds.push(draggedPaneId);
             activeGroup.layout = 'single';
             activeGroup.splitRatio = null;
         } else if (currentCount === 1) {
             // Always append to maintain insertion order
-            activeGroup.sessionIds.push(draggedSessionId);
+            activeGroup.paneIds.push(draggedPaneId);
             activeGroup.layout = (position === 'left' || position === 'right') ? 'horizontal' : 'vertical';
             activeGroup.splitRatio = [0.5];
             // Set cellMapping based on drop position
             if (position === 'left' || position === 'top') {
-                // New session (index 1) goes in pane 0, original (index 0) goes in pane 1
+                // New pane (index 1) goes in pane 0, original (index 0) goes in pane 1
                 activeGroup.cellMapping = [1, 0];
             } else {
                 // Original (index 0) in pane 0, new (index 1) in pane 1
@@ -3159,12 +3914,12 @@ class TerminalMultiplexer {
         } else if (currentCount === 2) {
             // Handle 2->3 pane transition
             // New pane is always small, other terminal becomes wide
-            // sessionIds stays in insertion order, cellMapping determines visual positions
+            // paneIds stays in insertion order, cellMapping determines visual positions
             const currentLayout = activeGroup.layout;
             const cm = activeGroup.cellMapping || [0, 1]; // current cell mapping
 
-            // New session is always appended (index 2)
-            activeGroup.sessionIds.push(draggedSessionId);
+            // New pane is always appended (index 2)
+            activeGroup.paneIds.push(draggedPaneId);
             const newIdx = 2;
 
             if (position.startsWith('split-')) {
@@ -3172,8 +3927,8 @@ class TerminalMultiplexer {
                 const parts = position.split('-');
                 const splitDir = parts[1]; // above, below, left, right
                 const targetPaneIdx = parseInt(parts[2]); // which pane to split (0 or 1)
-                const targetSessionIdx = cm[targetPaneIdx]; // session index in that pane
-                const otherSessionIdx = cm[1 - targetPaneIdx]; // the other session
+                const targetPaneIndex = cm[targetPaneIdx]; // pane index in that pane
+                const otherPaneIndex = cm[1 - targetPaneIdx]; // the other pane
 
                 // 3-pane cell positions:
                 // bottom-wide: [pane0=top-left, pane1=top-right, pane2=wide-bottom]
@@ -3187,20 +3942,20 @@ class TerminalMultiplexer {
                         // Splitting left pane, right becomes wide (right-wide)
                         if (splitDir === 'above') {
                             // new on top-left, target on bottom-left, other stays wide-right
-                            activeGroup.cellMapping = [newIdx, otherSessionIdx, targetSessionIdx];
+                            activeGroup.cellMapping = [newIdx, otherPaneIndex, targetPaneIndex];
                         } else {
                             // target on top-left, new on bottom-left, other stays wide-right
-                            activeGroup.cellMapping = [targetSessionIdx, otherSessionIdx, newIdx];
+                            activeGroup.cellMapping = [targetPaneIndex, otherPaneIndex, newIdx];
                         }
                         activeGroup.expandedQuadrant = 'right';
                     } else {
                         // Splitting right pane, left becomes wide (left-wide)
                         if (splitDir === 'above') {
                             // other stays wide-left, new on top-right, target on bottom-right
-                            activeGroup.cellMapping = [otherSessionIdx, newIdx, targetSessionIdx];
+                            activeGroup.cellMapping = [otherPaneIndex, newIdx, targetPaneIndex];
                         } else {
                             // other stays wide-left, target on top-right, new on bottom-right
-                            activeGroup.cellMapping = [otherSessionIdx, targetSessionIdx, newIdx];
+                            activeGroup.cellMapping = [otherPaneIndex, targetPaneIndex, newIdx];
                         }
                         activeGroup.expandedQuadrant = 'left';
                     }
@@ -3210,20 +3965,20 @@ class TerminalMultiplexer {
                         // Splitting top pane, bottom becomes wide (bottom-wide)
                         if (splitDir === 'left') {
                             // new on top-left, target on top-right, other stays wide-bottom
-                            activeGroup.cellMapping = [newIdx, targetSessionIdx, otherSessionIdx];
+                            activeGroup.cellMapping = [newIdx, targetPaneIndex, otherPaneIndex];
                         } else {
                             // target on top-left, new on top-right, other stays wide-bottom
-                            activeGroup.cellMapping = [targetSessionIdx, newIdx, otherSessionIdx];
+                            activeGroup.cellMapping = [targetPaneIndex, newIdx, otherPaneIndex];
                         }
                         activeGroup.expandedQuadrant = 'bottom';
                     } else {
                         // Splitting bottom pane, top becomes wide (top-wide)
                         if (splitDir === 'left') {
                             // other stays wide-top, new on bottom-left, target on bottom-right
-                            activeGroup.cellMapping = [otherSessionIdx, newIdx, targetSessionIdx];
+                            activeGroup.cellMapping = [otherPaneIndex, newIdx, targetPaneIndex];
                         } else {
                             // other stays wide-top, target on bottom-left, new on bottom-right
-                            activeGroup.cellMapping = [otherSessionIdx, targetSessionIdx, newIdx];
+                            activeGroup.cellMapping = [otherPaneIndex, targetPaneIndex, newIdx];
                         }
                         activeGroup.expandedQuadrant = 'top';
                     }
@@ -3239,13 +3994,13 @@ class TerminalMultiplexer {
         } else if (currentCount === 3) {
             // 3->4 pane transition
             // User drops into one of four quadrants
-            // sessionIds stays in insertion order, cellMapping determines visual positions
+            // paneIds stays in insertion order, cellMapping determines visual positions
 
-            // Append new session (always at index 3)
-            activeGroup.sessionIds.push(draggedSessionId);
+            // Append new pane (always at index 3)
+            activeGroup.paneIds.push(draggedPaneId);
             const newIdx = 3;
 
-            // Get current cell mapping (maps pane position -> session index)
+            // Get current cell mapping (maps pane position -> pane index)
             const cm = activeGroup.cellMapping || [0, 1, 2];
 
             let expandDir = activeGroup.expandedQuadrant;
@@ -3280,7 +4035,7 @@ class TerminalMultiplexer {
                 widePaneIdx = 0;
             }
 
-            const wideSessionIdx = cm[widePaneIdx];
+            const widePaneIndex = cm[widePaneIdx];
             const isDropOnWide = wideQuads.includes(targetQuad);
 
             // Build new 4-pane cellMapping
@@ -3292,7 +4047,7 @@ class TerminalMultiplexer {
                 const otherWidePane = quadToPane[otherWideQuad];
 
                 newCm[targetPane] = newIdx;
-                newCm[otherWidePane] = wideSessionIdx;
+                newCm[otherWidePane] = widePaneIndex;
 
                 // Place the two small terminals in their current visual spots
                 if (expandDir === 'bottom') {
@@ -3328,7 +4083,7 @@ class TerminalMultiplexer {
                 // New terminal at target
                 newCm[targetPane] = newIdx;
                 // Wide terminal moves
-                newCm[wideNewPane] = wideSessionIdx;
+                newCm[wideNewPane] = widePaneIndex;
 
                 // Get current small pane positions
                 let small1Pane, small2Pane, small1Quad, small2Quad;
@@ -3365,7 +4120,7 @@ class TerminalMultiplexer {
         this.updateGroupInSidebar(activeGroup);
         this.updateTerminalLayout();
         this.hideDragOverlay();
-        this.draggedSessionId = null;
+        this.draggedPaneId = null;
         this.saveUIState();
     }
 
@@ -3380,6 +4135,7 @@ class TerminalMultiplexer {
             this.clearIconFade();
         }
         this.saveUIState();
+        this.scheduleSharedIframePosition();
     }
 
     openModal(modal) {
@@ -3857,6 +4613,10 @@ class TerminalMultiplexer {
             const response = await fetch(this.url('/api/info'));
             const info = await response.json();
             this.serverInfo = info;
+            if (Array.isArray(info.paneTypes)) {
+                this.paneTypes = info.paneTypes;
+                this.renderPaneTypeMenus();
+            }
 
             // Set upload directory placeholder
             if (this.uploadDirectory && info.uploadDir) {
@@ -4499,11 +5259,17 @@ class TerminalMultiplexer {
     bindKeybarEvents() {
         if (!this.keybar) return;
 
-        // Keybar button clicks - send keys to active session
+        // Keybar button clicks - send input to active pane
         this.keybar.querySelectorAll('.keybar-btn').forEach(btn => {
+            btn.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+            });
             btn.addEventListener('mousedown', (e) => {
                 e.preventDefault(); // Prevent focus change
             });
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+            }, { passive: false });
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 btn.blur(); // Remove focus so arrow keys don't navigate buttons
@@ -4515,7 +5281,7 @@ class TerminalMultiplexer {
         });
     }
 
-    // Handle keybar button action - either send keys or perform special action
+    // Handle keybar button action - either send input or perform special action
     async handleKeybarAction(keys) {
         // Handle special actions
         if (keys === 'Paste') {
@@ -4523,11 +5289,11 @@ class TerminalMultiplexer {
             return;
         }
 
-        // Regular key combo - send to active session
-        this.sendKeysToActiveSession({ keys: [keys] });
+        // Regular key combo - send to active pane
+        this.sendInputToActivePane({ keys: [keys] });
     }
 
-    // Paste server-side clipboard content to active terminal
+    // Paste server-side clipboard content to active pane
     async pasteFromClipboard() {
         try {
             const resp = await fetch(this.url('/api/clipboard'));
@@ -4540,7 +5306,7 @@ class TerminalMultiplexer {
                 this.toastWarning('Clipboard is empty');
                 return;
             }
-            await this.sendKeysToActiveSession({
+            await this.sendInputToActivePane({
                 sequence: [{ type: 'text', value: text }]
             });
         } catch (err) {
@@ -4554,9 +5320,15 @@ class TerminalMultiplexer {
 
         // Mobile keybar buttons - same functionality as desktop keybar
         this.mobileBottomToolbar.querySelectorAll('.mobile-keybar-btn').forEach(btn => {
+            btn.addEventListener('pointerdown', (e) => {
+                e.preventDefault();
+            });
             btn.addEventListener('mousedown', (e) => {
                 e.preventDefault(); // Prevent focus change
             });
+            btn.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+            }, { passive: false });
             btn.addEventListener('click', (e) => {
                 e.preventDefault();
                 btn.blur(); // Remove focus so arrow keys don't navigate buttons
@@ -5258,10 +6030,10 @@ class TerminalMultiplexer {
     // Clipboard operations are broadcast to all so the focused one can handle them.
     getAllTerminalIframes() {
         const group = this.groups.get(this.activeGroupId);
-        if (!group || group.sessionIds.length === 0) return [];
+        if (!group || group.paneIds.length === 0) return [];
         const wins = [];
-        for (const sessionId of group.sessionIds) {
-            const container = document.getElementById(`terminal-${sessionId}`);
+        for (const paneId of group.paneIds) {
+            const container = document.getElementById(`terminal-${paneId}`);
             if (!container) continue;
             const iframe = container.querySelector('iframe');
             if (iframe?.contentWindow) wins.push(iframe.contentWindow);

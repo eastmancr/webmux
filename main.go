@@ -1,5 +1,5 @@
 /* *
- * Webmux - a browser-based terminal multiplexer
+ * Webmux - a browser-based pane multiplexer
  * Copyright (C) 2026  Webmux contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -19,19 +19,15 @@ package main
 
 import (
 	"archive/zip"
-	"compress/gzip"
 	"crypto/sha256"
 	"embed"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -41,11 +37,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
-
-	shellinit "webmux/internal/shell"
 )
 
 //go:embed static/*
@@ -166,17 +159,6 @@ func (w *RotatingLogWriter) Close() error {
 }
 
 // SECTION: TYPES
-
-// Session represents a terminal session backed by tmux + ttyd
-type Session struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Port           int       `json:"port"`
-	CreatedAt      time.Time `json:"createdAt"`
-	CurrentProcess string    `json:"currentProcess,omitempty"`
-	tmuxSession    string    // tmux session name (e.g., "mux-7701")
-	ttydCmd        *exec.Cmd // current ttyd process (restarts if it exits while tmux persists)
-}
 
 // Settings represents user-configurable settings
 type Settings struct {
@@ -301,6 +283,26 @@ func xdgDataHome() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".local", "share")
+}
+
+func instanceIDForPort(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		port = "unknown"
+	}
+
+	var b strings.Builder
+	b.Grow(len("port-") + len(port))
+	b.WriteString("port-")
+	for _, r := range port {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // xdgStateHome returns XDG_STATE_HOME or ~/.local/state
@@ -467,931 +469,11 @@ func SaveSettings(settings *Settings) error {
 	return os.WriteFile(path, data, 0644)
 }
 
-// Display-related environment variables that can be forwarded to sessions
-// These are connection variables that allow GUI apps to connect to the display server
-var displayEnvVars = []string{
-	"DISPLAY",
-	"WAYLAND_DISPLAY",
-}
-
-// SECTION: SESSIONS
-
-// SessionManager handles multiple ttyd sessions
-type SessionManager struct {
-	sessions        map[string]*Session
-	mu              sync.RWMutex
-	nextPort        int32
-	startPort       int32 // Initial port to reset to when all sessions close
-	shell           string
-	workDir         string // Starting directory for new sessions
-	tmuxConfigPath  string
-	wmBinDir        string           // Directory containing wm binary (added to PATH)
-	getSettings     func() *Settings // Function to get current settings
-	serverPort      string           // HTTP server port for WEBMUX_PORT env var
-	onSessionClosed func(string)     // Callback when a session is closed/dies
-}
-
-// NewSessionManager creates a new session manager
-func NewSessionManager(startPort int, shell, workDir, serverPort string) *SessionManager {
-	sm := &SessionManager{
-		sessions:   make(map[string]*Session),
-		nextPort:   int32(startPort),
-		startPort:  int32(startPort),
-		shell:      shell,
-		workDir:    workDir,
-		serverPort: serverPort,
-	}
-
-	// Extract tmux config to temp file
-	tmuxConf, err := staticFiles.ReadFile("static/tmux.conf")
-	if err != nil {
-		log.Printf("Warning: could not read tmux.conf: %v", err)
-	} else {
-		tmpFile, err := os.CreateTemp("", "mux-tmux-*.conf")
-		if err != nil {
-			log.Printf("Warning: could not create temp file for tmux config: %v", err)
-		} else {
-			tmpFile.Write(tmuxConf)
-			tmpFile.Close()
-			sm.tmuxConfigPath = tmpFile.Name()
-			log.Printf("Using custom tmux config: %s", sm.tmuxConfigPath)
-		}
-	}
-
-	// Extract wm binary to temp directory (makes it available in terminal PATH)
-	wmBin, err := staticFiles.ReadFile("static/wm")
-	if err != nil {
-		log.Printf("Warning: could not read embedded wm binary: %v", err)
-	} else {
-		tmpDir, err := os.MkdirTemp("", "webmux-bin-*")
-		if err != nil {
-			log.Printf("Warning: could not create temp dir for wm: %v", err)
-		} else {
-			wmPath := filepath.Join(tmpDir, "wm")
-			if err := os.WriteFile(wmPath, wmBin, 0755); err != nil {
-				log.Printf("Warning: could not write wm binary: %v", err)
-				os.RemoveAll(tmpDir)
-			} else {
-				sm.wmBinDir = tmpDir
-				log.Printf("Extracted wm binary to: %s", wmPath)
-			}
-		}
-	}
-
-	// Create shell init script that defines the wm function and sets up clipboard tools
-	// This will be sourced via ENV (POSIX shells) or BASH_ENV (bash)
-	if sm.wmBinDir != "" {
-		wmPath := filepath.Join(sm.wmBinDir, "wm")
-		initPath := filepath.Join(sm.wmBinDir, "init.sh")
-		// Generate the init script content using the shared shell package
-		initContent := shellinit.InitScript(wmPath, sm.wmBinDir)
-		if err := os.WriteFile(initPath, []byte(initContent), 0644); err != nil {
-			log.Printf("Warning: could not write init script: %v", err)
-		}
-
-		// Create wl-copy wrapper that uses the webmux clipboard API (via wm copy)
-		// This allows programs like neovim to use wl-copy transparently
-		wlCopyPath := filepath.Join(sm.wmBinDir, "wl-copy")
-		wlCopyContent := fmt.Sprintf(`#!/bin/sh
-# webmux wl-copy wrapper - copies to browser clipboard via HTTP API
-# Supports: wl-copy [text], echo text | wl-copy, wl-copy < file
-# Ignores wl-copy-specific flags for compatibility
-
-# Skip flags (wl-copy has -n, -p, -t, etc.)
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -n|--trim-newline|-p|--primary|-o|--paste-once|-f|--foreground|-c|--clear)
-      shift ;;
-    -t|--type|-s|--seat)
-      shift 2 ;;  # these take an argument
-    --)
-      shift; break ;;
-    -*)
-      shift ;;  # skip unknown flags
-    *)
-      break ;;
-  esac
-done
-
-if [ $# -gt 0 ]; then
-  # Text provided as arguments
-  printf "%%s" "$*" | %q copy
-else
-  # Read from stdin
-  %q copy
-fi
-`, wmPath, wmPath)
-		if err := os.WriteFile(wlCopyPath, []byte(wlCopyContent), 0755); err != nil {
-			log.Printf("Warning: could not write wl-copy wrapper: %v", err)
-		}
-
-		// Create wl-paste wrapper that uses the webmux clipboard API (via wm paste)
-		wlPastePath := filepath.Join(sm.wmBinDir, "wl-paste")
-		wlPasteContent := fmt.Sprintf(`#!/bin/sh
-# webmux wl-paste wrapper - pastes from server-side clipboard via HTTP API
-# Ignores wl-paste-specific flags for compatibility
-
-# Skip flags
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -n|--no-newline|-l|--list-types|-p|--primary)
-      shift ;;
-    -t|--type|-s|--seat)
-      shift 2 ;;
-    -w|--watch)
-      # --watch is not supported, just exit
-      echo "wl-paste --watch not supported in webmux" >&2
-      exit 1 ;;
-    --)
-      shift; break ;;
-    -*)
-      shift ;;
-    *)
-      break ;;
-  esac
-done
-
-%q paste
-`, wmPath)
-		if err := os.WriteFile(wlPastePath, []byte(wlPasteContent), 0755); err != nil {
-			log.Printf("Warning: could not write wl-paste wrapper: %v", err)
-		}
-
-		// Create xclip wrapper for X11 clipboard compatibility
-		// xclip is used by many programs when DISPLAY is set
-		xclipPath := filepath.Join(sm.wmBinDir, "xclip")
-		xclipContent := fmt.Sprintf(`#!/bin/sh
-# webmux xclip wrapper - copies/pastes to browser clipboard via HTTP API
-# Supports: xclip -selection clipboard -i, xclip -selection clipboard -o
-
-selection="clipboard"
-mode="in"  # default is copy (input)
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -selection|-sel)
-      shift
-      selection="$1"
-      shift ;;
-    -i|-in)
-      mode="in"
-      shift ;;
-    -o|-out)
-      mode="out"
-      shift ;;
-    -d|-display|-target|-t|-loops|-l|-quiet|-q|-verbose|-v|-silent|-f|-r|-rmlastnl|-sensitive|-noutf8)
-      shift ;;  # ignore these flags
-    -*)
-      shift ;;
-    *)
-      shift ;;
-  esac
-done
-
-# Only handle clipboard selection (primary selection not supported via OSC 52)
-if [ "$mode" = "out" ]; then
-  %q paste
-else
-  %q copy
-fi
-`, wmPath, wmPath)
-		if err := os.WriteFile(xclipPath, []byte(xclipContent), 0755); err != nil {
-			log.Printf("Warning: could not write xclip wrapper: %v", err)
-		}
-
-		// Create xsel wrapper for X11 clipboard compatibility
-		xselPath := filepath.Join(sm.wmBinDir, "xsel")
-		xselContent := fmt.Sprintf(`#!/bin/sh
-# webmux xsel wrapper - copies/pastes to browser clipboard via HTTP API
-# Supports: xsel -b -i, xsel -b -o, xsel --clipboard --input, etc.
-
-mode="in"  # default is copy (input)
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -i|--input)
-      mode="in"
-      shift ;;
-    -o|--output)
-      mode="out"
-      shift ;;
-    -a|--append)
-      mode="in"
-      shift ;;
-    -c|--clear)
-      # Clear clipboard - just copy empty string
-      echo -n "" | %q copy
-      exit 0 ;;
-    -b|--clipboard|-p|--primary|-s|--secondary)
-      shift ;;  # ignore selection type (we only support clipboard)
-    -d|--display|-t|--selectionTimeout|-l|--logfile|-n|--nodetach|-k|--keep|-x|--delete|-f|--follow|-z|--zeroflush|-v|--verbose)
-      shift ;;
-    -*)
-      shift ;;
-    *)
-      shift ;;
-  esac
-done
-
-if [ "$mode" = "out" ]; then
-  %q paste
-else
-  %q copy
-fi
-`, wmPath, wmPath, wmPath)
-		if err := os.WriteFile(xselPath, []byte(xselContent), 0755); err != nil {
-			log.Printf("Warning: could not write xsel wrapper: %v", err)
-		}
-
-		// Create pbcopy wrapper (macOS compatibility)
-		pbcopyPath := filepath.Join(sm.wmBinDir, "pbcopy")
-		pbcopyContent := fmt.Sprintf(`#!/bin/sh
-# webmux pbcopy wrapper - copies to clipboard via HTTP API
-%q copy
-`, wmPath)
-		if err := os.WriteFile(pbcopyPath, []byte(pbcopyContent), 0755); err != nil {
-			log.Printf("Warning: could not write pbcopy wrapper: %v", err)
-		}
-
-		// Create pbpaste wrapper (macOS compatibility)
-		pbpastePath := filepath.Join(sm.wmBinDir, "pbpaste")
-		pbpasteContent := fmt.Sprintf(`#!/bin/sh
-# webmux pbpaste wrapper - pastes from clipboard via HTTP API
-%q paste
-`, wmPath)
-		if err := os.WriteFile(pbpastePath, []byte(pbpasteContent), 0755); err != nil {
-			log.Printf("Warning: could not write pbpaste wrapper: %v", err)
-		}
-	}
-
-	return sm
-}
-
-// tmuxSocketPath returns the path to our dedicated tmux socket
-func (sm *SessionManager) tmuxSocketPath() string {
-	// Use XDG_DATA_HOME (~/.local/share) for the socket to avoid issues with
-	// XDG_RUNTIME_DIR being cleaned up by systemd when user has no active sessions
-	// (which happens when accessing webmux only via web/VPN without a local login)
-	dataDir := xdgDataHome()
-	socketDir := filepath.Join(dataDir, "webmux")
-	os.MkdirAll(socketDir, 0700)
-	return filepath.Join(socketDir, "tmux.sock")
-}
-
-// sessionEnvArgs returns tmux -e arguments for setting session environment variables
-func (sm *SessionManager) sessionEnvArgs() []string {
-	var args []string
-
-	// Add WEBMUX_PORT so wm CLI knows which server to talk to
-	args = append(args, "-e", "WEBMUX_PORT="+sm.serverPort)
-
-	// Set _wm_bin env var to the path of the wm binary (used by shell wrapper)
-	if sm.wmBinDir != "" {
-		args = append(args, "-e", "_wm_bin="+filepath.Join(sm.wmBinDir, "wm"))
-	}
-
-	return args
-}
-
-// CreateSession spawns a new tmux session with ttyd attached
-func (sm *SessionManager) CreateSession(name string) (*Session, error) {
-	port := int(atomic.AddInt32(&sm.nextPort, 1))
-	id := fmt.Sprintf("session-%d", port)
-	tmuxSession := fmt.Sprintf("mux-%d", port)
-
-	if name == "" {
-		// Find the highest numeric name among active sessions and increment from there
-		sm.mu.RLock()
-		maxNum := 0
-		for _, s := range sm.sessions {
-			if num, err := strconv.Atoi(s.Name); err == nil && num > maxNum {
-				maxNum = num
-			}
-		}
-		sm.mu.RUnlock()
-		name = strconv.Itoa(maxNum + 1)
-	}
-
-	tmuxSocket := sm.tmuxSocketPath()
-
-	// Build tmux command with our custom config
-	// -S: socket path, -f: config file, -d: detached, -s: session name, -x/-y: initial size, -c: start dir
-	// -e: environment variables for the session
-	tmuxArgs := []string{"-S", tmuxSocket}
-	if sm.tmuxConfigPath != "" {
-		tmuxArgs = append(tmuxArgs, "-f", sm.tmuxConfigPath)
-	}
-	tmuxArgs = append(tmuxArgs, "new-session", "-d", "-s", tmuxSession, "-x", "200", "-y", "50")
-	// Add environment variables (-e must come after new-session)
-	tmuxArgs = append(tmuxArgs, sm.sessionEnvArgs()...)
-	// Add session ID so wm CLI knows which session it's in
-	tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_SESSION="+id)
-	// Signal that OSC 52 clipboard is supported (webmux intercepts and handles it)
-	// Apps can check this to enable OSC 52 clipboard integration
-	tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_CLIPBOARD=osc52")
-	// Set COLORTERM to help apps detect modern terminal features
-	tmuxArgs = append(tmuxArgs, "-e", "COLORTERM=truecolor")
-	// Clear display environment variables by default (clean terminal session)
-	// We set them to a dummy value rather than empty, because some shell init
-	// scripts check `[ -z "$DISPLAY" ]` to detect headless sessions and may
-	// try to start a display server if DISPLAY is empty
-	for _, key := range displayEnvVars {
-		tmuxArgs = append(tmuxArgs, "-e", key+"=none")
-	}
-	// Set WEBMUX_INIT to our init script path (defines wm function)
-	if sm.wmBinDir != "" {
-		initPath := filepath.Join(sm.wmBinDir, "init.sh")
-		tmuxArgs = append(tmuxArgs, "-e", "WEBMUX_INIT="+initPath)
-	}
-	if sm.workDir != "" {
-		tmuxArgs = append(tmuxArgs, "-c", sm.workDir)
-	}
-	// Determine how to inject our init based on shell type
-	shellBase := filepath.Base(sm.shell)
-	if sm.wmBinDir != "" {
-		initPath := filepath.Join(sm.wmBinDir, "init.sh")
-		switch shellBase {
-		case "bash":
-			// bash: use --rcfile to source our init, which also sources user's .bashrc
-			rcPath := filepath.Join(sm.wmBinDir, "bashrc")
-			rcContent := fmt.Sprintf(`[ -f ~/.bashrc ] && . ~/.bashrc
-. %s
-`, initPath)
-			os.WriteFile(rcPath, []byte(rcContent), 0644)
-			tmuxArgs = append(tmuxArgs, sm.shell, "--rcfile", rcPath)
-		case "zsh":
-			// zsh: use ZDOTDIR with custom rc files that source user's config then our init
-			zdotdir := filepath.Join(sm.wmBinDir, "zsh")
-			os.MkdirAll(zdotdir, 0755)
-			// Create .zshenv that sources user's .zshenv (but keeps our ZDOTDIR)
-			zshenvContent := `[ -f "$HOME/.zshenv" ] && . "$HOME/.zshenv"
-`
-			os.WriteFile(filepath.Join(zdotdir, ".zshenv"), []byte(zshenvContent), 0644)
-			// Create .zprofile that sources user's .zprofile
-			zprofileContent := `[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile"
-`
-			os.WriteFile(filepath.Join(zdotdir, ".zprofile"), []byte(zprofileContent), 0644)
-			// Create .zshrc that sources user's .zshrc then our init
-			zshrcContent := fmt.Sprintf(`[ -f "$HOME/.zshrc" ] && . "$HOME/.zshrc"
-. %s
-`, initPath)
-			os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrcContent), 0644)
-			tmuxArgs = append(tmuxArgs, "-e", "ZDOTDIR="+zdotdir)
-			tmuxArgs = append(tmuxArgs, sm.shell)
-		default:
-			// Other shells: set ENV for POSIX compliance
-			tmuxArgs = append(tmuxArgs, "-e", "ENV="+initPath)
-			tmuxArgs = append(tmuxArgs, sm.shell)
-		}
-	} else {
-		tmuxArgs = append(tmuxArgs, sm.shell)
-	}
-
-	tmuxCmd := exec.Command("tmux", tmuxArgs...)
-	tmuxCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if out, err := tmuxCmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("failed to create tmux session: %w: %s", err, string(out))
-	}
-
-	// Wait for tmux session to be ready
-	for range 50 {
-		checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", tmuxSession)
-		if checkCmd.Run() == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	session := &Session{
-		ID:          id,
-		Name:        name,
-		Port:        port,
-		CreatedAt:   time.Now(),
-		tmuxSession: tmuxSession,
-	}
-
-	// Start ttyd attached to the tmux session (must be called without lock)
-	if err := sm.startTtyd(session); err != nil {
-		// Clean up tmux session
-		exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", tmuxSession).Run()
-		return nil, err
-	}
-
-	// Add to sessions map
-	sm.mu.Lock()
-	sm.sessions[id] = session
-	sm.mu.Unlock()
-
-	// Monitor tmux session to detect when shell exits
-	go sm.monitorSession(session)
-
-	log.Printf("Created session %s on port %d", id, port)
-	return session, nil
-}
-
-// startTtyd starts a ttyd process attached to the session's tmux session
-// NOTE: This must be called WITHOUT holding sm.mu lock
-func (sm *SessionManager) startTtyd(session *Session) error {
-	tmuxSocket := sm.tmuxSocketPath()
-	tmuxSession := session.tmuxSession
-
-	// Get terminal colors from settings
-	var termColors TerminalColors
-	if sm.getSettings != nil {
-		termColors = sm.getSettings().Terminal
-	} else {
-		termColors = DefaultSettings().Terminal
-	}
-
-	// Build theme JSON for ttyd using Base24 mapping
-	// ttyd xterm.js theme format -> Base24 mapping:
-	// background=base00, foreground=base05, cursor=base06, cursorAccent=base00
-	// selection=base02, black=base03, red=base08, green=base0B, yellow=base0A
-	// blue=base0D, magenta=base0E, cyan=base0C, white=base06
-	// brightBlack=base04, brightRed=base12, brightGreen=base14, brightYellow=base13
-	// brightBlue=base16, brightMagenta=base17, brightCyan=base15, brightWhite=base07
-	themeJSON := fmt.Sprintf(`{"background":"%s","foreground":"%s","cursor":"%s","cursorAccent":"%s","selection":"%s","black":"%s","red":"%s","green":"%s","yellow":"%s","blue":"%s","magenta":"%s","cyan":"%s","white":"%s","brightBlack":"%s","brightRed":"%s","brightGreen":"%s","brightYellow":"%s","brightBlue":"%s","brightMagenta":"%s","brightCyan":"%s","brightWhite":"%s"}`,
-		termColors.Base00, termColors.Base05, termColors.Base06, termColors.Base00,
-		termColors.Base02, termColors.Base03, termColors.Base08, termColors.Base0B, termColors.Base0A,
-		termColors.Base0D, termColors.Base0E, termColors.Base0C, termColors.Base06,
-		termColors.Base04, termColors.Base12, termColors.Base14, termColors.Base13,
-		termColors.Base16, termColors.Base17, termColors.Base15, termColors.Base07)
-
-	// No --once: ttyd stays running and each client connection runs tmux attach
-	// Multiple tmux attach calls to the same session share the view
-	args := []string{
-		"--port", strconv.Itoa(session.Port),
-		"--writable",
-		"--client-option", "fontSize=14",
-		"--client-option", "fontFamily=JetBrains Mono,Fira Code,SF Mono,Menlo,Monaco,Courier New,monospace",
-		"--client-option", "theme=" + themeJSON,
-		"--client-option", "disableLeaveAlert=true",
-		"--client-option", "scrollback=50000",
-		"--client-option", "allowProposedApi=true",
-		"--client-option", "rightClickSelectsWord=true",
-	}
-
-	// Build tmux attach command with our config
-	tmuxArgs := []string{"-S", tmuxSocket}
-	if sm.tmuxConfigPath != "" {
-		tmuxArgs = append(tmuxArgs, "-f", sm.tmuxConfigPath)
-	}
-	tmuxArgs = append(tmuxArgs, "attach-session", "-t", tmuxSession)
-
-	args = append(args, "tmux")
-	args = append(args, tmuxArgs...)
-
-	cmd := exec.Command("ttyd", args...)
-	// Don't inherit stdout/stderr to avoid echoing to parent terminal
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ttyd: %w", err)
-	}
-
-	session.ttydCmd = cmd
-
-	// Monitor ttyd process and restart when client disconnects
-	go sm.handleTtydExit(session, cmd)
-
-	// Wait for ttyd to be ready (port accepting connections)
-	addr := fmt.Sprintf("127.0.0.1:%d", session.Port)
-	for range 50 {
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return nil
-}
-
-// handleTtydExit handles ttyd process exit and restarts for reconnection
-func (sm *SessionManager) handleTtydExit(session *Session, cmd *exec.Cmd) {
-	exitState := cmd.Wait()
-	log.Printf("Session %s: ttyd process exited with: %v", session.ID, exitState)
-
-	sm.mu.Lock()
-	// Check if session still exists
-	s, ok := sm.sessions[session.ID]
-	if !ok {
-		log.Printf("Session %s: already removed from sessions map", session.ID)
-		sm.mu.Unlock()
-		return
-	}
-
-	// Check if tmux session still exists
-	tmuxSocket := sm.tmuxSocketPath()
-	checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", session.tmuxSession)
-	if err := checkCmd.Run(); err != nil {
-		// tmux session is gone, clean up
-		log.Printf("Session %s: tmux session %s no longer exists, cleaning up", session.ID, session.tmuxSession)
-		sm.deleteSession(session.ID)
-		if len(sm.sessions) == 0 {
-			sm.resetCounters()
-		}
-		sm.mu.Unlock()
-		return
-	}
-
-	log.Printf("Session %s: ttyd exited but tmux session %s still exists, restarting ttyd...", session.ID, session.tmuxSession)
-	sm.mu.Unlock()
-
-	// Restart ttyd (outside of lock)
-	if err := sm.startTtyd(s); err != nil {
-		log.Printf("Session %s: failed to restart ttyd: %v", session.ID, err)
-		sm.mu.Lock()
-		sm.deleteSession(session.ID)
-		if len(sm.sessions) == 0 {
-			sm.resetCounters()
-		}
-		sm.mu.Unlock()
-	} else {
-		log.Printf("Session %s: ttyd restarted successfully", session.ID)
-	}
-}
-
-// monitorSession watches the tmux session to detect when the shell exits
-// and updates the current foreground process
-func (sm *SessionManager) monitorSession(session *Session) {
-	tmuxSocket := sm.tmuxSocketPath()
-	startTime := time.Now()
-	checkCount := 0
-
-	for {
-		sm.mu.RLock()
-		s, ok := sm.sessions[session.ID]
-		if !ok {
-			sm.mu.RUnlock()
-			log.Printf("Session %s: removed from sessions map after %d checks (%v)", session.ID, checkCount, time.Since(startTime))
-			return
-		}
-		tmuxSession := s.tmuxSession
-		sm.mu.RUnlock()
-
-		checkCount++
-
-		// Check if tmux session still exists
-		checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", tmuxSession)
-		if err := checkCmd.Run(); err != nil {
-			log.Printf("Session %s: tmux session %s exited after %d checks (%v), cleaning up", session.ID, tmuxSession, checkCount, time.Since(startTime))
-			// Kill ttyd process if running
-			sm.mu.Lock()
-			if s, ok := sm.sessions[session.ID]; ok {
-				if s.ttydCmd != nil && s.ttydCmd.Process != nil {
-					s.ttydCmd.Process.Kill()
-				}
-				sm.deleteSession(session.ID)
-			}
-			if len(sm.sessions) == 0 {
-				sm.resetCounters()
-			}
-			sm.mu.Unlock()
-			return
-		}
-
-		// Update current foreground process
-		proc := sm.getForegroundProcess(tmuxSession)
-		sm.mu.Lock()
-		if s, ok := sm.sessions[session.ID]; ok {
-			s.CurrentProcess = proc
-		}
-		sm.mu.Unlock()
-
-		time.Sleep(2 * time.Second)
-	}
-}
-
-// getForegroundProcess returns the name of the foreground process in the terminal
-func (sm *SessionManager) getForegroundProcess(tmuxSession string) string {
-	tmuxSocket := sm.tmuxSocketPath()
-
-	// Use tmux to get the current command in the pane
-	out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "-t", tmuxSession, "#{pane_current_command}").Output()
-	if err != nil {
-		return ""
-	}
-
-	procName := strings.TrimSpace(string(out))
-
-	return procName
-}
-
-// GetSession returns a session by ID
-func (sm *SessionManager) GetSession(id string) (*Session, bool) {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	s, ok := sm.sessions[id]
-	return s, ok
-}
-
-// ListSessions returns all active sessions
-func (sm *SessionManager) ListSessions() []*Session {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-
-	sessions := make([]*Session, 0, len(sm.sessions))
-	for _, s := range sm.sessions {
-		sessions = append(sessions, s)
-	}
-	return sessions
-}
-
-// CloseSession terminates a ttyd session
-func (sm *SessionManager) CloseSession(id string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	session, ok := sm.sessions[id]
-	if !ok {
-		return fmt.Errorf("session not found: %s", id)
-	}
-
-	// Kill ttyd process
-	if session.ttydCmd != nil && session.ttydCmd.Process != nil {
-		session.ttydCmd.Process.Kill()
-	}
-
-	// Kill tmux session
-	if session.tmuxSession != "" {
-		tmuxSocket := sm.tmuxSocketPath()
-		exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", session.tmuxSession).Run()
-	}
-
-	sm.deleteSession(id)
-	log.Printf("Closed session %s", id)
-
-	// Reset counters when all sessions are closed (ports are now free to reuse)
-	if len(sm.sessions) == 0 {
-		sm.resetCounters()
-	}
-
-	return nil
-}
-
-// resetCounters resets port counter to initial value
-// Called when all sessions have been closed to allow port reuse
-func (sm *SessionManager) resetCounters() {
-	atomic.StoreInt32(&sm.nextPort, sm.startPort)
-	log.Printf("All sessions closed, reset port counter to %d", sm.startPort)
-}
-
-// deleteSession removes a session from the map and notifies the callback
-// Must be called with sm.mu held
-func (sm *SessionManager) deleteSession(id string) {
-	delete(sm.sessions, id)
-	if sm.onSessionClosed != nil {
-		// Call outside of lock to avoid deadlock
-		go sm.onSessionClosed(id)
-	}
-}
-
-// RenameSession changes the display name of a session
-func (sm *SessionManager) RenameSession(id, name string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	session, ok := sm.sessions[id]
-	if !ok {
-		return fmt.Errorf("session not found: %s", id)
-	}
-
-	session.Name = name
-	return nil
-}
-
-// KeyStep represents a single step in a key sequence
-type KeyStep struct {
-	Type  string `json:"type"`  // "key" or "text"
-	Value string `json:"value"` // key name (e.g. "C-c") or literal text
-}
-
-// KeysRequest represents a request to send keys to a session
-type KeysRequest struct {
-	Keys     []string  `json:"keys,omitempty"`     // Simple form: list of key names
-	Sequence []KeyStep `json:"sequence,omitempty"` // Extended form: sequence of steps
-}
-
-// Limits for key requests to prevent abuse
-const (
-	maxKeysPerRequest  = 100   // Maximum number of keys/steps in a single request
-	maxKeyNameLength   = 32    // Maximum length of a key name (e.g. "C-c", "Enter")
-	maxTextStepLength  = 4096  // Maximum length of a text step
-	maxTotalTextLength = 16384 // Maximum total text length across all steps
-)
-
-// validTmuxKeyNames contains known valid tmux key names
-// This is not exhaustive but covers common cases; unknown keys are validated by pattern
-var validTmuxKeyNames = map[string]bool{
-	// Control keys
-	"C-a": true, "C-b": true, "C-c": true, "C-d": true, "C-e": true, "C-f": true,
-	"C-g": true, "C-h": true, "C-i": true, "C-j": true, "C-k": true, "C-l": true,
-	"C-m": true, "C-n": true, "C-o": true, "C-p": true, "C-q": true, "C-r": true,
-	"C-s": true, "C-t": true, "C-u": true, "C-v": true, "C-w": true, "C-x": true,
-	"C-y": true, "C-z": true, "C-\\": true, "C-]": true, "C-^": true, "C-_": true,
-	"C-@": true, "C-[": true,
-	// Special keys
-	"Enter": true, "Tab": true, "BTab": true, "Space": true, "BSpace": true,
-	"Escape": true, "DC": true, "IC": true,
-	"Up": true, "Down": true, "Left": true, "Right": true,
-	"Home": true, "End": true, "PPage": true, "NPage": true,
-	"F1": true, "F2": true, "F3": true, "F4": true, "F5": true, "F6": true,
-	"F7": true, "F8": true, "F9": true, "F10": true, "F11": true, "F12": true,
-	// Meta/Alt keys (M- prefix)
-	"M-a": true, "M-b": true, "M-c": true, "M-d": true, "M-e": true, "M-f": true,
-	"M-g": true, "M-h": true, "M-i": true, "M-j": true, "M-k": true, "M-l": true,
-	"M-m": true, "M-n": true, "M-o": true, "M-p": true, "M-q": true, "M-r": true,
-	"M-s": true, "M-t": true, "M-u": true, "M-v": true, "M-w": true, "M-x": true,
-	"M-y": true, "M-z": true,
-}
-
-// isValidKeyName checks if a key name is valid for tmux send-keys
-func isValidKeyName(key string) bool {
-	if key == "" || len(key) > maxKeyNameLength {
-		return false
-	}
-
-	// Check against known valid keys
-	if validTmuxKeyNames[key] {
-		return true
-	}
-
-	// Allow single printable ASCII characters (for direct key input)
-	if len(key) == 1 && key[0] >= 0x20 && key[0] <= 0x7E {
-		return true
-	}
-
-	// Validate pattern for other key combinations
-	// Allow: C-<char>, M-<char>, S-<key>, C-M-<char>, etc.
-	// Disallow: anything that looks like shell metacharacters or commands
-	for _, r := range key {
-		// Allow alphanumeric, hyphen, and common key chars
-		if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') &&
-			!(r >= '0' && r <= '9') && r != '-' && r != '_' &&
-			r != '[' && r != ']' && r != '\\' && r != '^' && r != '@' {
-			return false
-		}
-	}
-
-	return true
-}
-
-// SendKeys sends key sequences to a session's tmux pane
-func (sm *SessionManager) SendKeys(id string, req *KeysRequest) error {
-	sm.mu.RLock()
-	session, ok := sm.sessions[id]
-	if !ok {
-		sm.mu.RUnlock()
-		return fmt.Errorf("session not found: %s", id)
-	}
-	tmuxSession := session.tmuxSession
-	sm.mu.RUnlock()
-
-	// Validate tmux session name format (defense in depth)
-	// Should be "mux-NNNN" format as generated by CreateSession
-	if !strings.HasPrefix(tmuxSession, "mux-") || len(tmuxSession) > 15 {
-		return fmt.Errorf("invalid tmux session name")
-	}
-
-	tmuxSocket := sm.tmuxSocketPath()
-
-	// Build the sequence of steps to execute
-	var steps []KeyStep
-
-	if len(req.Sequence) > 0 {
-		// Extended form takes precedence
-		steps = req.Sequence
-	} else if len(req.Keys) > 0 {
-		// Simple form: convert keys to steps
-		for _, key := range req.Keys {
-			steps = append(steps, KeyStep{Type: "key", Value: key})
-		}
-	} else {
-		return fmt.Errorf("no keys or sequence provided")
-	}
-
-	// Validate step count
-	if len(steps) > maxKeysPerRequest {
-		return fmt.Errorf("too many steps: %d (max %d)", len(steps), maxKeysPerRequest)
-	}
-
-	// Validate all steps before executing any
-	totalTextLength := 0
-	for i, step := range steps {
-		switch step.Type {
-		case "key":
-			if !isValidKeyName(step.Value) {
-				return fmt.Errorf("invalid key name at step %d: %q", i, step.Value)
-			}
-		case "text":
-			if len(step.Value) > maxTextStepLength {
-				return fmt.Errorf("text too long at step %d: %d bytes (max %d)", i, len(step.Value), maxTextStepLength)
-			}
-			totalTextLength += len(step.Value)
-			if totalTextLength > maxTotalTextLength {
-				return fmt.Errorf("total text length exceeds limit: %d bytes (max %d)", totalTextLength, maxTotalTextLength)
-			}
-		default:
-			return fmt.Errorf("invalid step type at step %d: %q", i, step.Type)
-		}
-	}
-
-	// Execute each step
-	for _, step := range steps {
-		var args []string
-
-		switch step.Type {
-		case "key":
-			if step.Value == "" {
-				continue // Skip empty (shouldn't happen after validation)
-			}
-			// tmux send-keys with the key name
-			args = []string{"-S", tmuxSocket, "send-keys", "-t", tmuxSession, step.Value}
-
-		case "text":
-			if step.Value == "" {
-				continue // Skip empty text
-			}
-			// tmux send-keys with -l (literal) flag to prevent interpretation
-			args = []string{"-S", tmuxSocket, "send-keys", "-t", tmuxSession, "-l", step.Value}
-		}
-
-		cmd := exec.Command("tmux", args...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("tmux send-keys failed: %w: %s", err, string(out))
-		}
-	}
-
-	return nil
-}
-
-// Cleanup terminates all sessions
-func (sm *SessionManager) Cleanup() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	tmuxSocket := sm.tmuxSocketPath()
-
-	for id, session := range sm.sessions {
-		if session.ttydCmd != nil && session.ttydCmd.Process != nil {
-			session.ttydCmd.Process.Kill()
-		}
-		if session.tmuxSession != "" {
-			exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", session.tmuxSession).Run()
-		}
-		log.Printf("Cleaned up session %s", id)
-	}
-	sm.sessions = make(map[string]*Session)
-
-	// Kill the entire tmux server on our socket
-	exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run()
-
-	// Clean up temp files
-	if sm.tmuxConfigPath != "" {
-		os.Remove(sm.tmuxConfigPath)
-	}
-	if sm.wmBinDir != "" {
-		os.RemoveAll(sm.wmBinDir)
-	}
-}
-
-// MarkedFile represents a file or directory marked for download
-type MarkedFile struct {
-	Path    string `json:"path"`
-	Name    string `json:"name"`
-	Size    int64  `json:"size"`
-	ModTime int64  `json:"modTime"`
-	IsDir   bool   `json:"isDir"`
-}
-
-// UIGroup represents a visual grouping of sessions in the sidebar
-type UIGroup struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	SessionIDs       []string  `json:"sessionIds"`
-	Layout           string    `json:"layout"`           // single, horizontal, vertical, grid
-	ExpandedQuadrant string    `json:"expandedQuadrant"` // for 3-pane: top, bottom, left, right
-	SplitRatio       []float64 `json:"splitRatio"`
-	CellMapping      []int     `json:"cellMapping"` // maps pane positions to session indices
-}
-
-// UIState represents the UI layout state (groups, order, etc.)
-type UIState struct {
-	Groups           []UIGroup `json:"groups"`
-	GroupOrder       []string  `json:"groupOrder"`
-	ActiveGroupID    string    `json:"activeGroupId"`
-	GroupCounter     int       `json:"groupCounter"`
-	SidebarCollapsed bool      `json:"sidebarCollapsed"`
-	CustomNames      []string  `json:"customNames"` // session IDs with custom names
-}
-
 // SECTION: SERVER
 
-// Server holds the HTTP server and session manager
+// Server holds the HTTP server and pane manager
 type Server struct {
-	manager          *SessionManager
+	manager          *PaneManager
 	uploadDir        string
 	settings         *Settings
 	settingsMu       sync.RWMutex
@@ -1405,13 +487,15 @@ type Server struct {
 	markedSubMu      sync.Mutex
 	uiState          *UIState // UI layout state (groups, order, etc.)
 	uiStateMu        sync.RWMutex
+	paneStorage      map[string]*PaneStorageState // Browser storage mirrored by shared pane backend
+	paneStorageMu    sync.RWMutex
 	clipboard        string       // Server-side clipboard for wm CLI
 	clipboardVersion uint64       // Increments on each clipboard change
 	clipboardMu      sync.RWMutex // Protects clipboard and clipboardVersion
 }
 
 // NewServer creates a new server instance
-func NewServer(manager *SessionManager, uploadDir string) *Server {
+func NewServer(manager *PaneManager, uploadDir string) *Server {
 	s := &Server{
 		manager:     manager,
 		uploadDir:   uploadDir,
@@ -1419,20 +503,21 @@ func NewServer(manager *SessionManager, uploadDir string) *Server {
 		scratchSubs: make(map[chan string]struct{}),
 		markedFiles: make([]MarkedFile, 0),
 		markedSubs:  make(map[chan string]struct{}),
+		paneStorage: make(map[string]*PaneStorageState),
 		uiState: &UIState{
 			Groups:     make([]UIGroup, 0),
 			GroupOrder: make([]string, 0),
 		},
 	}
-	// Wire up settings getter for session manager
+	// Wire up settings getter for pane manager
 	manager.getSettings = func() *Settings {
 		s.settingsMu.RLock()
 		defer s.settingsMu.RUnlock()
 		return s.settings
 	}
-	// Wire up session cleanup callback
-	manager.onSessionClosed = func(sessionID string) {
-		s.removeSessionFromUIState(sessionID)
+	// Wire up pane cleanup callback
+	manager.onPaneClosed = func(paneID string) {
+		s.removePaneFromUIState(paneID)
 	}
 	return s
 }
@@ -1443,15 +528,17 @@ func NewServer(manager *SessionManager, uploadDir string) *Server {
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	sessions := s.manager.ListSessions()
+	panes := s.manager.ListPanes()
 
 	json.NewEncoder(w).Encode(map[string]any{
-		"workDir":      s.manager.workDir,
-		"uploadDir":    s.uploadDir,
-		"shell":        s.manager.shell,
-		"port":         s.manager.serverPort,
-		"sessionCount": len(sessions),
-		"tmuxSocket":   s.manager.tmuxSocketPath(),
+		"workDir":    s.manager.workDir,
+		"uploadDir":  s.uploadDir,
+		"shell":      s.manager.shell,
+		"port":       s.manager.serverPort,
+		"instanceID": s.manager.instanceID,
+		"paneCount":  len(panes),
+		"paneTypes":  s.manager.PaneTypes(),
+		"tmuxSocket": s.manager.tmuxSocketPath(),
 	})
 }
 
@@ -1734,7 +821,7 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 		state := s.uiState
 		s.uiStateMu.RUnlock()
 
-		// Validate state against current sessions before returning
+		// Validate state against current panes before returning
 		validState := s.validateUIState(state)
 		json.NewEncoder(w).Encode(validState)
 
@@ -1745,7 +832,7 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Validate against current sessions
+		// Validate against current panes
 		validState := s.validateUIState(&state)
 
 		s.uiStateMu.Lock()
@@ -1760,8 +847,8 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// validateUIState removes references to sessions that no longer exist
-// and resets counters if all sessions are gone
+// validateUIState removes references to panes that no longer exist
+// and resets counters if all panes are gone
 func (s *Server) validateUIState(state *UIState) *UIState {
 	if state == nil {
 		return &UIState{
@@ -1770,41 +857,41 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 		}
 	}
 
-	// Get current valid session IDs
-	sessions := s.manager.ListSessions()
-	validSessionIDs := make(map[string]bool)
-	for _, sess := range sessions {
-		validSessionIDs[sess.ID] = true
+	// Get current valid pane IDs
+	panes := s.manager.ListPanes()
+	validPaneIDs := make(map[string]bool)
+	for _, pane := range panes {
+		validPaneIDs[pane.ID] = true
 	}
 
-	// Filter groups to only include valid sessions
+	// Filter groups to only include valid panes
 	validGroups := make([]UIGroup, 0)
 	validGroupIDs := make(map[string]bool)
 
 	for _, group := range state.Groups {
-		validSessionIDsInGroup := make([]string, 0)
-		for _, sid := range group.SessionIDs {
-			if validSessionIDs[sid] {
-				validSessionIDsInGroup = append(validSessionIDsInGroup, sid)
+		validPaneIDsInGroup := make([]string, 0)
+		for _, paneID := range group.PaneIDs {
+			if validPaneIDs[paneID] {
+				validPaneIDsInGroup = append(validPaneIDsInGroup, paneID)
 			}
 		}
 
-		if len(validSessionIDsInGroup) > 0 {
-			// Keep group with only valid sessions
+		if len(validPaneIDsInGroup) > 0 {
+			// Keep group with only valid panes
 			newGroup := UIGroup{
 				ID:               group.ID,
 				Name:             group.Name,
-				SessionIDs:       validSessionIDsInGroup,
+				PaneIDs:          validPaneIDsInGroup,
 				Layout:           group.Layout,
 				ExpandedQuadrant: group.ExpandedQuadrant,
 				SplitRatio:       group.SplitRatio,
 				CellMapping:      group.CellMapping,
 			}
 
-			// If session count changed, reset layout to defaults
-			if len(validSessionIDsInGroup) != len(group.SessionIDs) {
-				newGroup.Layout = getDefaultLayout(len(validSessionIDsInGroup))
-				newGroup.SplitRatio = getDefaultSplitRatio(len(validSessionIDsInGroup))
+			// If pane count changed, reset layout to defaults
+			if len(validPaneIDsInGroup) != len(group.PaneIDs) {
+				newGroup.Layout = getDefaultLayout(len(validPaneIDsInGroup))
+				newGroup.SplitRatio = getDefaultSplitRatio(len(validPaneIDsInGroup))
 				newGroup.CellMapping = nil
 			}
 
@@ -1830,9 +917,9 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 
 	// Filter custom names
 	validCustomNames := make([]string, 0)
-	for _, sid := range state.CustomNames {
-		if validSessionIDs[sid] {
-			validCustomNames = append(validCustomNames, sid)
+	for _, paneID := range state.CustomNames {
+		if validPaneIDs[paneID] {
+			validCustomNames = append(validCustomNames, paneID)
 		}
 	}
 
@@ -1860,8 +947,8 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 	}
 }
 
-// removeSessionFromUIState removes a session from UI state when it dies
-func (s *Server) removeSessionFromUIState(sessionID string) {
+// removePaneFromUIState removes a pane from UI state when it dies
+func (s *Server) removePaneFromUIState(paneID string) {
 	s.uiStateMu.Lock()
 	defer s.uiStateMu.Unlock()
 
@@ -1874,20 +961,20 @@ func (s *Server) removeSessionFromUIState(sessionID string) {
 	removedGroupIDs := make(map[string]bool)
 
 	for _, group := range s.uiState.Groups {
-		originalCount := len(group.SessionIDs)
-		newSessionIDs := make([]string, 0)
-		for _, sid := range group.SessionIDs {
-			if sid != sessionID {
-				newSessionIDs = append(newSessionIDs, sid)
+		originalCount := len(group.PaneIDs)
+		newPaneIDs := make([]string, 0)
+		for _, id := range group.PaneIDs {
+			if id != paneID {
+				newPaneIDs = append(newPaneIDs, id)
 			}
 		}
 
-		if len(newSessionIDs) > 0 {
-			group.SessionIDs = newSessionIDs
+		if len(newPaneIDs) > 0 {
+			group.PaneIDs = newPaneIDs
 			// Reset layout if count changed
-			if len(newSessionIDs) != originalCount {
-				group.Layout = getDefaultLayout(len(newSessionIDs))
-				group.SplitRatio = getDefaultSplitRatio(len(newSessionIDs))
+			if len(newPaneIDs) != originalCount {
+				group.Layout = getDefaultLayout(len(newPaneIDs))
+				group.SplitRatio = getDefaultSplitRatio(len(newPaneIDs))
 				group.CellMapping = nil
 			}
 			newGroups = append(newGroups, group)
@@ -1915,9 +1002,9 @@ func (s *Server) removeSessionFromUIState(sessionID string) {
 
 	// Remove from custom names
 	newCustomNames := make([]string, 0)
-	for _, sid := range s.uiState.CustomNames {
-		if sid != sessionID {
-			newCustomNames = append(newCustomNames, sid)
+	for _, id := range s.uiState.CustomNames {
+		if id != paneID {
+			newCustomNames = append(newCustomNames, id)
 		}
 	}
 
@@ -1931,7 +1018,7 @@ func (s *Server) removeSessionFromUIState(sessionID string) {
 	}
 }
 
-// getDefaultLayout returns the default layout for a given session count
+// getDefaultLayout returns the default layout for a given pane count
 func getDefaultLayout(count int) string {
 	switch count {
 	case 1:
@@ -1943,7 +1030,7 @@ func getDefaultLayout(count int) string {
 	}
 }
 
-// getDefaultSplitRatio returns the default split ratio for a given session count
+// getDefaultSplitRatio returns the default split ratio for a given pane count
 func getDefaultSplitRatio(count int) []float64 {
 	switch count {
 	case 1:
@@ -1955,24 +1042,41 @@ func getDefaultSplitRatio(count int) []float64 {
 	}
 }
 
-// handleSessions handles session CRUD operations
-func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+// handlePanes handles pane CRUD operations.
+func (s *Server) handlePanes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
-		// List all sessions
-		sessions := s.manager.ListSessions()
-		json.NewEncoder(w).Encode(sessions)
+		// List all panes
+		panes := s.manager.ListPanes()
+		json.NewEncoder(w).Encode(panes)
 
 	case http.MethodPost:
-		// Create new session
+		// Create new pane
 		var req struct {
+			Type string `json:"type"`
 			Name string `json:"name"`
 		}
-		json.NewDecoder(r.Body).Decode(&req)
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&req); err != nil {
+			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Type == "" {
+			req.Type = "terminal"
+		}
+		if !s.manager.isSupportedPaneType(req.Type) {
+			http.Error(w, "unsupported pane type", http.StatusBadRequest)
+			return
+		}
+		if available, reason := s.manager.paneTypeAvailability(req.Type); !available {
+			http.Error(w, reason, http.StatusBadRequest)
+			return
+		}
 
-		// Log session creation with origin info for debugging
+		// Log pane creation with origin info for debugging
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			origin = r.Header.Get("Referer")
@@ -1981,42 +1085,42 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			remoteAddr = fwd
 		}
-		log.Printf("Session create request from %s (origin: %s)", remoteAddr, origin)
+		log.Printf("Pane create request from %s (origin: %s)", remoteAddr, origin)
 
-		session, err := s.manager.CreateSession(req.Name)
+		pane, err := s.manager.CreatePane(req.Type, req.Name)
 		if err != nil {
-			log.Printf("Session create failed: %v", err)
+			log.Printf("Pane create failed: %v", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		log.Printf("Session %s created successfully", session.ID)
+		log.Printf("Pane %s created successfully", pane.ID)
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(session)
+		json.NewEncoder(w).Encode(pane)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-// handleSession handles operations on a specific session
-func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /api/sessions/{id} or /api/sessions/{id}/keys
+// handlePane handles operations on a specific pane.
+func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
+	// Extract pane ID from path: /api/panes/{id} or /api/panes/{id}/input
 	parts := strings.Split(r.URL.Path, "/")
 	if len(parts) < 4 {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
-	sessionID := parts[3]
+	paneID := parts[3]
 
-	// Check for sub-resource paths like /api/sessions/{id}/keys
-	if len(parts) >= 5 && parts[4] == "keys" {
-		s.handleSessionKeys(w, r)
+	// Check for sub-resource paths like /api/panes/{id}/input
+	if len(parts) >= 5 && parts[4] == "input" {
+		s.handlePaneInput(w, r)
 		return
 	}
 
 	switch r.Method {
 	case http.MethodDelete:
-		// Log who is requesting the session close
+		// Log who is requesting the pane close
 		origin := r.Header.Get("Origin")
 		if origin == "" {
 			origin = r.Header.Get("Referer")
@@ -2025,9 +1129,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 			remoteAddr = fwd
 		}
-		log.Printf("Session DELETE request for %s from %s (origin: %s)", sessionID, remoteAddr, origin)
+		log.Printf("Pane DELETE request for %s from %s (origin: %s)", paneID, remoteAddr, origin)
 
-		if err := s.manager.CloseSession(sessionID); err != nil {
+		if err := s.manager.ClosePane(paneID); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -2041,7 +1145,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.manager.RenameSession(sessionID, req.Name); err != nil {
+		if err := s.manager.RenamePane(paneID, req.Name); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}
@@ -2052,35 +1156,35 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// Maximum request body size for keys endpoint (32KB should be plenty)
-const maxKeysRequestSize = 32 * 1024
+// Maximum request body size for input endpoint (32KB should be plenty).
+const maxInputRequestSize = 32 * 1024
 
-// handleSessionKeys handles sending keys to a session's terminal
-// POST /api/sessions/{id}/keys
-func (s *Server) handleSessionKeys(w http.ResponseWriter, r *http.Request) {
+// handlePaneInput handles sending key/text input to a pane.
+// POST /api/panes/{id}/input
+func (s *Server) handlePaneInput(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Extract session ID from path: /api/sessions/{id}/keys
+	// Extract pane ID from path: /api/panes/{id}/input
 	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 5 || parts[4] != "keys" {
+	if len(parts) < 5 || parts[4] != "input" {
 		http.Error(w, "Invalid path", http.StatusBadRequest)
 		return
 	}
-	sessionID := parts[3]
+	paneID := parts[3]
 
-	// Validate session ID format (should be "session-NNNN")
-	if !strings.HasPrefix(sessionID, "session-") || len(sessionID) > 20 {
-		http.Error(w, "Invalid session ID format", http.StatusBadRequest)
+	// Validate pane ID format (should be "pane-NNNN")
+	if !strings.HasPrefix(paneID, "pane-") || len(paneID) > 20 {
+		http.Error(w, "Invalid pane ID format", http.StatusBadRequest)
 		return
 	}
 
 	// Limit request body size to prevent abuse
-	r.Body = http.MaxBytesReader(w, r.Body, maxKeysRequestSize)
+	r.Body = http.MaxBytesReader(w, r.Body, maxInputRequestSize)
 
-	var req KeysRequest
+	var req PaneInputRequest
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields() // Reject requests with unknown fields
 	if err := decoder.Decode(&req); err != nil {
@@ -2092,16 +1196,16 @@ func (s *Server) handleSessionKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.manager.SendKeys(sessionID, &req); err != nil {
+	if err := s.manager.SendInput(paneID, &req); err != nil {
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "session not found") {
+		if strings.Contains(errMsg, "pane not found") {
 			http.Error(w, errMsg, http.StatusNotFound)
-		} else if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "too many") || strings.Contains(errMsg, "too long") {
+		} else if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "too many") || strings.Contains(errMsg, "too long") || strings.Contains(errMsg, "unsupported") {
 			http.Error(w, errMsg, http.StatusBadRequest)
 		} else {
 			// Log unexpected errors but return generic message
-			log.Printf("SendKeys error for session %s: %v", sessionID, err)
-			http.Error(w, "Failed to send keys", http.StatusInternalServerError)
+			log.Printf("SendInput error for pane %s: %v", paneID, err)
+			http.Error(w, "Failed to send input", http.StatusInternalServerError)
 		}
 		return
 	}
@@ -2112,6 +1216,15 @@ func (s *Server) handleSessionKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 // SECTION: FILES
+
+// MarkedFile represents a file or directory marked for download
+type MarkedFile struct {
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	IsDir   bool   `json:"isDir"`
+}
 
 // handleUpload handles file uploads to the server
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
@@ -2291,551 +1404,6 @@ func (s *Server) downloadDirAsZip(w http.ResponseWriter, dirPath string) {
 		io.Copy(zf, f)
 		return nil
 	})
-}
-
-// ttydHeadScript is injected at the START of <head> to intercept WebSocket before ttyd loads
-// This MUST run before any other scripts to properly intercept WebSocket connections
-const ttydHeadScript = `<head><script>
-// WebSocket proxy fix - must run before ttyd's JavaScript
-(function() {
-    var OrigWebSocket = window.WebSocket;
-    window.WebSocket = function(url, protocols) {
-        var originalUrl = url;
-        // Rewrite WebSocket URLs that point to localhost/127.0.0.1 or use a different host
-        // than the current page (which happens when accessed through a reverse proxy)
-        var currentHost = window.location.host;
-        var urlMatch = url.match(/^(wss?):\/\/([^\/]+)(.*)/);
-        if (urlMatch) {
-            var wsProtocol = urlMatch[1];
-            var wsHost = urlMatch[2];
-            var wsPath = urlMatch[3];
-            // Rewrite if: targeting localhost/127.0.0.1, OR if the host doesn't match current page
-            // (the latter catches cases where ttyd generates URLs with internal hostnames)
-            if (wsHost.match(/^(localhost|127\.0\.0\.1)(:\d+)?$/) || wsHost !== currentHost) {
-                var pagePath = window.location.pathname.replace(/\/$/, '');
-                var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                url = protocol + '//' + currentHost + pagePath + wsPath;
-                console.log('[webmux] Rewriting WebSocket URL:', originalUrl, '->', url);
-            }
-        }
-        if (protocols) {
-            return new OrigWebSocket(url, protocols);
-        }
-        return new OrigWebSocket(url);
-    };
-    window.WebSocket.prototype = OrigWebSocket.prototype;
-    window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
-    window.WebSocket.OPEN = OrigWebSocket.OPEN;
-    window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
-    window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
-    console.log('[webmux] WebSocket interceptor installed');
-
-    // Clipboard bridge - parent delegates clipboard API calls to this iframe
-    // because the Clipboard API requires the calling document to have focus,
-    // and the terminal iframe holds focus during normal use
-    var hasClipboardAPI = !!(navigator.clipboard && navigator.clipboard.writeText);
-
-    // execCommand fallback for clipboard write
-    function execCommandCopy(text) {
-        var ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        var ok = false;
-        try { ok = document.execCommand('copy'); } catch(e) {}
-        document.body.removeChild(ta);
-        return ok;
-    }
-
-    window.addEventListener('message', function(e) {
-        if (e.source !== window.parent) return;
-        var msg = e.data;
-        if (!msg || !msg.type) return;
-
-        if (msg.type === 'clipboard-write') {
-            if (!document.hasFocus()) return;
-            if (hasClipboardAPI) {
-                navigator.clipboard.writeText(msg.text).then(function() {
-                    window.parent.postMessage({ type: 'clipboard-write-result', success: true }, '*');
-                }).catch(function() {
-                    var ok = execCommandCopy(msg.text);
-                    window.parent.postMessage({ type: 'clipboard-write-result', success: ok, fallback: true }, '*');
-                });
-            } else {
-                var ok = execCommandCopy(msg.text);
-                window.parent.postMessage({ type: 'clipboard-write-result', success: ok, fallback: true }, '*');
-            }
-        }
-    });
-})();
-</script>`
-
-// SECTION: TERMINAL
-
-// handleTerminalProxy proxies all HTTP requests to the appropriate ttyd instance
-// Path format: /t/{sessionID}/...
-func (s *Server) handleTerminalProxy(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /t/{sessionID}/...
-	path := strings.TrimPrefix(r.URL.Path, "/t/")
-	parts := strings.SplitN(path, "/", 2)
-	if len(parts) == 0 || parts[0] == "" {
-		http.Error(w, "Invalid terminal path", http.StatusBadRequest)
-		return
-	}
-	sessionID := parts[0]
-
-	session, ok := s.manager.GetSession(sessionID)
-	if !ok {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	targetHost := fmt.Sprintf("127.0.0.1:%d", session.Port)
-
-	// Check if this is a WebSocket upgrade request
-	if r.Header.Get("Upgrade") == "websocket" {
-		s.proxyWebSocket(w, r, targetHost, parts)
-		return
-	}
-
-	// Build the target URL for HTTP requests
-	targetURL := &url.URL{
-		Scheme: "http",
-		Host:   targetHost,
-	}
-
-	// Create reverse proxy
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-
-	// Modify the request
-	originalDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		originalDirector(req)
-		// Strip the /t/{sessionID} prefix from the path
-		if len(parts) > 1 {
-			req.URL.Path = "/" + parts[1]
-		} else {
-			req.URL.Path = "/"
-		}
-		req.URL.RawPath = ""
-		req.Host = targetURL.Host
-	}
-
-	// For HTML responses (the ttyd index), inject our clipboard script
-	isIndexRequest := len(parts) == 1 || parts[1] == "" || parts[1] == "index.html"
-	if isIndexRequest {
-		proxy.ModifyResponse = func(resp *http.Response) error {
-			if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-				return nil
-			}
-
-			// Read the body, decompressing gzip if needed
-			var body []byte
-			if resp.Header.Get("Content-Encoding") == "gzip" {
-				gr, err := gzip.NewReader(resp.Body)
-				if err != nil {
-					resp.Body.Close()
-					return err
-				}
-				body, err = io.ReadAll(gr)
-				gr.Close()
-				resp.Body.Close()
-				if err != nil {
-					return err
-				}
-				// Remove gzip encoding since we'll serve uncompressed
-				resp.Header.Del("Content-Encoding")
-			} else {
-				var err error
-				body, err = io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if err != nil {
-					return err
-				}
-			}
-
-			// Inject WebSocket/clipboard fix at start of <head> (must run before ttyd's JS)
-			// Use case-insensitive search since ttyd may output <head>, <HEAD>, etc.
-			bodyStr := string(body)
-			bodyLower := strings.ToLower(bodyStr)
-			headIdx := strings.Index(bodyLower, "<head>")
-			var content string
-			if headIdx != -1 {
-				// Replace the <head> tag (preserving original case) with our script + <head>
-				content = bodyStr[:headIdx] + ttydHeadScript + bodyStr[headIdx+6:]
-				log.Printf("[inject] Script injected into ttyd HTML at offset %d (%d -> %d bytes)", headIdx, len(body), len(content))
-			} else {
-				// No <head> found at all; try injecting after <html> or at the start
-				htmlIdx := strings.Index(bodyLower, "<html")
-				if htmlIdx != -1 {
-					closeIdx := strings.Index(bodyStr[htmlIdx:], ">")
-					if closeIdx != -1 {
-						insertAt := htmlIdx + closeIdx + 1
-						content = bodyStr[:insertAt] + ttydHeadScript + bodyStr[insertAt:]
-						log.Printf("[inject] Script injected after <html> tag at offset %d (%d -> %d bytes)", insertAt, len(body), len(content))
-					}
-				}
-				if content == "" {
-					content = bodyStr
-					log.Printf("[inject] WARNING: no injection point found in ttyd HTML (first 200 bytes: %q)", bodyStr[:min(200, len(bodyStr))])
-				}
-			}
-
-			// Update the response (served uncompressed)
-			resp.Body = io.NopCloser(strings.NewReader(content))
-			resp.ContentLength = int64(len(content))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(content)))
-			// Prevent caching to ensure WebSocket intercept is always fresh
-			resp.Header.Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			resp.Header.Set("Pragma", "no-cache")
-			resp.Header.Set("Expires", "0")
-			// Allow clipboard access in iframe
-			resp.Header.Set("Permissions-Policy", "clipboard-read=*, clipboard-write=*")
-
-			return nil
-		}
-	}
-
-	proxy.ServeHTTP(w, r)
-}
-
-// proxyWebSocket handles WebSocket connections by proxying to ttyd
-// It intercepts OSC 52 clipboard sequences from terminal output and broadcasts
-// them via the server's clipboard SSE mechanism.
-func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, targetHost string, parts []string) {
-	// Build target WebSocket path
-	targetPath := "/"
-	if len(parts) > 1 {
-		targetPath = "/" + parts[1]
-	}
-
-	// Connect to the backend ttyd
-	targetConn, err := net.Dial("tcp", targetHost)
-	if err != nil {
-		http.Error(w, "Failed to connect to terminal", http.StatusBadGateway)
-		return
-	}
-
-	// Hijack the client connection
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		targetConn.Close()
-		http.Error(w, "WebSocket not supported", http.StatusInternalServerError)
-		return
-	}
-
-	clientConn, clientBuf, err := hijacker.Hijack()
-	if err != nil {
-		targetConn.Close()
-		http.Error(w, "Failed to hijack connection", http.StatusInternalServerError)
-		return
-	}
-
-	// Manually construct and send the WebSocket upgrade request to ttyd
-	upgradeReq := fmt.Sprintf("%s %s HTTP/1.1\r\n", r.Method, targetPath)
-	upgradeReq += fmt.Sprintf("Host: %s\r\n", targetHost)
-
-	// Copy relevant headers (but not Host)
-	for key, values := range r.Header {
-		if key == "Host" {
-			continue
-		}
-		for _, value := range values {
-			upgradeReq += fmt.Sprintf("%s: %s\r\n", key, value)
-		}
-	}
-	upgradeReq += "\r\n"
-
-	// Send the upgrade request to ttyd
-	if _, err := targetConn.Write([]byte(upgradeReq)); err != nil {
-		clientConn.Close()
-		targetConn.Close()
-		return
-	}
-
-	// Create OSC 52 scanner for backend -> client direction
-	osc52Scanner := newOSC52Scanner(s)
-
-	// Bidirectionally copy data between client and backend
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	// Backend (ttyd) -> Client with OSC 52 scanning
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := targetConn.Read(buf)
-			if err != nil {
-				break
-			}
-			if n > 0 {
-				// Scan for OSC 52 in the data stream
-				// Note: This scans raw WebSocket frame data which includes frame headers,
-				// but OSC 52 sequences are in the payload so this should still work
-				osc52Scanner.Scan(buf[:n])
-
-				// Forward all data to client (we don't strip OSC 52 to avoid breaking frames)
-				if _, err := clientConn.Write(buf[:n]); err != nil {
-					break
-				}
-			}
-		}
-		if tc, ok := clientConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-	}()
-
-	// Client -> Backend (ttyd) - pass through unchanged
-	go func() {
-		defer wg.Done()
-		// First flush any buffered data from the hijacked connection
-		if clientBuf.Reader.Buffered() > 0 {
-			io.CopyN(targetConn, clientBuf, int64(clientBuf.Reader.Buffered()))
-		}
-		io.Copy(targetConn, clientConn)
-		if tc, ok := targetConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
-	}()
-
-	wg.Wait()
-	clientConn.Close()
-	targetConn.Close()
-}
-
-// osc52Scanner scans a byte stream for OSC 52 clipboard escape sequences.
-// It buffers partial sequences across multiple Scan() calls and extracts
-// clipboard content when complete sequences are found.
-//
-// Supported formats:
-//   - Direct OSC 52: \x1b]52;c;<base64>\x07 (BEL terminator)
-//   - Direct OSC 52: \x1b]52;c;<base64>\x1b\\ (ST terminator)
-//   - Tmux passthrough: \x1bPtmux;\x1b\x1b]52;c;<base64>\x07\x1b\\
-type osc52Scanner struct {
-	server *Server
-	buf    []byte
-}
-
-const (
-	// Maximum size of the scanner buffer (64KB should handle any reasonable clipboard)
-	osc52MaxBufSize = 64 * 1024
-	// Maximum decoded clipboard size we'll accept (10MB)
-	osc52MaxClipboardSize = 10 * 1024 * 1024
-)
-
-func newOSC52Scanner(s *Server) *osc52Scanner {
-	return &osc52Scanner{server: s}
-}
-
-// Scan processes incoming data looking for OSC 52 sequences.
-// Found clipboard content is broadcast to connected clients.
-func (o *osc52Scanner) Scan(data []byte) {
-	// Append new data to buffer
-	o.buf = append(o.buf, data...)
-
-	// Process all complete sequences in buffer
-	for {
-		clipboardText, remaining, found := o.extractOSC52(o.buf)
-		if !found {
-			break
-		}
-
-		if clipboardText != "" && len(clipboardText) <= osc52MaxClipboardSize {
-			o.server.clipboardMu.Lock()
-			o.server.clipboard = clipboardText
-			o.server.clipboardVersion++
-			o.server.clipboardMu.Unlock()
-		}
-
-		o.buf = remaining
-	}
-
-	// Prevent unbounded buffer growth by keeping only recent data
-	// that might contain the start of an incomplete sequence
-	if len(o.buf) > osc52MaxBufSize {
-		o.buf = o.buf[len(o.buf)-osc52MaxBufSize:]
-	}
-}
-
-// extractOSC52 finds and extracts the first complete OSC 52 sequence from data.
-// Returns: clipboard text (empty if malformed), remaining data, and whether a sequence was found.
-func (o *osc52Scanner) extractOSC52(data []byte) (clipboardText string, remaining []byte, found bool) {
-	// Look for tmux passthrough first: \x1bPtmux;\x1b
-	if idx := indexTmuxPassthrough(data); idx != -1 {
-		text, rem, ok := o.extractTmuxPassthrough(data, idx)
-		if ok {
-			return text, rem, true
-		}
-		// Incomplete tmux sequence - keep data from idx onwards
-		if idx > 0 {
-			return "", data[idx:], false
-		}
-		return "", data, false
-	}
-
-	// Look for direct OSC 52: \x1b]52;
-	idx := indexOSC52Start(data)
-	if idx == -1 {
-		// No OSC 52 start found - discard everything except last few bytes
-		// (which might be the start of an escape sequence)
-		if len(data) > 10 {
-			return "", data[len(data)-10:], false
-		}
-		return "", data, false
-	}
-
-	// Find the terminator (BEL \x07 or ST \x1b\\)
-	rest := data[idx:]
-	endIdx := -1
-	for i := 5; i < len(rest); i++ { // Start after "\x1b]52;"
-		if rest[i] == 0x07 { // BEL terminator
-			endIdx = i + 1
-			break
-		}
-		if rest[i] == 0x1b && i+1 < len(rest) && rest[i+1] == '\\' { // ST terminator
-			endIdx = i + 2
-			break
-		}
-	}
-
-	if endIdx == -1 {
-		// No terminator yet - keep buffering from OSC start
-		if idx > 0 {
-			return "", data[idx:], false
-		}
-		return "", data, false
-	}
-
-	// Parse the complete sequence: \x1b]52;X;BASE64<term>
-	seq := rest[:endIdx]
-	clipboardText = o.parseOSC52Payload(seq)
-
-	// Return remaining data after this sequence
-	return clipboardText, data[idx+endIdx:], true
-}
-
-// extractTmuxPassthrough handles tmux DCS passthrough format:
-// \x1bPtmux;\x1b\x1b]52;c;<base64>\x07\x1b\\
-func (o *osc52Scanner) extractTmuxPassthrough(data []byte, idx int) (clipboardText string, remaining []byte, found bool) {
-	rest := data[idx:]
-
-	// Minimum: \x1bPtmux;\x1b\x1b]52;c;\x07\x1b\\ = ~20 bytes
-	if len(rest) < 20 {
-		return "", nil, false
-	}
-
-	// Find the ST terminator for the DCS: \x1b\\
-	// The inner OSC 52 will have its own terminator (BEL or ST)
-	endIdx := -1
-	for i := 15; i < len(rest)-1; i++ {
-		if rest[i] == 0x1b && rest[i+1] == '\\' {
-			// Check if this is the outer DCS terminator (not inner ST)
-			// Inner ST would be doubled: \x1b\x1b\\
-			if i >= 2 && rest[i-1] == 0x1b {
-				continue // This is escaped, keep looking
-			}
-			endIdx = i + 2
-			break
-		}
-	}
-
-	if endIdx == -1 {
-		return "", nil, false
-	}
-
-	// Extract inner OSC 52 from tmux passthrough
-	// Format: \x1bPtmux;\x1b<inner>\x1b\\
-	// The inner content has doubled escapes
-	inner := rest[8 : endIdx-2] // Skip "\x1bPtmux;\x1b" and trailing "\x1b\\"
-
-	// Undouble the escapes in the inner content
-	undoubled := undoubleEscapes(inner)
-
-	// Now parse as regular OSC 52
-	if len(undoubled) > 5 && undoubled[0] == 0x1b && undoubled[1] == ']' {
-		clipboardText = o.parseOSC52Payload(undoubled)
-	}
-
-	return clipboardText, data[idx+endIdx:], true
-}
-
-// parseOSC52Payload extracts and decodes the base64 clipboard data from an OSC 52 sequence.
-// Input format: \x1b]52;c;<base64><terminator>
-func (o *osc52Scanner) parseOSC52Payload(seq []byte) string {
-	// Find the second semicolon (after "52;X")
-	secondSemi := -1
-	for i := 5; i < len(seq)-1; i++ {
-		if seq[i] == ';' {
-			secondSemi = i
-			break
-		}
-	}
-
-	if secondSemi == -1 || secondSemi >= len(seq)-1 {
-		return ""
-	}
-
-	// Determine terminator length
-	termLen := 1 // BEL
-	if len(seq) >= 2 && seq[len(seq)-2] == 0x1b {
-		termLen = 2 // ST (\x1b\\)
-	}
-
-	// Extract base64 data
-	if secondSemi+1 >= len(seq)-termLen {
-		return ""
-	}
-	b64Data := seq[secondSemi+1 : len(seq)-termLen]
-
-	if len(b64Data) == 0 {
-		return ""
-	}
-
-	decoded, err := base64.StdEncoding.DecodeString(string(b64Data))
-	if err != nil {
-		return ""
-	}
-
-	return string(decoded)
-}
-
-// indexOSC52Start finds the start of an OSC 52 sequence (\x1b]52;)
-func indexOSC52Start(data []byte) int {
-	for i := 0; i <= len(data)-5; i++ {
-		if data[i] == 0x1b && data[i+1] == ']' && data[i+2] == '5' && data[i+3] == '2' && data[i+4] == ';' {
-			return i
-		}
-	}
-	return -1
-}
-
-// indexTmuxPassthrough finds the start of a tmux DCS passthrough (\x1bPtmux;)
-func indexTmuxPassthrough(data []byte) int {
-	for i := 0; i <= len(data)-7; i++ {
-		if data[i] == 0x1b && data[i+1] == 'P' &&
-			data[i+2] == 't' && data[i+3] == 'm' && data[i+4] == 'u' && data[i+5] == 'x' && data[i+6] == ';' {
-			return i
-		}
-	}
-	return -1
-}
-
-// undoubleEscapes converts doubled escape characters back to single escapes.
-// In tmux passthrough, ESC is represented as ESC ESC.
-func undoubleEscapes(data []byte) []byte {
-	result := make([]byte, 0, len(data))
-	for i := 0; i < len(data); i++ {
-		if data[i] == 0x1b && i+1 < len(data) && data[i+1] == 0x1b {
-			result = append(result, 0x1b)
-			i++ // Skip the doubled escape
-		} else {
-			result = append(result, data[i])
-		}
-	}
-	return result
 }
 
 // handleBrowse lists files in a directory for the download UI
@@ -3347,6 +1915,7 @@ func main() {
 	}
 
 	port := flag.String("port", "8080", "HTTP server port")
+	panePortStart := flag.Int("pane-port-start", 7700, "Starting port for managed pane backends")
 	shell := flag.String("shell", defaultShell, "Shell to spawn in terminals")
 	uploadDir := flag.String("upload-dir", defaultUploadDir, "Directory for uploaded files")
 
@@ -3386,8 +1955,8 @@ func main() {
 	// Create upload directory
 	os.MkdirAll(*uploadDir, 0755)
 
-	// Initialize session manager (ttyd sessions start at port 7700)
-	manager := NewSessionManager(7700, *shell, workDir, *port)
+	// Initialize pane manager
+	manager := NewPaneManager(*panePortStart, *shell, workDir, *port)
 	server := NewServer(manager, *uploadDir)
 
 	// Cleanup on exit
@@ -3409,13 +1978,14 @@ func main() {
 	// API routes
 	mux.HandleFunc("/api/info", server.handleInfo)
 	mux.HandleFunc("/api/logs", server.handleLogs)
-	mux.HandleFunc("/api/sessions", server.handleSessions)
-	mux.HandleFunc("/api/sessions/", server.handleSession)
+	mux.HandleFunc("/api/panes", server.handlePanes)
+	mux.HandleFunc("/api/panes/", server.handlePane)
 	mux.HandleFunc("/api/upload", server.handleUpload)
 	mux.HandleFunc("/api/download", server.handleDownload)
 	mux.HandleFunc("/api/browse", server.handleBrowse)
 	mux.HandleFunc("/api/settings", server.handleSettings)
 	mux.HandleFunc("/api/ui-state", server.handleUIState)
+	mux.HandleFunc("/api/pane-storage/", server.handlePaneStorage)
 	mux.HandleFunc("/api/scratch", server.handleScratch)
 	mux.HandleFunc("/api/scratch/events", server.handleScratchEvents)
 	mux.HandleFunc("/api/marked", server.handleMarked)
@@ -3424,18 +1994,72 @@ func main() {
 	mux.HandleFunc("/api/clipboard", server.handleClipboard)
 	mux.HandleFunc("/api/clipboard/version", server.handleClipboardVersion)
 
-	// Terminal proxy - forwards requests to ttyd instances
-	mux.HandleFunc("/t/", server.handleTerminalProxy)
+	// Pane proxy - forwards requests to pane backends
+	mux.HandleFunc("/p/", server.handlePaneProxy)
 
 	// Static files (dev mode handled by build tag)
 	mux.Handle("/", InitDevMode(mux, server))
 
 	log.Printf("Starting server on http://localhost:%s", *port)
+	log.Printf("Instance ID: %s", manager.instanceID)
 	log.Printf("Working directory: %s", workDir)
 	log.Printf("Upload directory: %s", *uploadDir)
 	log.Printf("Default shell: %s", *shell)
 
-	if err := http.ListenAndServe(":"+*port, mux); err != nil {
+	if err := http.ListenAndServe(":"+*port, mountPathHandler(mux)); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
+}
+
+func mountPathHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/p/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		for _, marker := range []string{"/api/", "/p/"} {
+			if idx := strings.Index(path, marker); idx > 0 {
+				r2 := r.Clone(r.Context())
+				r2.URL.Path = path[idx:]
+				r2.URL.RawPath = ""
+				next.ServeHTTP(w, r2)
+				return
+			}
+		}
+
+		if path != "/" && !strings.HasSuffix(path, "/") && (filepath.Ext(path) == "" || strings.HasSuffix(filepath.Base(path), ".http")) {
+			target := *r.URL
+			target.Path = path + "/"
+			http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
+			return
+		}
+
+		if path != "/" && strings.HasSuffix(path, "/") {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			r2.URL.RawPath = ""
+			next.ServeHTTP(w, r2)
+			return
+		}
+
+		if base := filepath.Base(path); base != "." && base != "/" && filepath.Ext(base) != "" && path != "/"+base {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/" + base
+			r2.URL.RawPath = ""
+			next.ServeHTTP(w, r2)
+			return
+		}
+
+		if path != "/" && filepath.Ext(path) == "" {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			r2.URL.RawPath = ""
+			next.ServeHTTP(w, r2)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

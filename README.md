@@ -1,6 +1,6 @@
 # webmux
 
-Browser-based terminal multiplexer. Go backend proxies to per-session ttyd instances with tmux for persistence.
+Browser-based pane multiplexer. The Go backend manages local pane backends and proxies them into a shared browser workspace.
 
 ## Requirements
 
@@ -30,10 +30,11 @@ Then open `http://localhost:8080` in a browser.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-port` | `8080` | HTTP server port |
+| `-pane-port-start` | `10000` | Starting port for managed pane backends |
 | `-shell` | `$SHELL` or `/bin/bash` | Shell to spawn in terminals |
 | `-upload-dir` | `~/.local/share/webmux/uploads` | Directory for uploaded files |
 
-The optional `DIRECTORY` argument sets the starting directory for new terminal sessions.
+The optional `DIRECTORY` argument sets the starting directory for new terminal panes.
 
 ## CLI Helper
 
@@ -41,10 +42,11 @@ Inside webmux terminals, use `wm` to interact with the server:
 
 ```sh
 wm info                  # show server info
-wm ls                    # list sessions (alias: wm list)
-wm new [name]            # create session
-wm close <id>            # close session
-wm rename <id> <name>    # rename session
+wm ls                    # list panes (alias: wm list)
+wm new [--terminal|--opencode] [name]
+                         # create pane (defaults to terminal)
+wm close <id>            # close pane
+wm rename <id> <name>    # rename pane
 wm upload <file>...      # upload files
 wm scratch               # get scratch pad
 wm scratch [text]        # set scratch pad
@@ -69,10 +71,11 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 
 ## Features
 
-- Multiple terminal sessions with persistent tmux backing
-- Session management (create, rename, close)
-- Split panes (2, 3, or 4 terminals per group)
-- Drag-and-drop session reordering and grouping
+- Multiple terminal panes with persistent tmux backing
+- Managed HTTP-backed pane types, including OpenCode when available
+- Pane management (create, rename, refresh, close, pop out)
+- Split panes (2, 3, or 4 panes per group)
+- Drag-and-drop pane reordering and grouping
 - File browser with:
   - Mark files and directories for bulk download
   - Single file direct download
@@ -82,7 +85,14 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 - Scratch pad for CLI-browser text exchange
 - Customizable UI and terminal colors (Base24 theme support)
 - Clipboard sync with OSC 52 support plus `wm copy`/`wm paste`
-- Keyboard shortcuts (Ctrl+Shift+T for new session, etc.)
+- Keyboard shortcuts (Ctrl+Shift+T for new terminal pane, etc.)
+
+## Pane Types
+
+- Terminal panes are dedicated: each pane owns its tmux session and ttyd backend. Keybar input is sent server-side through tmux.
+- HTTP-backed pane types may be dedicated or shared depending on the backend. OpenCode is currently supported as a shared managed backend when `opencode` is available in `PATH`.
+- Pane creation options are advertised by the server; unavailable optional backends are disabled in the UI.
+- Popouts preserve the same dedicated/shared semantics. A popped-out shared backend suppresses duplicate in-page clients until it is popped back in or closed.
 
 ## Files
 
@@ -92,7 +102,7 @@ Settings and data follow XDG conventions:
 |------|-------------|
 | `$XDG_CONFIG_HOME/webmux/settings.json` | UI and terminal color settings (defaults to `~/.config`) |
 | `$XDG_DATA_HOME/webmux/uploads` | Default upload directory (defaults to `~/.local/share`) |
-| `$XDG_DATA_HOME/webmux/tmux.sock` | Tmux socket (defaults to `~/.local/share`) |
+| `$XDG_DATA_HOME/webmux/instances/port-<port>/tmux.sock` | Tmux socket, scoped by webmux server port (defaults to `~/.local/share`) |
 
 ## License
 

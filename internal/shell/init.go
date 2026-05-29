@@ -1,5 +1,5 @@
 /*
- * webmux - Browser-based terminal multiplexer
+ * webmux - Browser-based pane multiplexer
  * Copyright (C) 2026  Webmux contributors
  *
  * This program is free software: you can redistribute it and/or modify
@@ -83,11 +83,11 @@ elif [ -n "$ZSH_VERSION" ]; then
     local -a commands subcmds
     commands=(
       'info:Show server info'
-      'ls:List all sessions'
-      'list:List all sessions'
-      'new:Create a new session'
-      'close:Close a session'
-      'rename:Rename a session'
+      'ls:List all panes'
+      'list:List all panes'
+      'new:Create a new terminal pane'
+      'close:Close a pane'
+      'rename:Rename a pane'
       'upload:Upload files to the server'
       'scratch:Get or set scratch pad text'
       'mark:Mark files for download'

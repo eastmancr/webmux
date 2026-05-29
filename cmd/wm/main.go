@@ -22,10 +22,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"webmux/internal/shell"
@@ -39,15 +41,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Determine host from environment
-	host := os.Getenv("WEBMUX_HOST")
-	if host == "" {
-		port := os.Getenv("WEBMUX_PORT")
-		if port == "" {
-			port = defaultPort
-		}
-		host = "localhost:" + port
-	}
+	host := webmuxHost()
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
@@ -97,10 +91,11 @@ Usage: wm <command> [arguments]
 
 Commands:
   info               Show server info (upload dir, work dir)
-  ls, list           List all sessions
-  new [name]         Create a new session
-  close <id>         Close a session
-  rename <id> <name> Rename a session
+  ls, list           List all panes
+  new [--terminal|--opencode] [name]
+                     Create a pane (defaults to terminal)
+  close <id>         Close a pane
+  rename <id> <name> Rename a pane
   upload <file>...   Upload files to the server
   scratch            Get current scratch pad text
   scratch <text>     Send text to scratch pad
@@ -116,7 +111,7 @@ Commands:
 
 Environment:
   WEBMUX_PORT        Server port (set automatically in webmux terminals)
-  WEBMUX_SESSION     Current session ID (set automatically in webmux terminals)
+  WEBMUX_SESSION     Current pane ID (set automatically in webmux terminals)
   WEBMUX_HOST        Full server address (overrides WEBMUX_PORT if set)
 
 In webmux terminals, use wm to run commands (e.g., wm ls, wm scratch hello)
@@ -137,6 +132,17 @@ Clipboard:
 // SECTION: API
 
 // API helpers
+
+func webmuxHost() string {
+	if host := os.Getenv("WEBMUX_HOST"); host != "" {
+		return host
+	}
+	port := os.Getenv("WEBMUX_PORT")
+	if port == "" {
+		port = defaultPort
+	}
+	return "localhost:" + port
+}
 
 func apiGet(host, path string) ([]byte, error) {
 	resp, err := http.Get(fmt.Sprintf("http://%s%s", host, path))
@@ -242,19 +248,21 @@ func cmdInfo(host string) error {
 	}
 
 	var info struct {
-		WorkDir      string `json:"workDir"`
-		UploadDir    string `json:"uploadDir"`
-		Shell        string `json:"shell"`
-		Port         string `json:"port"`
-		SessionCount int    `json:"sessionCount"`
-		TmuxSocket   string `json:"tmuxSocket"`
+		WorkDir    string `json:"workDir"`
+		UploadDir  string `json:"uploadDir"`
+		Shell      string `json:"shell"`
+		Port       string `json:"port"`
+		InstanceID string `json:"instanceID"`
+		PaneCount  int    `json:"paneCount"`
+		TmuxSocket string `json:"tmuxSocket"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	fmt.Printf("Server:       http://localhost:%s\n", info.Port)
-	fmt.Printf("Sessions:     %d\n", info.SessionCount)
+	fmt.Printf("Instance:     %s\n", info.InstanceID)
+	fmt.Printf("Panes:        %d\n", info.PaneCount)
 	fmt.Printf("Shell:        %s\n", info.Shell)
 	fmt.Printf("Work dir:     %s\n", info.WorkDir)
 	fmt.Printf("Upload dir:   %s\n", info.UploadDir)
@@ -263,85 +271,128 @@ func cmdInfo(host string) error {
 }
 
 func cmdList(host string) error {
-	body, err := apiGet(host, "/api/sessions")
+	body, err := apiGet(host, "/api/panes")
 	if err != nil {
 		return err
 	}
 
-	var sessions []struct {
+	var panes []struct {
 		ID             string `json:"id"`
+		Type           string `json:"type"`
 		Name           string `json:"name"`
 		CurrentProcess string `json:"currentProcess"`
 	}
-	if err := json.Unmarshal(body, &sessions); err != nil {
+	if err := json.Unmarshal(body, &panes); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	if len(sessions) == 0 {
-		fmt.Println("No active sessions")
+	if len(panes) == 0 {
+		fmt.Println("No active panes")
 		return nil
 	}
 
-	for _, s := range sessions {
-		proc := s.CurrentProcess
+	if stdoutIsTerminal() {
+		fmt.Printf("%-12s %-10s %-20s %s\n", "ID", "TYPE", "NAME", "PROCESS")
+	}
+	for _, p := range panes {
+		proc := p.CurrentProcess
 		if proc == "" {
 			proc = "-"
 		}
-		fmt.Printf("%s\t%s\t(%s)\n", s.ID, s.Name, proc)
+		fmt.Printf("%-12s %-10s %-20s %s\n", p.ID, p.Type, p.Name, proc)
 	}
 	return nil
 }
 
-func cmdNew(host string, args []string) error {
-	name := ""
-	if len(args) > 0 {
-		name = args[0]
-	}
+func stdoutIsTerminal() bool {
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
 
-	body, err := apiPost(host, "/api/sessions", map[string]string{"name": name})
+func cmdNew(host string, args []string) error {
+	paneType := "terminal"
+	typeFlagSeen := false
+	nameParts := make([]string, 0, len(args))
+	for _, arg := range args {
+		switch arg {
+		case "--terminal":
+			if len(nameParts) > 0 {
+				nameParts = append(nameParts, arg)
+				continue
+			}
+			if typeFlagSeen {
+				return fmt.Errorf("only one pane type flag may be provided before the name")
+			}
+			typeFlagSeen = true
+			paneType = "terminal"
+		case "--opencode":
+			if len(nameParts) > 0 {
+				nameParts = append(nameParts, arg)
+				continue
+			}
+			if typeFlagSeen {
+				return fmt.Errorf("only one pane type flag may be provided before the name")
+			}
+			typeFlagSeen = true
+			paneType = "opencode"
+		default:
+			nameParts = append(nameParts, arg)
+		}
+	}
+	name := strings.Join(nameParts, " ")
+
+	body, err := apiPost(host, "/api/panes", map[string]string{"type": paneType, "name": name})
 	if err != nil {
 		return err
 	}
 
-	var session struct {
+	var pane struct {
 		ID   string `json:"id"`
+		Type string `json:"type"`
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(body, &session); err != nil {
+	if err := json.Unmarshal(body, &pane); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	fmt.Printf("Created session: %s (%s)\n", session.Name, session.ID)
+	fmt.Printf("Created %s pane: %s (%s)\n", pane.Type, pane.Name, pane.ID)
 	return nil
+}
+
+func normalizePaneID(id string) string {
+	if _, err := strconv.Atoi(id); err == nil {
+		return "pane-" + id
+	}
+	return id
 }
 
 func cmdClose(host string, args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: wm close <session-id>")
+		return fmt.Errorf("usage: wm close <pane-id>")
 	}
 
-	sessionID := args[0]
-	if err := apiDelete(host, "/api/sessions/"+sessionID); err != nil {
+	paneID := normalizePaneID(args[0])
+	if err := apiDelete(host, "/api/panes/"+paneID); err != nil {
 		return err
 	}
 
-	fmt.Printf("Closed session: %s\n", sessionID)
+	fmt.Printf("Closed pane: %s\n", paneID)
 	return nil
 }
 
 func cmdRename(host string, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: wm rename <session-id> <new-name>")
+		return fmt.Errorf("usage: wm rename <pane-id> <new-name>")
 	}
 
-	sessionID := args[0]
+	paneID := normalizePaneID(args[0])
 	newName := strings.Join(args[1:], " ")
 
-	if err := apiPatch(host, "/api/sessions/"+sessionID, map[string]string{"name": newName}); err != nil {
+	if err := apiPatch(host, "/api/panes/"+paneID, map[string]string{"name": newName}); err != nil {
 		return err
 	}
 
-	fmt.Printf("Renamed session %s to: %s\n", sessionID, newName)
+	fmt.Printf("Renamed pane %s to: %s\n", paneID, newName)
 	return nil
 }
 
@@ -375,7 +426,7 @@ func cmdUpload(host string, args []string) error {
 
 		// Create multipart form
 		body := &bytes.Buffer{}
-		writer := newMultipartWriter(body)
+		writer := multipart.NewWriter(body)
 
 		part, err := writer.CreateFormFile("files", filepath.Base(absPath))
 		if err != nil {
@@ -390,7 +441,10 @@ func cmdUpload(host string, args []string) error {
 			continue
 		}
 		f.Close()
-		writer.Close()
+		if err := writer.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Skipping %s: %v\n", file, err)
+			continue
+		}
 
 		req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://%s/api/upload", host), body)
 		if err != nil {
@@ -609,15 +663,7 @@ func cmdCopy(args []string) error {
 		return fmt.Errorf("nothing to copy")
 	}
 
-	// Determine host from environment
-	host := os.Getenv("WEBMUX_HOST")
-	if host == "" {
-		port := os.Getenv("WEBMUX_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		host = "localhost:" + port
-	}
+	host := webmuxHost()
 
 	// POST to clipboard API
 	resp, err := http.Post(
@@ -641,14 +687,7 @@ func cmdCopy(args []string) error {
 // cmdPaste reads from the server-side clipboard via HTTP API
 // Outputs the clipboard contents to stdout
 func cmdPaste() error {
-	host := os.Getenv("WEBMUX_HOST")
-	if host == "" {
-		port := os.Getenv("WEBMUX_PORT")
-		if port == "" {
-			port = "8080"
-		}
-		host = "localhost:" + port
-	}
+	host := webmuxHost()
 
 	resp, err := http.Get(fmt.Sprintf("http://%s/api/clipboard", host))
 	if err != nil {
@@ -663,33 +702,4 @@ func cmdPaste() error {
 
 	_, err = io.Copy(os.Stdout, resp.Body)
 	return err
-}
-
-// Multipart helper
-type multipartWriter struct {
-	*bytes.Buffer
-	boundary string
-}
-
-func newMultipartWriter(buf *bytes.Buffer) *multipartWriter {
-	return &multipartWriter{
-		Buffer:   buf,
-		boundary: "----WebmuxFormBoundary",
-	}
-}
-
-func (w *multipartWriter) CreateFormFile(fieldname, filename string) (io.Writer, error) {
-	fmt.Fprintf(w.Buffer, "--%s\r\n", w.boundary)
-	fmt.Fprintf(w.Buffer, "Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"\r\n", fieldname, filename)
-	fmt.Fprintf(w.Buffer, "Content-Type: application/octet-stream\r\n\r\n")
-	return w.Buffer, nil
-}
-
-func (w *multipartWriter) Close() error {
-	fmt.Fprintf(w.Buffer, "\r\n--%s--\r\n", w.boundary)
-	return nil
-}
-
-func (w *multipartWriter) FormDataContentType() string {
-	return "multipart/form-data; boundary=" + w.boundary
 }

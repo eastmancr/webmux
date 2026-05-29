@@ -1,16 +1,16 @@
 .TH WEBMUX 1 "February 2026" "0.2" "Webmux Manual"
 .SH NAME
-webmux \- browser-based terminal multiplexer
+webmux \- browser-based pane multiplexer
 .SH SYNOPSIS
 .B webmux
 [\fIOPTIONS\fR] [\fIDIRECTORY\fR]
 .SH DESCRIPTION
 .B webmux
-is a browser-based terminal multiplexer. It runs an HTTP server that proxies to per-session \fBttyd\fR(1) instances backed by \fBtmux\fR(1) for persistence.
+is a browser-based pane multiplexer. It runs an HTTP server that manages local pane backends and proxies them into a shared browser workspace.
 .P
-Each terminal session runs inside a \fBtmux\fR session, allowing the terminal state to persist even when the browser disconnects. Reconnecting to a session resumes where you left off.
+Terminal panes run inside \fBtmux\fR sessions through \fBttyd\fR(1), allowing terminal state to persist even when the browser disconnects. OpenCode panes use a managed shared HTTP backend when \fBopencode\fR is available in \fBPATH\fR.
 .P
-The optional \fIDIRECTORY\fR argument sets the starting directory for new terminal sessions.
+The optional \fIDIRECTORY\fR argument sets the starting directory for new terminal panes and managed backends.
 
 .SH OPTIONS
 .TP
@@ -18,7 +18,10 @@ The optional \fIDIRECTORY\fR argument sets the starting directory for new termin
 HTTP server port. Default: \fB8080\fR
 .TP
 .BR \-shell =\fIPATH\fR
-Shell to spawn in new terminal sessions. Default: \fB$SHELL\fR environment variable, or \fB/bin/bash\fR if unset.
+Shell to spawn in new terminal panes. Default: \fB$SHELL\fR environment variable, or \fB/bin/bash\fR if unset.
+.TP
+.BR \-pane-port-start =\fIPORT\fR
+Starting port for managed pane backends. Default: \fB10000\fR
 .TP
 .BR \-upload-dir =\fIPATH\fR
 Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
@@ -30,16 +33,16 @@ Inside webmux terminals, the \fBwm\fR command is available as a shell function:
 Show server info (upload dir, work dir).
 .TP
 .B wm ls
-List all active sessions. Alias: \fBwm list\fR.
+List all active panes. Alias: \fBwm list\fR.
 .TP
-.B wm new \fR[\fIname\fR]
-Create a new session with optional name.
+.B wm new \fR[\fB--terminal\fR|\fB--opencode\fR] [\fIname\fR]
+Create a new pane with optional type and name. Defaults to terminal.
 .TP
 .B wm close \fR\fIid\fR
-Close a session by ID.
+Close a pane by ID.
 .TP
 .B wm rename \fR\fIid\fR \fIname\fR
-Rename a session.
+Rename a pane.
 .TP
 .B wm upload \fR\fIfile\fR...
 Upload files to the server.
@@ -67,16 +70,19 @@ UI and terminal color configuration. Defaults to \fB~/.config\fR.
 .B $XDG_DATA_HOME/webmux/uploads
 Default upload directory. Defaults to \fB~/.local/share\fR.
 .TP
-.B $XDG_DATA_HOME/webmux/tmux.sock
-Tmux socket for session management. Defaults to \fB~/.local/share\fR.
+.B $XDG_DATA_HOME/webmux/instances/port-<port>/tmux.sock
+Tmux socket for terminal pane management, scoped by webmux server port. Defaults to \fB~/.local/share\fR.
 
 .SH FEATURES
 .TP
-.B Session Management
-Create, rename, and close terminal sessions from the web UI. Sessions persist until explicitly closed or the shell exits.
+.B Pane Management
+Create, rename, refresh, pop out, and close panes from the web UI. Terminal panes persist until explicitly closed or the shell exits.
 .TP
 .B Split Panes
-Group up to 4 terminals in resizable split layouts.
+Group up to 4 panes in resizable split layouts.
+.TP
+.B Managed Pane Types
+Terminal panes are dedicated tmux/ttyd backends. OpenCode panes share one managed OpenCode backend and mirror the same state.
 .TP
 .B File Transfer
 Upload files via drag-and-drop or file picker. Download files by browsing the server filesystem.
@@ -115,7 +121,7 @@ Full server address (host:port). Overrides \fBWEBMUX_PORT\fR for the \fBwm\fR co
 Set automatically in webmux terminals. Used by the \fBwm\fR command to connect to the server.
 .TP
 .B WEBMUX_SESSION
-Set automatically in webmux terminals. The current session ID.
+Set automatically in webmux terminals. The current pane ID.
 .TP
 .B WEBMUX_INIT
 Set automatically in webmux terminals. Path to the shell init script.
@@ -129,7 +135,9 @@ requires
 .B ttyd
 and
 .B tmux
-to be installed and available in PATH.
+to be installed and available in PATH for terminal panes. OpenCode panes require
+.B opencode
+in PATH.
 
 .SH SEE ALSO
 .BR ttyd (1),
