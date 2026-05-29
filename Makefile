@@ -48,7 +48,7 @@ pkg: build
 	mkdir -p $(PKG)
 	tar czf $(PKG)/$(BINARY)-$(VERSION).tar.gz \
 		--transform 's,^,$(BINARY)-$(VERSION)/,' \
-		main.go dev.go nodev.go go.mod go.sum webmux.1 README.md LICENSE \
-		cmd/wm/main.go internal/shell/init.go \
+		*.go go.mod go.sum webmux.1 README.md LICENSE \
+		cmd/wm/main.go internal/shell/*.go \
 		static/app.js static/index.html static/style.css static/tmux.conf static/favicon.ico
 	cp PKGBUILD $(PKG)/
