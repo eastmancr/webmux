@@ -284,9 +284,13 @@ func (or *OpenCodeRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 		return nil, false
 	}
 
+	targetHost := fmt.Sprintf("127.0.0.1:%d", port)
 	return &PaneProxyConfig{
-		TargetHost:  fmt.Sprintf("127.0.0.1:%d", port),
+		TargetHost:  targetHost,
 		BackendName: "opencode",
+		ModifyRequest: func(req *http.Request) {
+			rewriteOpenCodeRequestOrigin(targetHost, req)
+		},
 		ModifyResponse: func(_ *Server, resp *http.Response) error {
 			return or.modifyOpenCodeAssetResponse(id, resp)
 		},

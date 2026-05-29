@@ -21,10 +21,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
 // SECTION: OPENCODE PROXY
+
+var sourceMapCommentRE = regexp.MustCompile(`(?m)\n?(//# sourceMappingURL=.*$|/\*# sourceMappingURL=.*\*/)`)
 
 func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string, storage PaneStorageState, resp *http.Response) error {
 	if resp.StatusCode >= 400 {
@@ -55,7 +58,7 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string,
 	return nil
 }
 
-func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(paneID string, resp *http.Response) error {
+func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(_ string, resp *http.Response) error {
 	if resp.StatusCode >= 400 {
 		return nil
 	}
@@ -64,7 +67,9 @@ func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(paneID string, resp *http
 	if resp.Request != nil && resp.Request.URL != nil {
 		requestPath = resp.Request.URL.Path
 	}
-	if !strings.Contains(contentType, "javascript") && !strings.HasSuffix(requestPath, ".js") {
+	isJS := strings.Contains(contentType, "javascript") || strings.HasSuffix(requestPath, ".js")
+	isCSS := strings.Contains(contentType, "text/css") || strings.HasSuffix(requestPath, ".css")
+	if !isJS && !isCSS {
 		return nil
 	}
 
@@ -73,21 +78,42 @@ func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(paneID string, resp *http
 		return err
 	}
 
-	basePath := "/p/" + paneID
 	content := string(body)
-	assetPath := strings.TrimPrefix(basePath, "/") + "/assets/"
-	content = strings.ReplaceAll(content, `"/assets/`, `"`+basePath+`/assets/`)
-	content = strings.ReplaceAll(content, `'/assets/`, `'`+basePath+`/assets/`)
-	content = strings.ReplaceAll(content, "`/assets/", "`"+basePath+"/assets/")
-	content = strings.ReplaceAll(content, `"assets/`, `"`+assetPath)
-	content = strings.ReplaceAll(content, `'assets/`, `'`+assetPath)
-	content = strings.ReplaceAll(content, "`assets/", "`"+assetPath)
+	if isCSS {
+		content = rewriteOpenCodeCSSAssetURLs(content)
+	}
+	content = sourceMapCommentRE.ReplaceAllString(content, "")
 
 	writeProxyResponseBody(resp, content)
 	resp.Header.Del("Content-Encoding")
 	resp.Header.Del("Etag")
 
 	return nil
+}
+
+func rewriteOpenCodeCSSAssetURLs(content string) string {
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{`url("/assets/`, `url("`},
+		{`url('/assets/`, `url('`},
+		{`url(/assets/`, `url(`},
+	}
+	for _, replacement := range replacements {
+		content = strings.ReplaceAll(content, replacement.old, replacement.new)
+	}
+	return content
+}
+
+func rewriteOpenCodeRequestOrigin(targetHost string, req *http.Request) {
+	backendOrigin := "http://" + targetHost
+	if req.Header.Get("Origin") != "" {
+		req.Header.Set("Origin", backendOrigin)
+	}
+	if req.Header.Get("Referer") != "" {
+		req.Header.Set("Referer", backendOrigin+"/")
+	}
 }
 
 func rewriteRootRelativeHTML(content string) string {
@@ -259,6 +285,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   setInterval(pollStorage, 1000);
 
   function prefixURL(input) {
+    if (input instanceof URL) input = input.toString();
     if (typeof input !== 'string') return input;
     if (input.startsWith(base + '/') || input === base) return input;
     if (input.startsWith(fallbackBase + '/')) return base + input.slice(fallbackBase.length);
@@ -266,6 +293,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return input;
   }
   function prefixAbsoluteURL(input) {
+    if (input instanceof URL) input = input.toString();
     if (typeof input !== 'string') return input;
     try {
       var url = new URL(input, window.location.href);
@@ -281,6 +309,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return prefixURL(input);
   }
   function prefixWebSocketURL(input) {
+    if (input instanceof URL) input = input.toString();
     if (typeof input !== 'string') return input;
     try {
       var url = new URL(input, window.location.href);
@@ -316,6 +345,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     } catch (e) {}
     return value;
   }
+  function prefixStyleAssetURLs(value) {
+    if (typeof value !== 'string') return value;
+    return value.replace(/url\((['"]?)\/assets\//g, 'url($1' + base + '/assets/');
+  }
 
   var OriginalRequest = window.Request;
   window.Request = function(input, init) {
@@ -341,13 +374,54 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   patchURLProperty(HTMLLinkElement.prototype, 'href');
   patchURLProperty(HTMLScriptElement.prototype, 'src');
 
+  if (window.HTMLImageElement) patchURLProperty(HTMLImageElement.prototype, 'src');
+  if (window.HTMLSourceElement) patchURLProperty(HTMLSourceElement.prototype, 'src');
+  if (window.HTMLVideoElement) patchURLProperty(HTMLVideoElement.prototype, 'poster');
+
   var originalSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function(name, value) {
-    if ((this.tagName === 'LINK' && name.toLowerCase() === 'href') || (this.tagName === 'SCRIPT' && name.toLowerCase() === 'src')) {
+    var lowerName = name.toLowerCase();
+    if ((this.tagName === 'LINK' && lowerName === 'href')
+        || (this.tagName === 'SCRIPT' && lowerName === 'src')
+        || (this.tagName === 'IMG' && lowerName === 'src')
+        || (this.tagName === 'SOURCE' && lowerName === 'src')
+        || (this.tagName === 'VIDEO' && lowerName === 'poster')
+        || ((lowerName === 'href' || lowerName === 'xlink:href') && typeof value === 'string' && value.startsWith('/assets/'))) {
       value = prefixElementURL(value);
     }
     return originalSetAttribute.call(this, name, value);
   };
+
+  if (window.CSSStyleSheet && CSSStyleSheet.prototype.insertRule) {
+    var originalInsertRule = CSSStyleSheet.prototype.insertRule;
+    CSSStyleSheet.prototype.insertRule = function(rule, index) {
+      return originalInsertRule.call(this, prefixStyleAssetURLs(rule), index);
+    };
+  }
+  if (window.CSSStyleDeclaration && CSSStyleDeclaration.prototype.setProperty) {
+    var originalSetProperty = CSSStyleDeclaration.prototype.setProperty;
+    CSSStyleDeclaration.prototype.setProperty = function(property, value, priority) {
+      return originalSetProperty.call(this, property, prefixStyleAssetURLs(value), priority);
+    };
+  }
+  if (window.HTMLStyleElement && window.Node) {
+    var textContentDescriptor = Object.getOwnPropertyDescriptor(Node.prototype, 'textContent');
+    if (textContentDescriptor && textContentDescriptor.set && textContentDescriptor.get) {
+      Object.defineProperty(HTMLStyleElement.prototype, 'textContent', {
+        configurable: true,
+        enumerable: textContentDescriptor.enumerable,
+        get: textContentDescriptor.get,
+        set: function(value) { return textContentDescriptor.set.call(this, prefixStyleAssetURLs(value)); }
+      });
+    }
+    var originalAppendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function(child) {
+      if (this instanceof HTMLStyleElement && child && child.nodeType === Node.TEXT_NODE) {
+        child.nodeValue = prefixStyleAssetURLs(child.nodeValue);
+      }
+      return originalAppendChild.call(this, child);
+    };
+  }
 
   if (navigator.clipboard && navigator.clipboard.writeText) {
     var originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
@@ -371,6 +445,12 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return new OriginalEventSource(prefixAbsoluteURL(url), config);
   };
   window.EventSource.prototype = OriginalEventSource.prototype;
+
+  var OriginalWorker = window.Worker;
+  window.Worker = function(url, options) {
+    return new OriginalWorker(prefixAbsoluteURL(url), options);
+  };
+  window.Worker.prototype = OriginalWorker.prototype;
 
   var OriginalWebSocket = window.WebSocket;
   window.WebSocket = function(url, protocols) {

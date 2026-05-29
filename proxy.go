@@ -34,6 +34,7 @@ import (
 type PaneProxyConfig struct {
 	TargetHost           string
 	BackendName          string
+	ModifyRequest        func(*http.Request)
 	ModifyResponse       func(*Server, *http.Response) error
 	ModifyIndexResponse  func(*Server, *http.Response) error
 	NewWebSocketObserver func(*Server) WebSocketTrafficObserver
@@ -97,6 +98,9 @@ func (s *Server) handlePaneProxy(w http.ResponseWriter, r *http.Request) {
 		}
 		req.URL.RawPath = ""
 		req.Host = targetURL.Host
+		if proxyConfig.ModifyRequest != nil {
+			proxyConfig.ModifyRequest(req)
+		}
 	}
 
 	isIndexRequest := len(parts) == 1 || parts[1] == "" || parts[1] == "index.html"
@@ -156,6 +160,9 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, proxyCon
 	backendReq.URL.RawQuery = r.URL.RawQuery
 	backendReq.Host = proxyConfig.TargetHost
 	backendReq.RequestURI = ""
+	if proxyConfig.ModifyRequest != nil {
+		proxyConfig.ModifyRequest(backendReq)
+	}
 
 	// Send the upgrade request to the pane backend.
 	if err := backendReq.Write(targetConn); err != nil {
