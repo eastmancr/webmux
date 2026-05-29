@@ -166,7 +166,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var pendingSnapshotFetch = false;
   var opencodeServerStorageKey = 'opencode.global.dat:server';
   var canonicalServerID = 'webmux';
-  var currentServerID = window.location.origin;
+  var currentServerID = projectsKeyForServerID(window.location.origin);
 
   function sortedStorageKeys() {
     return Object.keys(serverStorage).sort();
@@ -274,22 +274,29 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   function isOpenCodeServerStorageKey(key) {
     return String(key) === opencodeServerStorageKey;
   }
-  function copyServerProjects(projects, from, to) {
-    if (!projects || !Object.prototype.hasOwnProperty.call(projects, from)) return;
-    if (!projects[to]) {
-      projects[to] = projects[from];
-      return;
+  function projectsKeyForServerID(serverID) {
+    try {
+      var host = new URL(serverID).hostname;
+      if (host === 'localhost' || host === '127.0.0.1') return 'local';
+    } catch (e) {}
+    return serverID;
+  }
+  function hasOwn(object, key) {
+    return Object.prototype.hasOwnProperty.call(object, key);
+  }
+  function firstProjectList(projects) {
+    var keys = Object.keys(projects);
+    for (var i = 0; i < keys.length; i++) {
+      if (Array.isArray(projects[keys[i]])) return projects[keys[i]];
     }
-    if (!Array.isArray(projects[to]) || !Array.isArray(projects[from])) return;
-    var seen = {};
-    projects[to].forEach(function(project) {
-      if (project && project.worktree) seen[project.worktree] = true;
-    });
-    projects[from].forEach(function(project) {
-      if (!project || !project.worktree || seen[project.worktree]) return;
-      projects[to].push(project);
-      seen[project.worktree] = true;
-    });
+    return null;
+  }
+  function firstLastProject(lastProject) {
+    var keys = Object.keys(lastProject);
+    for (var i = 0; i < keys.length; i++) {
+      if (lastProject[keys[i]]) return lastProject[keys[i]];
+    }
+    return '';
   }
   function normalizeOpenCodeServerStorageValue(value) {
     if (typeof value !== 'string' || value === '') return value;
@@ -298,16 +305,14 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       if (!parsed || typeof parsed !== 'object') return value;
       var projects = parsed.projects && typeof parsed.projects === 'object' && !Array.isArray(parsed.projects) ? parsed.projects : {};
       var lastProject = parsed.lastProject && typeof parsed.lastProject === 'object' && !Array.isArray(parsed.lastProject) ? parsed.lastProject : {};
-      Object.keys(projects).forEach(function(serverID) {
-        if (serverID !== canonicalServerID) copyServerProjects(projects, serverID, canonicalServerID);
-      });
-      var canonicalLastProject = lastProject[canonicalServerID] || lastProject[currentServerID];
-      if (!canonicalLastProject) {
-        var lastProjectKeys = Object.keys(lastProject);
-        if (lastProjectKeys.length > 0) canonicalLastProject = lastProject[lastProjectKeys[0]];
-      }
+      var canonicalProjects = hasOwn(projects, currentServerID) ? projects[currentServerID]
+        : hasOwn(projects, canonicalServerID) ? projects[canonicalServerID]
+        : firstProjectList(projects);
+      var canonicalLastProject = hasOwn(lastProject, currentServerID) ? lastProject[currentServerID]
+        : hasOwn(lastProject, canonicalServerID) ? lastProject[canonicalServerID]
+        : firstLastProject(lastProject);
       parsed.projects = {};
-      if (projects[canonicalServerID]) parsed.projects[canonicalServerID] = projects[canonicalServerID];
+      if (Array.isArray(canonicalProjects)) parsed.projects[canonicalServerID] = canonicalProjects;
       parsed.lastProject = {};
       if (canonicalLastProject) parsed.lastProject[canonicalServerID] = canonicalLastProject;
       return JSON.stringify(parsed);
@@ -320,11 +325,15 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     try {
       var parsed = JSON.parse(normalizeOpenCodeServerStorageValue(value));
       if (!parsed || typeof parsed !== 'object') return value;
-      if (parsed.projects && parsed.projects[canonicalServerID] && !parsed.projects[currentServerID]) {
-        parsed.projects[currentServerID] = parsed.projects[canonicalServerID];
+      if (parsed.projects && parsed.projects[canonicalServerID]) {
+        var canonicalProjects = parsed.projects[canonicalServerID];
+        delete parsed.projects[canonicalServerID];
+        parsed.projects[currentServerID] = canonicalProjects;
       }
-      if (parsed.lastProject && parsed.lastProject[canonicalServerID] && !parsed.lastProject[currentServerID]) {
-        parsed.lastProject[currentServerID] = parsed.lastProject[canonicalServerID];
+      if (parsed.lastProject && parsed.lastProject[canonicalServerID]) {
+        var canonicalLastProject = parsed.lastProject[canonicalServerID];
+        delete parsed.lastProject[canonicalServerID];
+        parsed.lastProject[currentServerID] = canonicalLastProject;
       }
       return JSON.stringify(parsed);
     } catch (e) {
