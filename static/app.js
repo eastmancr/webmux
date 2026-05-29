@@ -954,6 +954,16 @@ class TerminalMultiplexer {
         this.settingsResetBtn = document.getElementById('settings-reset');
         this.settingsImportBtn = document.getElementById('settings-import');
         this.settingsExportBtn = document.getElementById('settings-export');
+        this.settingsConfigActions = document.getElementById('settings-config-actions');
+        this.opencodeStorageExportBtn = document.getElementById('opencode-storage-export');
+        this.opencodeStorageExportToggle = document.getElementById('opencode-storage-export-toggle');
+        this.opencodeStorageImportBtn = document.getElementById('opencode-storage-import');
+        this.opencodeStorageImportToggle = document.getElementById('opencode-storage-import-toggle');
+        this.opencodeStorageClearBtn = document.getElementById('opencode-storage-clear');
+        this.opencodeStorageFileInput = document.getElementById('opencode-storage-file');
+        this.opencodeStorageKeyCount = document.getElementById('opencode-storage-key-count');
+        this.opencodeStorageSize = document.getElementById('opencode-storage-size');
+        this.opencodeStorageVersion = document.getElementById('opencode-storage-version');
         this.settings = null; // Will be loaded from server
 
         // Keybinds modal
@@ -1081,6 +1091,15 @@ class TerminalMultiplexer {
         this.settingsResetBtn.addEventListener('click', () => this.resetSettings());
         this.settingsImportBtn.addEventListener('click', () => this.importSettings());
         this.settingsExportBtn.addEventListener('click', () => this.exportSettings());
+        this.opencodeStorageExportBtn?.addEventListener('click', () => this.copyOpenCodeStorage());
+        this.opencodeStorageExportToggle?.addEventListener('click', (e) => this.toggleStorageActionMenu(e));
+        this.opencodeStorageImportBtn?.addEventListener('click', () => this.pasteOpenCodeStorage());
+        this.opencodeStorageImportToggle?.addEventListener('click', (e) => this.toggleStorageActionMenu(e));
+        this.opencodeStorageClearBtn?.addEventListener('click', () => this.clearOpenCodeStorage());
+        this.opencodeStorageFileInput?.addEventListener('change', () => this.importOpenCodeStorage());
+        this.settingsModal.querySelectorAll('.storage-action-menu').forEach(menu => {
+            menu.addEventListener('click', (e) => this.handleStorageActionMenuClick(e));
+        });
 
         // Settings tab switching
         this.settingsModal.querySelectorAll('.settings-tab').forEach(tab => {
@@ -1090,9 +1109,11 @@ class TerminalMultiplexer {
                 this.settingsModal.querySelectorAll('.settings-panel').forEach(p => p.classList.remove('active'));
                 tab.classList.add('active');
                 this.settingsModal.querySelector(`[data-panel="${tabName}"]`).classList.add('active');
+                this.settingsModal.querySelectorAll('.settings-tab').forEach(t => t.setAttribute('aria-selected', t === tab ? 'true' : 'false'));
 
                 // Show/hide theme import/export buttons based on tab
                 this.updateThemeActionsVisibility(tabName);
+                if (tabName === 'storage') this.loadOpenCodeStorageSummary();
             });
         });
 
@@ -1150,6 +1171,9 @@ class TerminalMultiplexer {
         document.addEventListener('click', (e) => {
             const activeSplit = e.target.closest('.new-pane-split');
             this.closeNewPaneMenus(activeSplit);
+            if (!e.target.closest('.storage-action-split')) {
+                this.closeStorageActionMenus();
+            }
             if (!e.target.closest('.pane-action-menu-wrapper')) {
                 this.closePaneActionMenus();
             }
@@ -1157,6 +1181,7 @@ class TerminalMultiplexer {
         document.addEventListener('keydown', (e) => {
             if (e.key !== 'Escape') return;
             this.closeNewPaneMenus();
+            this.closeStorageActionMenus();
             this.closePaneActionMenus();
         });
 
@@ -4855,7 +4880,10 @@ class TerminalMultiplexer {
     updateThemeActionsVisibility(tabName) {
         const themeActions = document.getElementById('settings-theme-actions');
         if (themeActions) {
-            themeActions.style.display = tabName === 'keybar' ? 'none' : '';
+            themeActions.style.display = (tabName === 'keybar' || tabName === 'storage') ? 'none' : '';
+        }
+        if (this.settingsConfigActions) {
+            this.settingsConfigActions.style.display = tabName === 'storage' ? 'none' : '';
         }
     }
 
@@ -4867,7 +4895,9 @@ class TerminalMultiplexer {
         this.updateSettingsCloseButton();
 
         // Set initial theme actions visibility (UI tab is active by default)
-        this.updateThemeActionsVisibility('ui');
+        const activeTab = this.settingsModal.querySelector('.settings-tab.active')?.dataset.tab || 'ui';
+        this.updateThemeActionsVisibility(activeTab);
+        if (activeTab === 'storage') this.loadOpenCodeStorageSummary();
 
         this.openModal(this.settingsModal);
     }
@@ -5036,6 +5066,239 @@ class TerminalMultiplexer {
 
         // Preview the reset
         this.previewSettings();
+    }
+
+    async loadOpenCodeStorageSummary() {
+        try {
+            const response = await fetch(this.url('/api/storage/opencode'));
+            if (!response.ok) throw new Error(await response.text());
+            const storage = await response.json();
+            this.updateOpenCodeStorageSummary(storage);
+            return storage;
+        } catch (error) {
+            console.error('Failed to load OpenCode storage summary:', error);
+            this.updateOpenCodeStorageSummary(null);
+            return null;
+        }
+    }
+
+    updateOpenCodeStorageSummary(storage) {
+        if (this.opencodeStorageKeyCount) {
+            this.opencodeStorageKeyCount.textContent = storage ? String(storage.keyCount || 0) : '-';
+        }
+        if (this.opencodeStorageSize) {
+            this.opencodeStorageSize.textContent = storage ? this.formatBytes(storage.sizeBytes || 0) : '-';
+        }
+        if (this.opencodeStorageVersion) {
+            this.opencodeStorageVersion.textContent = storage ? String(storage.version || 0) : '-';
+        }
+    }
+
+    formatBytes(bytes) {
+        if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+        const units = ['B', 'KB', 'MB'];
+        let value = bytes;
+        let unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.length - 1) {
+            value /= 1024;
+            unitIndex++;
+        }
+        return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    }
+
+    toggleStorageActionMenu(event) {
+        event.stopPropagation();
+        const split = event.currentTarget.closest('.storage-action-split');
+        const menu = split?.querySelector('.storage-action-menu');
+        const toggle = event.currentTarget;
+        if (!menu) return;
+
+        const isOpen = !menu.classList.contains('hidden');
+        this.closeStorageActionMenus(split);
+        menu.classList.toggle('hidden', isOpen);
+        toggle.setAttribute('aria-expanded', String(!isOpen));
+        if (!isOpen) menu.querySelector('.storage-action-option')?.focus();
+    }
+
+    closeStorageActionMenus(exceptSplit = null) {
+        this.settingsModal.querySelectorAll('.storage-action-split').forEach(split => {
+            if (split === exceptSplit) return;
+            split.querySelector('.storage-action-menu')?.classList.add('hidden');
+            split.querySelector('.storage-action-toggle')?.setAttribute('aria-expanded', 'false');
+        });
+    }
+
+    handleStorageActionMenuClick(event) {
+        const option = event.target.closest('.storage-action-option');
+        if (!option) return;
+        event.stopPropagation();
+
+        const split = option.closest('.storage-action-split');
+        this.closeStorageActionMenus();
+        switch (option.dataset.storageAction) {
+            case 'export-clipboard':
+                this.copyOpenCodeStorage();
+                break;
+            case 'export-file':
+                this.downloadOpenCodeStorage();
+                break;
+            case 'import-clipboard':
+                this.pasteOpenCodeStorage();
+                break;
+            case 'import-file':
+                this.opencodeStorageFileInput?.click();
+                break;
+        }
+        split?.querySelector('.storage-action-toggle')?.focus();
+    }
+
+    async copyOpenCodeStorage() {
+        const storage = await this.loadOpenCodeStorageSummary();
+        if (!storage) {
+            this.toastError('Failed to copy OpenCode storage');
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(JSON.stringify(storage, null, 2));
+            this.toastSuccess('OpenCode storage copied');
+        } catch (error) {
+            console.error('Failed to copy OpenCode storage:', error);
+            this.toastError('Failed to copy OpenCode storage');
+        }
+    }
+
+    async downloadOpenCodeStorage() {
+        const storage = await this.loadOpenCodeStorageSummary();
+        if (!storage) {
+            this.toastError('Failed to export OpenCode storage');
+            return;
+        }
+
+        const blob = new Blob([JSON.stringify(storage, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'webmux-opencode-storage.json';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        this.toastSuccess('OpenCode storage downloaded');
+    }
+
+    async importOpenCodeStorage() {
+        const file = this.opencodeStorageFileInput?.files?.[0];
+        if (!file) return;
+
+        try {
+            const text = await file.text();
+            await this.replaceOpenCodeStorageFromText(text);
+            this.toastSuccess('OpenCode storage imported');
+        } catch (error) {
+            console.error('Failed to import OpenCode storage:', error);
+            this.toastError(`Failed to import OpenCode storage: ${error.message}`);
+        } finally {
+            if (this.opencodeStorageFileInput) this.opencodeStorageFileInput.value = '';
+        }
+    }
+
+    async pasteOpenCodeStorage() {
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text.trim()) {
+                this.toastWarning('Clipboard is empty');
+                return;
+            }
+            await this.replaceOpenCodeStorageFromText(text);
+            this.toastSuccess('OpenCode storage pasted');
+        } catch (error) {
+            console.error('Failed to paste OpenCode storage:', error);
+            this.toastError(`Failed to paste OpenCode storage: ${error.message}`);
+        }
+    }
+
+    async replaceOpenCodeStorageFromText(text) {
+        const items = this.parseOpenCodeStorageImport(text);
+        const response = await fetch(this.url('/api/storage/opencode'), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items })
+        });
+        if (!response.ok) throw new Error(await response.text());
+
+        const storage = await response.json();
+        this.updateOpenCodeStorageSummary(storage);
+        return storage;
+    }
+
+    parseOpenCodeStorageImport(text) {
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch {
+            throw new Error('Invalid JSON');
+        }
+        if (!this.isPlainObject(parsed)) {
+            throw new Error('Expected a JSON object');
+        }
+
+        if (Object.prototype.hasOwnProperty.call(parsed, 'items')) {
+            const allowed = new Set(['namespace', 'items', 'version', 'updatedBy', 'keyCount', 'sizeBytes']);
+            for (const key of Object.keys(parsed)) {
+                if (!allowed.has(key)) throw new Error(`Unexpected export field: ${key}`);
+            }
+            if (typeof parsed.namespace !== 'undefined' && parsed.namespace !== 'opencode') {
+                throw new Error('Storage export is not for the opencode namespace');
+            }
+            if (typeof parsed.version !== 'undefined' && (!Number.isInteger(parsed.version) || parsed.version < 0)) {
+                throw new Error('Storage version must be a non-negative integer');
+            }
+            if (typeof parsed.keyCount !== 'undefined' && (!Number.isInteger(parsed.keyCount) || parsed.keyCount < 0)) {
+                throw new Error('Storage keyCount must be a non-negative integer');
+            }
+            if (typeof parsed.sizeBytes !== 'undefined' && (!Number.isInteger(parsed.sizeBytes) || parsed.sizeBytes < 0)) {
+                throw new Error('Storage sizeBytes must be a non-negative integer');
+            }
+            return this.validateOpenCodeStorageItems(parsed.items);
+        }
+
+        return this.validateOpenCodeStorageItems(parsed);
+    }
+
+    validateOpenCodeStorageItems(items) {
+        if (!this.isPlainObject(items)) {
+            throw new Error('Storage items must be an object');
+        }
+
+        const result = {};
+        for (const [key, value] of Object.entries(items)) {
+            if (!key) throw new Error('Storage keys cannot be empty');
+            if (typeof value !== 'string') throw new Error(`Storage value for ${key} must be a string`);
+            result[key] = value;
+        }
+        return result;
+    }
+
+    isPlainObject(value) {
+        return value !== null && typeof value === 'object' && !Array.isArray(value);
+    }
+
+    async clearOpenCodeStorage() {
+        if (!confirm('Clear OpenCode web storage? This resets OpenCode web UI settings and model UI state for webmux.')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(this.url('/api/storage/opencode'), { method: 'DELETE' });
+            if (!response.ok) throw new Error(await response.text());
+            const storage = await response.json();
+            this.updateOpenCodeStorageSummary(storage);
+            this.toastSuccess('OpenCode storage cleared');
+        } catch (error) {
+            console.error('Failed to clear OpenCode storage:', error);
+            this.toastError('Failed to clear OpenCode storage');
+        }
     }
 
     // Keybar Settings

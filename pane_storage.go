@@ -19,7 +19,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -32,7 +36,109 @@ type PaneStorageState struct {
 	UpdatedBy string            `json:"updatedBy,omitempty"`
 }
 
+type paneStorageAdminResponse struct {
+	Namespace string            `json:"namespace"`
+	Items     map[string]string `json:"items"`
+	Version   uint64            `json:"version"`
+	UpdatedBy string            `json:"updatedBy,omitempty"`
+	KeyCount  int               `json:"keyCount"`
+	SizeBytes int               `json:"sizeBytes"`
+}
+
 const maxPaneStorageRequestSize = 10 * 1024 * 1024
+
+func paneStorageDir() string {
+	return filepath.Join(xdgDataHome(), "webmux", "pane-storage")
+}
+
+func paneStorageFilePath(namespace string) (string, error) {
+	name := sanitizePaneStorageNamespace(namespace)
+	if name == "" {
+		return "", fmt.Errorf("invalid storage namespace")
+	}
+	return filepath.Join(paneStorageDir(), name+".json"), nil
+}
+
+func sanitizePaneStorageNamespace(namespace string) string {
+	namespace = strings.TrimSpace(namespace)
+	var b strings.Builder
+	b.Grow(len(namespace))
+	for _, r := range namespace {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	return strings.Trim(b.String(), "._-")
+}
+
+func LoadPaneStorage() map[string]*PaneStorageState {
+	states := make(map[string]*PaneStorageState)
+	entries, err := os.ReadDir(paneStorageDir())
+	if err != nil {
+		return states
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		namespace := strings.TrimSuffix(entry.Name(), ".json")
+		path := filepath.Join(paneStorageDir(), entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("Failed to load pane storage %s: %v", namespace, err)
+			continue
+		}
+		var state PaneStorageState
+		if err := json.Unmarshal(data, &state); err != nil {
+			log.Printf("Failed to parse pane storage %s: %v", namespace, err)
+			continue
+		}
+		if state.Items == nil {
+			state.Items = make(map[string]string)
+		}
+		if state.Version == 0 && len(state.Items) > 0 {
+			state.Version = 1
+		}
+		states[namespace] = &state
+	}
+	return states
+}
+
+func SavePaneStorage(namespace string, state PaneStorageState) error {
+	path, err := paneStorageFilePath(namespace)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0600); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
 
 type paneStorageRequest struct {
 	Operation string            `json:"operation"`
@@ -140,7 +246,92 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 	}
 	s.paneStorageMu.Unlock()
 
+	if err := SavePaneStorage(backendID, snapshot); err != nil {
+		log.Printf("Failed to save pane storage %s: %v", backendID, err)
+	}
+
 	return snapshot
+}
+
+func (s *Server) handleStorageAdmin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	namespace := strings.TrimPrefix(r.URL.Path, "/api/storage/")
+	namespace = strings.Trim(namespace, "/")
+	namespace = sanitizePaneStorageNamespace(namespace)
+	if namespace == "" {
+		http.Error(w, "missing storage namespace", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		snapshot := s.getPaneStorageSnapshot(namespace)
+		json.NewEncoder(w).Encode(paneStorageAdminSnapshot(namespace, snapshot))
+
+	case http.MethodPut:
+		r.Body = http.MaxBytesReader(w, r.Body, maxPaneStorageRequestSize)
+		var req struct {
+			Items map[string]string `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid storage import: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Items == nil {
+			req.Items = make(map[string]string)
+		}
+		snapshot := s.replacePaneStorage(namespace, req.Items, "admin")
+		json.NewEncoder(w).Encode(paneStorageAdminSnapshot(namespace, snapshot))
+
+	case http.MethodDelete:
+		snapshot := s.replacePaneStorage(namespace, map[string]string{}, "admin")
+		json.NewEncoder(w).Encode(paneStorageAdminSnapshot(namespace, snapshot))
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) replacePaneStorage(namespace string, items map[string]string, updatedBy string) PaneStorageState {
+	s.paneStorageMu.Lock()
+	state := s.paneStorage[namespace]
+	if state == nil {
+		state = &PaneStorageState{Items: make(map[string]string)}
+		s.paneStorage[namespace] = state
+	}
+	state.Items = copyPaneStorageItems(items)
+	state.Version++
+	state.UpdatedBy = updatedBy
+	snapshot := PaneStorageState{
+		Items:     copyPaneStorageItems(state.Items),
+		Version:   state.Version,
+		UpdatedBy: state.UpdatedBy,
+	}
+	s.paneStorageMu.Unlock()
+
+	if err := SavePaneStorage(namespace, snapshot); err != nil {
+		log.Printf("Failed to save pane storage %s: %v", namespace, err)
+	}
+	return snapshot
+}
+
+func paneStorageAdminSnapshot(namespace string, state PaneStorageState) paneStorageAdminResponse {
+	items := copyPaneStorageItems(state.Items)
+	data, err := json.Marshal(items)
+	size := 0
+	if err == nil {
+		size = len(data)
+	}
+	return paneStorageAdminResponse{
+		Namespace: namespace,
+		Items:     items,
+		Version:   state.Version,
+		UpdatedBy: state.UpdatedBy,
+		KeyCount:  len(items),
+		SizeBytes: size,
+	}
 }
 
 func copyPaneStorageItems(items map[string]string) map[string]string {

@@ -607,6 +607,16 @@ body.mobile-mode .sidebar-panel {
     background: var(--border);
 }
 
+.btn-danger {
+    background: rgba(243, 139, 168, 0.14);
+    color: var(--danger);
+    border: 1px solid rgba(243, 139, 168, 0.35);
+}
+
+.btn-danger:hover {
+    background: rgba(243, 139, 168, 0.24);
+}
+
 .btn.success {
     background: var(--success);
     color: var(--bg-primary);
@@ -1911,6 +1921,7 @@ body.mobile-mode .sidebar-panel {
 
 .settings-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
 }
 
@@ -2044,6 +2055,107 @@ body.mobile-mode .sidebar-panel {
     color: var(--text-muted);
     font-style: italic;
     margin-bottom: 16px;
+}
+
+.storage-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.storage-summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.storage-summary-item span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.storage-summary-item strong {
+    color: var(--text-primary);
+    font-size: 16px;
+}
+
+.storage-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.storage-action-split {
+    position: relative;
+    display: flex;
+}
+
+.storage-action-split .btn {
+    border-radius: 0;
+}
+
+.storage-action-split .storage-action-main {
+    border-radius: 6px 0 0 6px;
+}
+
+.storage-action-split .storage-action-toggle {
+    width: 34px;
+    flex: 0 0 34px;
+    border-left: 1px solid var(--bg-primary);
+    border-radius: 0 6px 6px 0;
+    padding-inline: 0;
+}
+
+.storage-action-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 35;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 150px;
+    padding: 6px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: 0 12px 32px rgb(0 0 0 / 35%);
+}
+
+.storage-action-menu.hidden {
+    display: none;
+}
+
+.storage-action-option {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.storage-action-option:hover,
+.storage-action-option:focus-visible {
+    background: var(--bg-tertiary);
+    outline: none;
+}
+
+@media (max-width: 520px) {
+    .storage-summary {
+        grid-template-columns: 1fr;
+    }
 }
 
 .settings-footer {
@@ -2201,7 +2313,7 @@ body.mobile-mode .sidebar-panel {
     position: fixed;
     top: 20px;
     right: 20px;
-    z-index: 1000;
+    z-index: 3000;
     display: flex;
     flex-direction: column;
     gap: 8px;

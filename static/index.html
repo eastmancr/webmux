@@ -441,6 +441,7 @@
                         <button class="settings-tab active" data-tab="ui" role="tab" aria-selected="true" aria-controls="ui-settings-panel">UI Colors</button>
                         <button class="settings-tab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="terminal-settings-panel">Terminal Colors</button>
                         <button class="settings-tab" data-tab="keybar" role="tab" aria-selected="false" aria-controls="keybar-settings-panel">Keybar</button>
+                        <button class="settings-tab" data-tab="storage" role="tab" aria-selected="false" aria-controls="storage-settings-panel">Storage</button>
                     </div>
                 </div>
 
@@ -754,6 +755,60 @@
                             </div>
                         </div>
                     </div>
+
+                    <!-- Storage Tab -->
+                    <div class="settings-panel" data-panel="storage" id="storage-settings-panel" role="tabpanel" aria-labelledby="storage-settings-tab">
+                        <div class="settings-section">
+                            <h4>OpenCode Web Storage</h4>
+                            <p class="settings-note-inline">Webmux stores OpenCode web UI settings on the server so they stay consistent across browser origins and survive restarts.</p>
+
+                            <div class="storage-summary" aria-live="polite">
+                                <div class="storage-summary-item">
+                                    <span>Keys</span>
+                                    <strong id="opencode-storage-key-count">-</strong>
+                                </div>
+                                <div class="storage-summary-item">
+                                    <span>Size</span>
+                                    <strong id="opencode-storage-size">-</strong>
+                                </div>
+                                <div class="storage-summary-item">
+                                    <span>Version</span>
+                                    <strong id="opencode-storage-version">-</strong>
+                                </div>
+                            </div>
+
+                            <div class="storage-actions">
+                                <div class="storage-action-split">
+                                    <button id="opencode-storage-export" class="btn btn-secondary storage-action-main">Copy JSON</button>
+                                    <button id="opencode-storage-export-toggle" class="btn btn-secondary storage-action-toggle" aria-label="Choose export method" aria-haspopup="menu" aria-expanded="false">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                            <path fill="currentColor" d="M7 10l5 5 5-5H7z"/>
+                                        </svg>
+                                    </button>
+                                    <div class="storage-action-menu hidden" role="menu" aria-label="OpenCode storage export method">
+                                        <button class="storage-action-option" data-storage-action="export-clipboard" role="menuitem">Copy JSON</button>
+                                        <button class="storage-action-option" data-storage-action="export-file" role="menuitem">Download File</button>
+                                    </div>
+                                </div>
+                                <div class="storage-action-split">
+                                    <button id="opencode-storage-import" class="btn btn-secondary storage-action-main">Paste JSON</button>
+                                    <button id="opencode-storage-import-toggle" class="btn btn-secondary storage-action-toggle" aria-label="Choose import method" aria-haspopup="menu" aria-expanded="false">
+                                        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                                            <path fill="currentColor" d="M7 10l5 5 5-5H7z"/>
+                                        </svg>
+                                    </button>
+                                    <div class="storage-action-menu hidden" role="menu" aria-label="OpenCode storage import method">
+                                        <button class="storage-action-option" data-storage-action="import-clipboard" role="menuitem">Paste JSON</button>
+                                        <button class="storage-action-option" data-storage-action="import-file" role="menuitem">Upload File</button>
+                                    </div>
+                                </div>
+                                <button id="opencode-storage-clear" class="btn btn-danger">Clear Storage</button>
+                                <input id="opencode-storage-file" type="file" accept="application/json,.json" class="hidden">
+                            </div>
+
+                            <p class="settings-note">Import and clear replace the server copy and will be picked up by open OpenCode panes through the normal storage sync.</p>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="settings-footer">
@@ -762,7 +817,7 @@
                             <button id="settings-import" class="btn btn-secondary">Paste</button>
                             <button id="settings-export" class="btn btn-secondary">Copy</button>
                         </div>
-                        <div class="btn-group" role="group" aria-label="Settings actions">
+                        <div id="settings-config-actions" class="btn-group" role="group" aria-label="Settings actions">
                             <button id="settings-reset" class="btn btn-secondary">Reset</button>
                             <button id="settings-save" class="btn btn-primary">Save</button>
                         </div>

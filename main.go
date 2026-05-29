@@ -503,7 +503,7 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 		scratchSubs: make(map[chan string]struct{}),
 		markedFiles: make([]MarkedFile, 0),
 		markedSubs:  make(map[chan string]struct{}),
-		paneStorage: make(map[string]*PaneStorageState),
+		paneStorage: LoadPaneStorage(),
 		uiState: &UIState{
 			Groups:     make([]UIGroup, 0),
 			GroupOrder: make([]string, 0),
@@ -1986,6 +1986,7 @@ func main() {
 	mux.HandleFunc("/api/settings", server.handleSettings)
 	mux.HandleFunc("/api/ui-state", server.handleUIState)
 	mux.HandleFunc("/api/pane-storage/", server.handlePaneStorage)
+	mux.HandleFunc("/api/storage/", server.handleStorageAdmin)
 	mux.HandleFunc("/api/scratch", server.handleScratch)
 	mux.HandleFunc("/api/scratch/events", server.handleScratchEvents)
 	mux.HandleFunc("/api/marked", server.handleMarked)

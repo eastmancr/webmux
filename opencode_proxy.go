@@ -126,12 +126,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var base = markerIndex === -1 ? fallbackBase : window.location.pathname.slice(0, markerIndex + marker.length);
   var storageBase = base.replace(marker, '/api/pane-storage/' + encodeURIComponent(backendID));
   var originalFetch = window.fetch;
-  var originalLocalStorage;
-  try { originalLocalStorage = window.localStorage; } catch (e) {}
 
-  function shouldImportNativeKey(key) {
-    return key && key !== 'multiplexer-ui-state' && key.indexOf('webmux.') !== 0;
-  }
   function sortedStorageKeys() {
     return Object.keys(serverStorage).sort();
   }
@@ -189,19 +184,6 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         replaceStorage(snapshot.items || {}, snapshot.version || 0);
       }
     }).catch(function() {});
-  }
-  function seedStorageFromBrowser() {
-    if (!originalLocalStorage || storageVersion !== 0 || Object.keys(serverStorage).length !== 0) return;
-    var items = {};
-    try {
-      for (var i = 0; i < originalLocalStorage.length; i++) {
-        var key = originalLocalStorage.key(i);
-        if (shouldImportNativeKey(key)) items[key] = originalLocalStorage.getItem(key);
-      }
-    } catch (e) {}
-    if (Object.keys(items).length === 0) return;
-    serverStorage = Object.assign({}, items);
-    postStorageUpdate({ operation: 'seed', items: items });
   }
   var storageShim = {
     get length() { return sortedStorageKeys().length; },
@@ -274,7 +256,6 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   } catch (e) {
     try { window.localStorage = storageShim; } catch (ignored) {}
   }
-  seedStorageFromBrowser();
   setInterval(pollStorage, 1000);
 
   function prefixURL(input) {
