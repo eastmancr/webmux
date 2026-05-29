@@ -1,6 +1,6 @@
 # SSE Clipboard Architecture (Removed)
 
-This documents the SSE-based clipboard synchronization that was removed in favor of polling. Preserved here for reference if real-time push is needed for a future feature.
+This documents the SSE-based clipboard synchronization that was removed. Clipboard notifications now use WebSocket so idle clients do not need to poll.
 
 ## Why SSE Was Removed
 
@@ -31,14 +31,14 @@ Additionally, `navigator.clipboard.readText()` requires both document focus and 
 
 ### Copy (wl-copy / xclip / OSC 52 -> browser clipboard)
 1. CLI shim or OSC 52 sets server-side clipboard via `POST /api/clipboard`
-2. Server increments `clipboardVersion`
-3. Browser polls `GET /api/clipboard/version` every 300ms
-4. When version changes, browser fetches `GET /api/clipboard` and writes to system clipboard via `navigator.clipboard.writeText()` in the focused terminal iframe (postMessage bridge)
+2. Server increments `clipboardVersion` and broadcasts the new version over `/api/clipboard/events` WebSocket connections
+3. Browser fetches `GET /api/clipboard` only when the version changes
+4. Browser writes the content to system clipboard via `navigator.clipboard.writeText()` in the focused terminal iframe (postMessage bridge)
 
 ### Paste (wl-paste / xclip -o -> server clipboard)
 1. CLI shim calls `GET /api/clipboard`
 2. Server returns stored clipboard content directly
 
-## If Real-Time Push Is Needed in the Future
+## Real-Time Push
 
-Use **WebSocket** instead of SSE. WebSocket frames are forwarded immediately by reverse proxies (they upgrade the connection and proxy bidirectionally). The terminal proxy already demonstrates WebSocket handling in `proxyWebSocket`. A dedicated `/api/clipboard/ws` endpoint could replace both the polling and the removed SSE infrastructure.
+Clipboard change notifications use **WebSocket** instead of SSE. WebSocket frames are forwarded immediately by reverse proxies (they upgrade the connection and proxy bidirectionally), avoiding the SSE buffering problem described above without continuous polling.

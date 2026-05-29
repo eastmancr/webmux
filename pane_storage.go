@@ -25,6 +25,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gorilla/websocket"
 )
 
 // SECTION: PANE STORAGE
@@ -34,6 +36,12 @@ type PaneStorageState struct {
 	Items     map[string]string `json:"items"`
 	Version   uint64            `json:"version"`
 	UpdatedBy string            `json:"updatedBy,omitempty"`
+}
+
+type paneStorageEvent struct {
+	Type      string `json:"type"`
+	Version   uint64 `json:"version"`
+	UpdatedBy string `json:"updatedBy,omitempty"`
 }
 
 type paneStorageAdminResponse struct {
@@ -46,6 +54,96 @@ type paneStorageAdminResponse struct {
 }
 
 const maxPaneStorageRequestSize = 10 * 1024 * 1024
+
+var paneStorageUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func (s *Server) notifyPaneStorageSubscribers(backendID string, event paneStorageEvent) {
+	s.paneStorageSubMu.Lock()
+	defer s.paneStorageSubMu.Unlock()
+
+	for ch := range s.paneStorageSubs[backendID] {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func (s *Server) handlePaneStorageEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	backendID := strings.TrimPrefix(r.URL.Path, "/api/pane-storage-events/")
+	backendID = strings.Trim(backendID, "/")
+	if backendID == "" {
+		http.Error(w, "missing backend id", http.StatusBadRequest)
+		return
+	}
+	if !s.manager.BackendExists(backendID) {
+		http.Error(w, "backend not found", http.StatusNotFound)
+		return
+	}
+
+	conn, err := paneStorageUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ch := make(chan paneStorageEvent, 20)
+	s.paneStorageSubMu.Lock()
+	if s.paneStorageSubs[backendID] == nil {
+		s.paneStorageSubs[backendID] = make(map[chan paneStorageEvent]struct{})
+	}
+	s.paneStorageSubs[backendID][ch] = struct{}{}
+	s.paneStorageSubMu.Unlock()
+	defer func() {
+		s.paneStorageSubMu.Lock()
+		delete(s.paneStorageSubs[backendID], ch)
+		if len(s.paneStorageSubs[backendID]) == 0 {
+			delete(s.paneStorageSubs, backendID)
+		}
+		s.paneStorageSubMu.Unlock()
+		close(ch)
+	}()
+
+	snapshot := s.getPaneStorageSnapshot(backendID)
+	if err := conn.WriteJSON(paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy}); err != nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := conn.WriteJSON(event); err != nil {
+				return
+			}
+		case <-done:
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
 
 func paneStorageDir() string {
 	return filepath.Join(xdgDataHome(), "webmux", "pane-storage")
@@ -141,11 +239,12 @@ func SavePaneStorage(namespace string, state PaneStorageState) error {
 }
 
 type paneStorageRequest struct {
-	Operation string            `json:"operation"`
-	Key       string            `json:"key"`
-	Value     string            `json:"value"`
-	Items     map[string]string `json:"items"`
-	ClientID  string            `json:"clientId"`
+	Operation  string               `json:"operation"`
+	Key        string               `json:"key"`
+	Value      string               `json:"value"`
+	Items      map[string]string    `json:"items"`
+	ClientID   string               `json:"clientId"`
+	Operations []paneStorageRequest `json:"operations"`
 }
 
 func (s *Server) handlePaneStorage(w http.ResponseWriter, r *http.Request) {
@@ -204,39 +303,55 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 		state = &PaneStorageState{Items: make(map[string]string)}
 		s.paneStorage[backendID] = state
 	}
+	changed := false
 
-	switch req.Operation {
-	case "seed":
-		if len(state.Items) == 0 && state.Version == 0 {
-			for key, value := range req.Items {
-				state.Items[key] = value
+	operations := []paneStorageRequest{req}
+	if req.Operation == "batch" {
+		operations = req.Operations
+	}
+	for _, op := range operations {
+		clientID := op.ClientID
+		if clientID == "" {
+			clientID = req.ClientID
+		}
+
+		switch op.Operation {
+		case "seed":
+			if len(state.Items) == 0 && state.Version == 0 {
+				for key, value := range op.Items {
+					state.Items[key] = value
+				}
+				if len(op.Items) > 0 {
+					state.Version++
+					state.UpdatedBy = clientID
+					changed = true
+				}
 			}
-			if len(req.Items) > 0 {
+		case "set":
+			if state.Items[op.Key] != op.Value {
+				state.Items[op.Key] = op.Value
 				state.Version++
-				state.UpdatedBy = req.ClientID
+				state.UpdatedBy = clientID
+				changed = true
 			}
+		case "remove":
+			if _, ok := state.Items[op.Key]; ok {
+				delete(state.Items, op.Key)
+				state.Version++
+				state.UpdatedBy = clientID
+				changed = true
+			}
+		case "clear":
+			if len(state.Items) > 0 {
+				state.Items = make(map[string]string)
+				state.Version++
+				state.UpdatedBy = clientID
+				changed = true
+			}
+		default:
+			// Unknown operations are ignored so older pages do not break if a newer
+			// page posts an operation after the server has changed versions.
 		}
-	case "set":
-		if state.Items[req.Key] != req.Value {
-			state.Items[req.Key] = req.Value
-			state.Version++
-			state.UpdatedBy = req.ClientID
-		}
-	case "remove":
-		if _, ok := state.Items[req.Key]; ok {
-			delete(state.Items, req.Key)
-			state.Version++
-			state.UpdatedBy = req.ClientID
-		}
-	case "clear":
-		if len(state.Items) > 0 {
-			state.Items = make(map[string]string)
-			state.Version++
-			state.UpdatedBy = req.ClientID
-		}
-	default:
-		// Unknown operations are ignored so older pages do not break if a newer
-		// page posts an operation after the server has changed versions.
 	}
 
 	snapshot := PaneStorageState{
@@ -248,6 +363,9 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 
 	if err := SavePaneStorage(backendID, snapshot); err != nil {
 		log.Printf("Failed to save pane storage %s: %v", backendID, err)
+	}
+	if changed {
+		s.notifyPaneStorageSubscribers(backendID, paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy})
 	}
 
 	return snapshot
@@ -314,6 +432,7 @@ func (s *Server) replacePaneStorage(namespace string, items map[string]string, u
 	if err := SavePaneStorage(namespace, snapshot); err != nil {
 		log.Printf("Failed to save pane storage %s: %v", namespace, err)
 	}
+	s.notifyPaneStorageSubscribers(namespace, paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy})
 	return snapshot
 }
 

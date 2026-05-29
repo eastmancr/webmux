@@ -187,10 +187,7 @@ func (o *osc52Scanner) ObserveBackendToClient(data []byte) {
 		}
 
 		if clipboardText != "" && len(clipboardText) <= osc52MaxClipboardSize {
-			o.server.clipboardMu.Lock()
-			o.server.clipboard = clipboardText
-			o.server.clipboardVersion++
-			o.server.clipboardMu.Unlock()
+			o.server.setClipboard(clipboardText)
 		}
 
 		o.buf = remaining

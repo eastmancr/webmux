@@ -61,7 +61,7 @@ wm paste                 # paste server clipboard (aliases: wm p, wm v)
 wm init                  # output shell init script (wm wrapper)
 ```
 
-`wm copy` updates a server-side clipboard that browser tabs poll and sync to the system clipboard (permission required).
+`wm copy` updates a server-side clipboard that browser tabs sync to the system clipboard through WebSocket notifications (permission required).
 `wm paste` returns the server-side clipboard; to paste your system clipboard into a terminal, use Ctrl+Shift+V.
 
 In webmux terminals, wrapper scripts for `wl-copy`, `wl-paste`, `xclip`, `xsel`, `pbcopy`, and `pbpaste` call

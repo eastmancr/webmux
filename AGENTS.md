@@ -26,7 +26,7 @@ grep -n "SECTION: SERVER" *.go
 # Settings and configuration
 grep -n "SECTION: SETTINGS" *.go
 
-# Clipboard (polling-based sync, server-side storage)
+# Clipboard (WebSocket-notified sync, server-side storage)
 grep -n "SECTION: CLIPBOARD" *.go
 
 # File operations (upload/download)
@@ -103,7 +103,7 @@ grep -n "mobileMode\|Mobile" static/app.js # Find mobile-specific code
   - `wm` - Built CLI binary (embedded in production builds)
 
 ## Clipboard
-Clipboard sync uses polling (`/api/clipboard/version`) instead of SSE due to reverse proxy buffering issues. See `docs/SSE.md` for the removed SSE architecture and rationale.
+Clipboard sync uses WebSocket notifications (`/api/clipboard/events`) instead of SSE or polling. See `docs/SSE.md` for the removed SSE architecture and rationale.
 
 ## Style
 - Go: Standard library preferred, minimal dependencies

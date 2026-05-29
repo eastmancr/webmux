@@ -164,10 +164,10 @@ class TerminalMultiplexer {
             this.startIconFadeTimer();
         }
 
-        // Start polling for dead panes (also checks connection)
-        this.startPaneHealthCheck();
+        // Subscribe to pane updates (also checks connection)
+        this.connectPaneEvents();
 
-        // Save state periodically and on changes
+        // Save state on changes and page unload
         this.startAutoSave();
 
         // Connect to scratch pad SSE
@@ -176,13 +176,54 @@ class TerminalMultiplexer {
         // Connect to marked files SSE
         this.connectMarkedEvents();
 
-        // Connect to clipboard SSE (for wm copy integration)
+        // Connect to clipboard events (for wm copy integration)
         this.connectClipboardEvents();
     }
 
-    startPaneHealthCheck() {
-        // Check for dead panes every 500ms
-        setInterval(() => this.checkPaneHealth(), 500);
+    connectPaneEvents() {
+        let reconnectTimer = null;
+        const reconnectDelay = 2000;
+
+        const connect = () => {
+            const ws = new WebSocket(this.wsUrl('/api/panes/events'));
+            this.paneSocket = ws;
+
+            ws.onopen = () => {
+                if (!this.serverConnected) {
+                    this.setServerConnected(true);
+                }
+                this.checkPaneHealth({ savePassiveChanges: false });
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    this.handlePaneEvent(JSON.parse(event.data));
+                } catch (err) {
+                    console.warn('Failed to parse pane event:', err);
+                }
+            };
+
+            ws.onclose = () => {
+                if (this.paneSocket === ws) {
+                    this.paneSocket = null;
+                }
+                if (this.serverConnected) {
+                    this.setServerConnected(false);
+                }
+                if (!reconnectTimer) {
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null;
+                        connect();
+                    }, reconnectDelay);
+                }
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
+        };
+
+        connect();
     }
 
     // SECTION: MOBILE
@@ -641,14 +682,12 @@ class TerminalMultiplexer {
     // =================
 
     startAutoSave() {
-        // Save state every 5 seconds
-        setInterval(() => this.saveUIState(), 5000);
-        // Also save on page unload
-        window.addEventListener('beforeunload', () => this.saveUIState());
+        // Save pending UI changes on page unload.
+        window.addEventListener('beforeunload', () => this.saveUIState({ keepalive: true }));
     }
 
-    async saveUIState() {
-        const state = {
+    getUIState() {
+        return {
             groupOrder: this.groupOrder,
             groups: Array.from(this.groups.entries()).map(([id, g]) => ({
                 id: g.id,
@@ -664,14 +703,26 @@ class TerminalMultiplexer {
             customNames: Array.from(this.customNames),
             groupCounter: this.groupCounter
         };
+    }
+
+    markUIStateSaved() {
+        this.lastSavedUIStateJSON = JSON.stringify(this.getUIState());
+    }
+
+    async saveUIState(options = {}) {
+        const state = this.getUIState();
+        const stateJSON = JSON.stringify(state);
+        if (stateJSON === this.lastSavedUIStateJSON) return;
 
         try {
             // Save to server (authoritative source)
             await fetch(this.url('/api/ui-state'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(state)
+                body: stateJSON,
+                keepalive: !!options.keepalive
             });
+            this.lastSavedUIStateJSON = stateJSON;
         } catch (e) {
             console.warn('Failed to save UI state to server:', e);
         }
@@ -738,7 +789,8 @@ class TerminalMultiplexer {
         }
     }
 
-    async checkPaneHealth() {
+    async checkPaneHealth(options = {}) {
+        const savePassiveChanges = options.savePassiveChanges === true;
         try {
             const response = await fetch(this.url('/api/panes'));
 
@@ -767,6 +819,7 @@ class TerminalMultiplexer {
                     const group = this.createGroup([pane.id]);
                     this.addGroupToSidebar(group);
                     needsRefresh = true;
+                    if (savePassiveChanges) this.saveUIState();
                     continue;
                 }
                 if (existing.currentProcess !== pane.currentProcess || existing.name !== pane.name || existing.type !== pane.type) {
@@ -794,7 +847,7 @@ class TerminalMultiplexer {
                         continue;
                     }
                     console.log(`Pane ${paneId} no longer exists on server, cleaning up`);
-                    this.handlePaneDied(paneId);
+                    this.handlePaneDied(paneId, { save: savePassiveChanges });
                 }
             }
 
@@ -811,6 +864,38 @@ class TerminalMultiplexer {
         }
     }
 
+    handlePaneEvent(event) {
+        if (!event || !event.type) return;
+
+        if (event.type === 'ready') return;
+
+        if (event.type === 'deleted') {
+            if (event.paneId) {
+                this.closingPaneIds.delete(event.paneId);
+                this.handlePaneDied(event.paneId, { save: false });
+            }
+            return;
+        }
+
+        const pane = event.pane;
+        if (!pane?.id || this.closingPaneIds.has(pane.id)) return;
+
+        const existing = this.panes.get(pane.id);
+        if (!existing) {
+            pane._addedAt = Date.now();
+            this.panes.set(pane.id, pane);
+            const group = this.createGroup([pane.id]);
+            this.addGroupToSidebar(group);
+            this.refreshSidebar();
+            return;
+        }
+
+        if (existing.currentProcess !== pane.currentProcess || existing.name !== pane.name || existing.type !== pane.type) {
+            Object.assign(existing, pane);
+            this.refreshSidebar();
+        }
+    }
+
     refreshSidebar() {
         // Re-render all groups in the sidebar
         for (const [groupId, group] of this.groups) {
@@ -818,7 +903,8 @@ class TerminalMultiplexer {
         }
     }
 
-    handlePaneDied(paneId) {
+    handlePaneDied(paneId, options = {}) {
+        const shouldSave = options.save !== false;
         // Guard: only process if we still have this pane
         if (!this.panes.has(paneId)) {
             return;
@@ -878,6 +964,7 @@ class TerminalMultiplexer {
             }
             break;
         }
+        if (shouldSave) this.saveUIState();
     }
 
     bindElements() {
@@ -1424,6 +1511,7 @@ class TerminalMultiplexer {
 
             // Clear saved state after reconciliation
             this.savedState = null;
+            this.markUIStateSaved();
         } catch (error) {
             console.error('Failed to load panes:', error);
         }
@@ -1666,9 +1754,16 @@ class TerminalMultiplexer {
         }
         const pane = await this.createPane('', paneType);
         if (pane) {
+            const existingGroup = Array.from(this.groups.values()).find(group => group.paneIds.includes(pane.id));
+            if (existingGroup) {
+                this.activateGroup(existingGroup.id);
+                this.focusPane(pane.id);
+                return;
+            }
             const group = this.createGroup([pane.id]);
             this.addGroupToSidebar(group);
             this.activateGroup(group.id);
+            this.saveUIState();
             requestAnimationFrame(() => {
                 this.updateTerminalLayout();
                 this.focusPane(pane.id);
@@ -1693,8 +1788,7 @@ class TerminalMultiplexer {
 
             // Check for duplicate pane ID (shouldn't happen, but guard against it)
             if (this.panes.has(pane.id)) {
-                console.warn(`Pane ${pane.id} already exists, skipping duplicate`);
-                return null;
+                return this.panes.get(pane.id);
             }
 
             // Mark when this pane was added to the frontend (for race condition protection)
@@ -2863,7 +2957,7 @@ class TerminalMultiplexer {
                 return;
             }
             // iframe reloaded - pane likely died, check immediately
-            this.checkPaneHealth();
+            this.checkPaneHealth({ savePassiveChanges: false });
         });
 
         // Also listen for errors to show loading failed
@@ -4279,16 +4373,36 @@ class TerminalMultiplexer {
 
     startLogsAutoRefresh() {
         this.stopLogsAutoRefresh();
-        this.logsRefreshInterval = setInterval(() => {
-            if (!this.logsModal.classList.contains('hidden')) {
-                this.fetchLogs();
+        const es = new EventSource(this.url('/api/logs/events'));
+        let refreshTimer = null;
+
+        es.onmessage = (event) => {
+            if (event.data === 'init') return;
+            if (this.logsModal.classList.contains('hidden')) return;
+            clearTimeout(refreshTimer);
+            refreshTimer = setTimeout(() => this.fetchLogs(), 250);
+        };
+        es.onerror = () => {
+            es.close();
+            if (!this.logsModal.classList.contains('hidden') && this.logsAutoRefresh.checked) {
+                this.logsRefreshInterval = setTimeout(() => this.startLogsAutoRefresh(), 2000);
             }
-        }, 2000); // Refresh every 2 seconds
+        };
+        this.logsRefreshInterval = {
+            close: () => {
+                clearTimeout(refreshTimer);
+                es.close();
+            }
+        };
     }
 
     stopLogsAutoRefresh() {
         if (this.logsRefreshInterval) {
-            clearInterval(this.logsRefreshInterval);
+            if (typeof this.logsRefreshInterval.close === 'function') {
+                this.logsRefreshInterval.close();
+            } else {
+                clearTimeout(this.logsRefreshInterval);
+            }
             this.logsRefreshInterval = null;
         }
     }
@@ -5996,16 +6110,11 @@ class TerminalMultiplexer {
     }
 
     connectScratchEvents() {
-        // Connect to SSE for scratch pad updates from CLI with exponential backoff
-        let retryDelay = 1000;
-        const maxRetryDelay = 30000;
+        // Connect to SSE for scratch pad updates from CLI.
+        const retryDelay = 2000;
 
         const connect = () => {
             const es = new EventSource(this.url('/api/scratch/events'));
-
-            es.onopen = () => {
-                retryDelay = 1000; // Reset on successful connection
-            };
 
             es.onmessage = (e) => {
                 try {
@@ -6047,9 +6156,7 @@ class TerminalMultiplexer {
 
             es.onerror = () => {
                 es.close();
-                // Exponential backoff reconnect
                 setTimeout(connect, retryDelay);
-                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
             };
 
             this.scratchEventSource = es;
@@ -6076,16 +6183,11 @@ class TerminalMultiplexer {
     // ============
 
     connectMarkedEvents() {
-        // Connect to SSE for marked files updates with exponential backoff
-        let retryDelay = 1000;
-        const maxRetryDelay = 30000;
+        // Connect to SSE for marked files updates.
+        const retryDelay = 2000;
 
         const connect = () => {
             const es = new EventSource(this.url('/api/marked/events'));
-
-            es.onopen = () => {
-                retryDelay = 1000; // Reset on successful connection
-            };
 
             es.onmessage = (e) => {
                 try {
@@ -6099,9 +6201,7 @@ class TerminalMultiplexer {
 
             es.onerror = () => {
                 es.close();
-                // Exponential backoff reconnect
                 setTimeout(connect, retryDelay);
-                retryDelay = Math.min(retryDelay * 2, maxRetryDelay);
             };
 
             this.markedEventSource = es;
@@ -6341,42 +6441,68 @@ class TerminalMultiplexer {
     }
 
     connectClipboardEvents() {
-        // Poll for clipboard changes and write to browser clipboard via iframes.
-        // Polling is used instead of SSE because reverse proxies buffer SSE events.
-        this.startClipboardPolling();
+        this.startClipboardWebSocket();
     }
 
-    // Poll /api/clipboard/version to detect clipboard changes.
-    // When the version changes, fetch the full content and write to system clipboard.
-    // This bypasses reverse proxy SSE buffering since each poll is a complete HTTP request.
-    startClipboardPolling() {
-        let knownVersion = -1;
+    async fetchClipboardAndWrite() {
+        const contentResp = await fetch(this.url('/api/clipboard'));
+        if (!contentResp.ok) return false;
+        const text = await contentResp.text();
+        this.writeClipboardViaIframes(text);
+        return true;
+    }
 
-        const poll = async () => {
-            try {
-                const resp = await fetch(this.url('/api/clipboard/version'));
-                if (!resp.ok) return;
-                const version = parseInt(await resp.text(), 10);
-                if (version !== knownVersion) {
-                    if (knownVersion !== -1) {
-                        // Version changed -- fetch the new content and write to system clipboard
-                        const contentResp = await fetch(this.url('/api/clipboard'));
-                        if (contentResp.ok) {
-                            const text = await contentResp.text();
-                            this.writeClipboardViaIframes(text);
-                        }
+    // Listen for clipboard version changes over WebSocket. The clipboard content
+    // still travels through GET /api/clipboard so large payloads are fetched only
+    // when a version actually changes.
+    startClipboardWebSocket() {
+        let knownVersion = -1;
+        let reconnectTimer = null;
+        const reconnectDelay = 2000;
+
+        const connect = () => {
+            const ws = new WebSocket(this.wsUrl('/api/clipboard/events'));
+            this.clipboardSocket = ws;
+
+            ws.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type !== 'clipboard') return;
+                    const version = Number(data.version);
+                    if (!Number.isSafeInteger(version)) return;
+
+                    if (knownVersion === -1) {
+                        knownVersion = version;
+                        return;
                     }
-                    knownVersion = version;
+                    if (version === knownVersion) return;
+
+                    if (await this.fetchClipboardAndWrite()) {
+                        knownVersion = Math.max(knownVersion, version);
+                    }
+                } catch (err) {
+                    // Ignore malformed messages; reconnect handling is in onclose.
                 }
-            } catch (err) {
-                // Fetch failed (server down, network issue) -- ignore, will retry
-            }
+            };
+
+            ws.onclose = () => {
+                if (this.clipboardSocket === ws) {
+                    this.clipboardSocket = null;
+                }
+                if (!reconnectTimer) {
+                    reconnectTimer = setTimeout(() => {
+                        reconnectTimer = null;
+                        connect();
+                    }, reconnectDelay);
+                }
+            };
+
+            ws.onerror = () => {
+                ws.close();
+            };
         };
 
-        // Poll every 300ms for low latency
-        setInterval(poll, 300);
-        // Initial poll immediately
-        poll();
+        connect();
     }
 
 }

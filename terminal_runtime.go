@@ -475,11 +475,19 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 
 		// Update current foreground process
 		proc := tr.getForegroundProcess(tmuxSession)
+		var paneCopy *Pane
 		sm.mu.Lock()
 		if s, ok := sm.panes[pane.ID]; ok {
-			s.CurrentProcess = proc
+			if s.CurrentProcess != proc {
+				s.CurrentProcess = proc
+				copy := *s
+				paneCopy = &copy
+			}
 		}
 		sm.mu.Unlock()
+		if paneCopy != nil && sm.onPaneChanged != nil {
+			sm.onPaneChanged(paneCopy)
+		}
 
 		time.Sleep(2 * time.Second)
 	}

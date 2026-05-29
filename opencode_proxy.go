@@ -151,7 +151,19 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var markerIndex = window.location.pathname.indexOf(marker);
   var base = markerIndex === -1 ? fallbackBase : window.location.pathname.slice(0, markerIndex + marker.length);
   var storageBase = base.replace(marker, '/api/pane-storage/' + encodeURIComponent(backendID));
+  var storageEventsBase = base.replace(marker, '/api/pane-storage-events/' + encodeURIComponent(backendID));
   var originalFetch = window.fetch;
+  var OriginalWebSocketForStorage = window.WebSocket;
+  var storageSyncIdleDelay = 1000;
+  var storageSyncMaxDelay = 5000;
+  var pendingStorageClear = false;
+  var pendingStorageSets = {};
+  var pendingStorageRemoves = {};
+  var pendingStorageStartedAt = 0;
+  var storageSyncIdleTimer = null;
+  var storageSyncMaxTimer = null;
+  var storageFlushInFlight = false;
+  var pendingSnapshotFetch = false;
 
   function sortedStorageKeys() {
     return Object.keys(serverStorage).sort();
@@ -187,21 +199,100 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
   function postStorageUpdate(payload) {
     payload.clientId = clientID;
-    originalFetch(storageBase, {
+    return originalFetch(storageBase, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
       keepalive: true
     }).then(function(response) {
-      if (!response.ok) return null;
+      if (!response.ok) throw new Error('storage update failed: HTTP ' + response.status);
       return response.json();
     }).then(function(snapshot) {
       if (snapshot && snapshot.version >= storageVersion) {
+        if (hasPendingStorageUpdates()) {
+          storageVersion = snapshot.version || storageVersion;
+          pendingSnapshotFetch = true;
+          return;
+        }
         replaceStorage(snapshot.items || {}, snapshot.version || 0);
       }
-    }).catch(function() {});
+    }).catch(function(err) { throw err; });
   }
-  function pollStorage() {
+  function hasPendingStorageUpdates() {
+    return pendingStorageClear || Object.keys(pendingStorageSets).length > 0 || Object.keys(pendingStorageRemoves).length > 0;
+  }
+  function resetStorageSyncTimers() {
+    if (storageSyncIdleTimer) clearTimeout(storageSyncIdleTimer);
+    if (storageSyncMaxTimer) clearTimeout(storageSyncMaxTimer);
+    storageSyncIdleTimer = null;
+    storageSyncMaxTimer = null;
+  }
+  function scheduleStorageFlush() {
+    if (!pendingStorageStartedAt) {
+      pendingStorageStartedAt = Date.now();
+      storageSyncMaxTimer = setTimeout(flushStorageUpdates, storageSyncMaxDelay);
+    }
+    if (storageSyncIdleTimer) clearTimeout(storageSyncIdleTimer);
+    storageSyncIdleTimer = setTimeout(flushStorageUpdates, storageSyncIdleDelay);
+  }
+  function queueStorageUpdate(payload) {
+    if (payload.operation === 'clear') {
+      pendingStorageClear = true;
+      pendingStorageSets = {};
+      pendingStorageRemoves = {};
+    } else if (payload.operation === 'set') {
+      pendingStorageSets[payload.key] = payload.value;
+      delete pendingStorageRemoves[payload.key];
+    } else if (payload.operation === 'remove') {
+      delete pendingStorageSets[payload.key];
+      if (!pendingStorageClear) pendingStorageRemoves[payload.key] = true;
+    }
+    scheduleStorageFlush();
+  }
+  function takePendingStorageOperations() {
+    var operations = [];
+    if (pendingStorageClear) operations.push({ operation: 'clear' });
+    Object.keys(pendingStorageSets).forEach(function(key) {
+      operations.push({ operation: 'set', key: key, value: pendingStorageSets[key] });
+    });
+    Object.keys(pendingStorageRemoves).forEach(function(key) {
+      operations.push({ operation: 'remove', key: key });
+    });
+    pendingStorageClear = false;
+    pendingStorageSets = {};
+    pendingStorageRemoves = {};
+    pendingStorageStartedAt = 0;
+    resetStorageSyncTimers();
+    return operations;
+  }
+  function flushStorageUpdates() {
+    if (storageFlushInFlight) return;
+    if (!hasPendingStorageUpdates()) {
+      resetStorageSyncTimers();
+      pendingStorageStartedAt = 0;
+      return;
+    }
+    var operations = takePendingStorageOperations();
+    if (operations.length === 0) return;
+    storageFlushInFlight = true;
+    postStorageUpdate({ operation: 'batch', operations: operations }).then(function() {
+      storageFlushInFlight = false;
+      if (hasPendingStorageUpdates()) {
+        scheduleStorageFlush();
+      } else if (pendingSnapshotFetch) {
+        pendingSnapshotFetch = false;
+        fetchStorageSnapshot();
+      }
+    }).catch(function() {
+      storageFlushInFlight = false;
+      operations.forEach(queueStorageUpdate);
+    });
+  }
+  function fetchStorageSnapshot() {
+    if (hasPendingStorageUpdates() || storageFlushInFlight) {
+      pendingSnapshotFetch = true;
+      return;
+    }
     originalFetch(storageBase, { cache: 'no-store' }).then(function(response) {
       if (!response.ok) return null;
       return response.json();
@@ -210,6 +301,41 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         replaceStorage(snapshot.items || {}, snapshot.version || 0);
       }
     }).catch(function() {});
+  }
+  function storageWebSocketURL(path) {
+    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return protocol + '//' + window.location.host + path;
+  }
+  function connectStorageEvents() {
+    var reconnectDelay = 2000;
+    var reconnectTimer = null;
+    var connectedOnce = false;
+    var connect = function() {
+      var ws = new OriginalWebSocketForStorage(storageWebSocketURL(storageEventsBase));
+      ws.onopen = function() {
+        if (connectedOnce) fetchStorageSnapshot();
+        connectedOnce = true;
+      };
+      ws.onmessage = function(event) {
+        try {
+          var message = JSON.parse(event.data);
+          if (message && message.updatedBy === clientID) return;
+          if (message && message.type === 'storage' && message.version > storageVersion) {
+            fetchStorageSnapshot();
+          }
+        } catch (e) {}
+      };
+      ws.onclose = function() {
+        if (!reconnectTimer) {
+          reconnectTimer = setTimeout(function() {
+            reconnectTimer = null;
+            connect();
+          }, reconnectDelay);
+        }
+      };
+      ws.onerror = function() { ws.close(); };
+    };
+    connect();
   }
   var storageShim = {
     get length() { return sortedStorageKeys().length; },
@@ -228,7 +354,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       if (oldValue === value) return;
       serverStorage[key] = value;
       dispatchStorageChange(key, oldValue, value);
-      postStorageUpdate({ operation: 'set', key: key, value: value });
+      queueStorageUpdate({ operation: 'set', key: key, value: value });
     },
     removeItem: function(key) {
       key = String(key);
@@ -236,13 +362,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       var oldValue = serverStorage[key];
       delete serverStorage[key];
       dispatchStorageChange(key, oldValue, null);
-      postStorageUpdate({ operation: 'remove', key: key });
+      queueStorageUpdate({ operation: 'remove', key: key });
     },
     clear: function() {
       var oldStorage = serverStorage;
       serverStorage = {};
       Object.keys(oldStorage).forEach(function(key) { dispatchStorageChange(key, oldStorage[key], null); });
-      postStorageUpdate({ operation: 'clear' });
+      queueStorageUpdate({ operation: 'clear' });
     }
   };
   if (typeof Proxy === 'function') {
@@ -282,7 +408,8 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   } catch (e) {
     try { window.localStorage = storageShim; } catch (ignored) {}
   }
-  setInterval(pollStorage, 1000);
+  connectStorageEvents();
+  window.addEventListener('pagehide', flushStorageUpdates);
 
   function prefixURL(input) {
     if (input instanceof URL) input = input.toString();

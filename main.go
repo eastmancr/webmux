@@ -39,6 +39,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 //go:embed static/*
@@ -53,6 +55,8 @@ type RotatingLogWriter struct {
 	maxLines  int
 	lineCount int
 	mu        sync.Mutex
+	subs      map[chan struct{}]struct{}
+	subMu     sync.Mutex
 }
 
 // Global log writer for the application
@@ -71,6 +75,7 @@ func NewRotatingLogWriter(maxLines int) (*RotatingLogWriter, error) {
 		file:     file,
 		filePath: logPath,
 		maxLines: maxLines,
+		subs:     make(map[chan struct{}]struct{}),
 	}, nil
 }
 
@@ -104,7 +109,34 @@ func (w *RotatingLogWriter) Write(p []byte) (n int, err error) {
 	// Write to file
 	n, err = w.file.Write(p)
 	w.lineCount += newLines
+	w.notifySubscribers()
 	return n, err
+}
+
+func (w *RotatingLogWriter) subscribe() chan struct{} {
+	ch := make(chan struct{}, 10)
+	w.subMu.Lock()
+	w.subs[ch] = struct{}{}
+	w.subMu.Unlock()
+	return ch
+}
+
+func (w *RotatingLogWriter) unsubscribe(ch chan struct{}) {
+	w.subMu.Lock()
+	delete(w.subs, ch)
+	w.subMu.Unlock()
+	close(ch)
+}
+
+func (w *RotatingLogWriter) notifySubscribers() {
+	w.subMu.Lock()
+	defer w.subMu.Unlock()
+	for ch := range w.subs {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // Path returns the log file path
@@ -485,25 +517,34 @@ type Server struct {
 	markedMu         sync.RWMutex
 	markedSubs       map[chan string]struct{} // SSE subscribers for marked files
 	markedSubMu      sync.Mutex
+	paneSubs         map[chan paneEvent]struct{}
+	paneSubMu        sync.Mutex
 	uiState          *UIState // UI layout state (groups, order, etc.)
 	uiStateMu        sync.RWMutex
 	paneStorage      map[string]*PaneStorageState // Browser storage mirrored by shared pane backend
 	paneStorageMu    sync.RWMutex
+	paneStorageSubs  map[string]map[chan paneStorageEvent]struct{}
+	paneStorageSubMu sync.Mutex
 	clipboard        string       // Server-side clipboard for wm CLI
 	clipboardVersion uint64       // Increments on each clipboard change
 	clipboardMu      sync.RWMutex // Protects clipboard and clipboardVersion
+	clipboardSubs    map[chan uint64]struct{}
+	clipboardSubMu   sync.Mutex
 }
 
 // NewServer creates a new server instance
 func NewServer(manager *PaneManager, uploadDir string) *Server {
 	s := &Server{
-		manager:     manager,
-		uploadDir:   uploadDir,
-		settings:    LoadSettings(),
-		scratchSubs: make(map[chan string]struct{}),
-		markedFiles: make([]MarkedFile, 0),
-		markedSubs:  make(map[chan string]struct{}),
-		paneStorage: LoadPaneStorage(),
+		manager:         manager,
+		uploadDir:       uploadDir,
+		settings:        LoadSettings(),
+		scratchSubs:     make(map[chan string]struct{}),
+		markedFiles:     make([]MarkedFile, 0),
+		markedSubs:      make(map[chan string]struct{}),
+		paneSubs:        make(map[chan paneEvent]struct{}),
+		paneStorage:     LoadPaneStorage(),
+		paneStorageSubs: make(map[string]map[chan paneStorageEvent]struct{}),
+		clipboardSubs:   make(map[chan uint64]struct{}),
 		uiState: &UIState{
 			Groups:     make([]UIGroup, 0),
 			GroupOrder: make([]string, 0),
@@ -518,11 +559,93 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 	// Wire up pane cleanup callback
 	manager.onPaneClosed = func(paneID string) {
 		s.removePaneFromUIState(paneID)
+		s.notifyPaneSubscribers(paneEvent{Type: "deleted", PaneID: paneID})
+	}
+	manager.onPaneChanged = func(pane *Pane) {
+		s.notifyPaneSubscribers(paneEvent{Type: "updated", Pane: pane})
 	}
 	return s
 }
 
 // SECTION: API
+
+type paneEvent struct {
+	Type   string `json:"type"`
+	PaneID string `json:"paneId,omitempty"`
+	Pane   *Pane  `json:"pane,omitempty"`
+}
+
+var paneEventsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func (s *Server) notifyPaneSubscribers(event paneEvent) {
+	s.paneSubMu.Lock()
+	defer s.paneSubMu.Unlock()
+
+	for ch := range s.paneSubs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	conn, err := paneEventsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ch := make(chan paneEvent, 20)
+	s.paneSubMu.Lock()
+	s.paneSubs[ch] = struct{}{}
+	s.paneSubMu.Unlock()
+	defer func() {
+		s.paneSubMu.Lock()
+		delete(s.paneSubs, ch)
+		s.paneSubMu.Unlock()
+		close(ch)
+	}()
+
+	if err := conn.WriteJSON(paneEvent{Type: "ready"}); err != nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case event, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := conn.WriteJSON(event); err != nil {
+				return
+			}
+		case <-done:
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
 
 // handleInfo returns server configuration info
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -583,6 +706,47 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write([]byte(logs))
+}
+
+// handleLogEvents emits an event whenever new log content is written.
+func (s *Server) handleLogEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if logWriter == nil {
+		http.Error(w, "Log file not available", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch := logWriter.subscribe()
+	defer logWriter.unsubscribe(ch)
+
+	fmt.Fprintf(w, "data: init\n\n")
+	flusher.Flush()
+
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(w, "data: update\n\n")
+			flusher.Flush()
+		case <-r.Context().Done():
+			return
+		}
+	}
 }
 
 // handleScratch handles scratch pad GET/POST/DELETE
@@ -760,6 +924,35 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 // Maximum clipboard size (10MB - same as OSC 52 payload limit in xterm.js)
 const maxClipboardSize = 10 * 1024 * 1024
 
+var clipboardUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+}
+
+func (s *Server) setClipboard(content string) uint64 {
+	s.clipboardMu.Lock()
+	s.clipboard = content
+	s.clipboardVersion++
+	version := s.clipboardVersion
+	s.clipboardMu.Unlock()
+
+	s.notifyClipboardSubscribers(version)
+	return version
+}
+
+func (s *Server) notifyClipboardSubscribers(version uint64) {
+	s.clipboardSubMu.Lock()
+	defer s.clipboardSubMu.Unlock()
+
+	for ch := range s.clipboardSubs {
+		select {
+		case ch <- version:
+		default:
+		}
+	}
+}
+
 // handleClipboard provides a server-side clipboard that the wm CLI can use
 // This enables clipboard integration without relying on OSC 52 escape sequences
 // POST: set clipboard content (body is the text, max 10MB)
@@ -785,10 +978,7 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		s.clipboardMu.Lock()
-		s.clipboard = string(body)
-		s.clipboardVersion++
-		s.clipboardMu.Unlock()
+		s.setClipboard(string(body))
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -796,8 +986,66 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleClipboardEvents streams clipboard version changes over WebSocket.
+func (s *Server) handleClipboardEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	conn, err := clipboardUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	ch := make(chan uint64, 10)
+	s.clipboardSubMu.Lock()
+	s.clipboardSubs[ch] = struct{}{}
+	s.clipboardSubMu.Unlock()
+	defer func() {
+		s.clipboardSubMu.Lock()
+		delete(s.clipboardSubs, ch)
+		s.clipboardSubMu.Unlock()
+		close(ch)
+	}()
+
+	s.clipboardMu.RLock()
+	version := s.clipboardVersion
+	s.clipboardMu.RUnlock()
+
+	if err := conn.WriteJSON(map[string]any{"type": "clipboard", "version": version}); err != nil {
+		return
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case version, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{"type": "clipboard", "version": version}); err != nil {
+				return
+			}
+		case <-done:
+			return
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
 // handleClipboardVersion returns the current clipboard version number.
-// The browser polls this to detect clipboard changes without SSE buffering issues.
 func (s *Server) handleClipboardVersion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1094,6 +1342,7 @@ func (s *Server) handlePanes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("Pane %s created successfully", pane.ID)
+		s.notifyPaneSubscribers(paneEvent{Type: "created", Pane: pane})
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(pane)
 
@@ -1148,6 +1397,9 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 		if err := s.manager.RenamePane(paneID, req.Name); err != nil {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
+		}
+		if pane, ok := s.manager.GetPane(paneID); ok {
+			s.notifyPaneSubscribers(paneEvent{Type: "updated", Pane: pane})
 		}
 		w.WriteHeader(http.StatusOK)
 
@@ -1978,13 +2230,16 @@ func main() {
 	// API routes
 	mux.HandleFunc("/api/info", server.handleInfo)
 	mux.HandleFunc("/api/logs", server.handleLogs)
+	mux.HandleFunc("/api/logs/events", server.handleLogEvents)
 	mux.HandleFunc("/api/panes", server.handlePanes)
+	mux.HandleFunc("/api/panes/events", server.handlePaneEvents)
 	mux.HandleFunc("/api/panes/", server.handlePane)
 	mux.HandleFunc("/api/upload", server.handleUpload)
 	mux.HandleFunc("/api/download", server.handleDownload)
 	mux.HandleFunc("/api/browse", server.handleBrowse)
 	mux.HandleFunc("/api/settings", server.handleSettings)
 	mux.HandleFunc("/api/ui-state", server.handleUIState)
+	mux.HandleFunc("/api/pane-storage-events/", server.handlePaneStorageEvents)
 	mux.HandleFunc("/api/pane-storage/", server.handlePaneStorage)
 	mux.HandleFunc("/api/storage/", server.handleStorageAdmin)
 	mux.HandleFunc("/api/scratch", server.handleScratch)
@@ -1993,6 +2248,7 @@ func main() {
 	mux.HandleFunc("/api/marked/events", server.handleMarkedEvents)
 	mux.HandleFunc("/api/marked/download", server.handleMarkedDownload)
 	mux.HandleFunc("/api/clipboard", server.handleClipboard)
+	mux.HandleFunc("/api/clipboard/events", server.handleClipboardEvents)
 	mux.HandleFunc("/api/clipboard/version", server.handleClipboardVersion)
 
 	// Pane proxy - forwards requests to pane backends

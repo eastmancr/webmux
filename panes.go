@@ -61,20 +61,21 @@ const (
 
 // PaneManager handles generic pane lifecycle and dispatches type-specific work.
 type PaneManager struct {
-	panes        map[string]*Pane
-	mu           sync.RWMutex
-	createMu     sync.Mutex
-	nextPort     int32
-	nextPaneID   int32
-	startPort    int32 // Initial port to reset to when all panes close
-	shell        string
-	workDir      string // Starting directory for new panes
-	getSettings  func() *Settings
-	serverPort   string // HTTP server port for WEBMUX_PORT env var
-	instanceID   string // Runtime namespace derived from the HTTP server port
-	onPaneClosed func(string)
-	terminal     *TerminalRuntime
-	opencode     *OpenCodeRuntime
+	panes         map[string]*Pane
+	mu            sync.RWMutex
+	createMu      sync.Mutex
+	nextPort      int32
+	nextPaneID    int32
+	startPort     int32 // Initial port to reset to when all panes close
+	shell         string
+	workDir       string // Starting directory for new panes
+	getSettings   func() *Settings
+	serverPort    string // HTTP server port for WEBMUX_PORT env var
+	instanceID    string // Runtime namespace derived from the HTTP server port
+	onPaneClosed  func(string)
+	onPaneChanged func(*Pane)
+	terminal      *TerminalRuntime
+	opencode      *OpenCodeRuntime
 }
 
 // NewPaneManager creates a new pane manager
