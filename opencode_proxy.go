@@ -553,6 +553,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     } catch (e) {}
     return value;
   }
+  function prefixAnchorURL(value) {
+    if (typeof value !== 'string') return value;
+    return prefixAbsoluteURL(value);
+  }
   function prefixStyleAssetURLs(value) {
     if (typeof value !== 'string') return value;
     return value.replace(/url\((['"]?)\/assets\//g, 'url($1' + base + '/assets/');
@@ -572,17 +576,19 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   window.Request.prototype = OriginalRequest.prototype;
   try { Object.setPrototypeOf(window.Request, OriginalRequest); } catch (e) {}
 
-  function patchURLProperty(proto, property) {
+  function patchURLProperty(proto, property, transform) {
     var descriptor = Object.getOwnPropertyDescriptor(proto, property);
     if (!descriptor || !descriptor.set || !descriptor.get) return;
+    transform = transform || prefixElementURL;
     Object.defineProperty(proto, property, {
       configurable: descriptor.configurable,
       enumerable: descriptor.enumerable,
       get: descriptor.get,
-      set: function(value) { return descriptor.set.call(this, prefixElementURL(value)); }
+      set: function(value) { return descriptor.set.call(this, transform(value)); }
     });
   }
 
+  if (window.HTMLAnchorElement) patchURLProperty(HTMLAnchorElement.prototype, 'href', prefixAnchorURL);
   patchURLProperty(HTMLLinkElement.prototype, 'href');
   patchURLProperty(HTMLScriptElement.prototype, 'src');
 
@@ -593,7 +599,9 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var originalSetAttribute = Element.prototype.setAttribute;
   Element.prototype.setAttribute = function(name, value) {
     var lowerName = name.toLowerCase();
-    if ((this.tagName === 'LINK' && lowerName === 'href')
+    if (this.tagName === 'A' && lowerName === 'href') {
+      value = prefixAnchorURL(value);
+    } else if ((this.tagName === 'LINK' && lowerName === 'href')
         || (this.tagName === 'SCRIPT' && lowerName === 'src')
         || (this.tagName === 'IMG' && lowerName === 'src')
         || (this.tagName === 'SOURCE' && lowerName === 'src')
