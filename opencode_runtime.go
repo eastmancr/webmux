@@ -291,11 +291,11 @@ func (or *OpenCodeRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 		ModifyRequest: func(req *http.Request) {
 			rewriteOpenCodeRequestOrigin(targetHost, req)
 		},
-		ModifyResponse: func(_ *Server, resp *http.Response) error {
+		ModifyResponse: func(s *Server, resp *http.Response) error {
+			if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
+				return or.modifyOpenCodeIndexResponse(id, backendID, s.getPaneStorageSnapshot(backendID), resp)
+			}
 			return or.modifyOpenCodeAssetResponse(id, resp)
-		},
-		ModifyIndexResponse: func(s *Server, resp *http.Response) error {
-			return or.modifyOpenCodeIndexResponse(id, backendID, s.getPaneStorageSnapshot(backendID), resp)
 		},
 	}, true
 }

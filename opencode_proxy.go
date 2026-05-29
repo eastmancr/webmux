@@ -164,6 +164,9 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var storageSyncMaxTimer = null;
   var storageFlushInFlight = false;
   var pendingSnapshotFetch = false;
+  var opencodeServerStorageKey = 'opencode.global.dat:server';
+  var canonicalServerID = 'webmux';
+  var currentServerID = window.location.origin;
 
   function sortedStorageKeys() {
     return Object.keys(serverStorage).sort();
@@ -182,7 +185,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
   function replaceStorage(nextItems, nextVersion) {
     var oldStorage = serverStorage;
-    serverStorage = nextItems || {};
+    serverStorage = normalizeOpenCodeStorageItems(nextItems || {});
     storageVersion = nextVersion || 0;
     var seen = {};
     Object.keys(oldStorage).forEach(function(key) {
@@ -236,6 +239,9 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     storageSyncIdleTimer = setTimeout(flushStorageUpdates, storageSyncIdleDelay);
   }
   function queueStorageUpdate(payload) {
+    if (payload.operation === 'set' && payload.key === opencodeServerStorageKey) {
+      payload.value = normalizeOpenCodeServerStorageValue(payload.value);
+    }
     if (payload.operation === 'clear') {
       pendingStorageClear = true;
       pendingStorageSets = {};
@@ -264,6 +270,79 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     pendingStorageStartedAt = 0;
     resetStorageSyncTimers();
     return operations;
+  }
+  function isOpenCodeServerStorageKey(key) {
+    return String(key) === opencodeServerStorageKey;
+  }
+  function copyServerProjects(projects, from, to) {
+    if (!projects || !Object.prototype.hasOwnProperty.call(projects, from)) return;
+    if (!projects[to]) {
+      projects[to] = projects[from];
+      return;
+    }
+    if (!Array.isArray(projects[to]) || !Array.isArray(projects[from])) return;
+    var seen = {};
+    projects[to].forEach(function(project) {
+      if (project && project.worktree) seen[project.worktree] = true;
+    });
+    projects[from].forEach(function(project) {
+      if (!project || !project.worktree || seen[project.worktree]) return;
+      projects[to].push(project);
+      seen[project.worktree] = true;
+    });
+  }
+  function normalizeOpenCodeServerStorageValue(value) {
+    if (typeof value !== 'string' || value === '') return value;
+    try {
+      var parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== 'object') return value;
+      var projects = parsed.projects && typeof parsed.projects === 'object' && !Array.isArray(parsed.projects) ? parsed.projects : {};
+      var lastProject = parsed.lastProject && typeof parsed.lastProject === 'object' && !Array.isArray(parsed.lastProject) ? parsed.lastProject : {};
+      Object.keys(projects).forEach(function(serverID) {
+        if (serverID !== canonicalServerID) copyServerProjects(projects, serverID, canonicalServerID);
+      });
+      var canonicalLastProject = lastProject[canonicalServerID] || lastProject[currentServerID];
+      if (!canonicalLastProject) {
+        var lastProjectKeys = Object.keys(lastProject);
+        if (lastProjectKeys.length > 0) canonicalLastProject = lastProject[lastProjectKeys[0]];
+      }
+      parsed.projects = {};
+      if (projects[canonicalServerID]) parsed.projects[canonicalServerID] = projects[canonicalServerID];
+      parsed.lastProject = {};
+      if (canonicalLastProject) parsed.lastProject[canonicalServerID] = canonicalLastProject;
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
+    }
+  }
+  function materializeOpenCodeServerStorageValue(value) {
+    if (typeof value !== 'string' || currentServerID === canonicalServerID) return value;
+    try {
+      var parsed = JSON.parse(normalizeOpenCodeServerStorageValue(value));
+      if (!parsed || typeof parsed !== 'object') return value;
+      if (parsed.projects && parsed.projects[canonicalServerID] && !parsed.projects[currentServerID]) {
+        parsed.projects[currentServerID] = parsed.projects[canonicalServerID];
+      }
+      if (parsed.lastProject && parsed.lastProject[canonicalServerID] && !parsed.lastProject[currentServerID]) {
+        parsed.lastProject[currentServerID] = parsed.lastProject[canonicalServerID];
+      }
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
+    }
+  }
+  function normalizeOpenCodeStorageItems(items) {
+    if (!items || typeof items !== 'object') return {};
+    if (Object.prototype.hasOwnProperty.call(items, opencodeServerStorageKey)) {
+      items[opencodeServerStorageKey] = normalizeOpenCodeServerStorageValue(items[opencodeServerStorageKey]);
+    }
+    return items;
+  }
+  var originalOpenCodeServerStorageValue = Object.prototype.hasOwnProperty.call(serverStorage, opencodeServerStorageKey) ? serverStorage[opencodeServerStorageKey] : null;
+  serverStorage = normalizeOpenCodeStorageItems(serverStorage);
+  if (originalOpenCodeServerStorageValue !== null
+      && serverStorage[opencodeServerStorageKey] !== originalOpenCodeServerStorageValue) {
+    queueStorageUpdate({ operation: 'set', key: opencodeServerStorageKey, value: serverStorage[opencodeServerStorageKey] });
   }
   function flushStorageUpdates() {
     if (storageFlushInFlight) return;
@@ -345,11 +424,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     },
     getItem: function(key) {
       key = String(key);
-      return Object.prototype.hasOwnProperty.call(serverStorage, key) ? serverStorage[key] : null;
+      if (!Object.prototype.hasOwnProperty.call(serverStorage, key)) return null;
+      return isOpenCodeServerStorageKey(key) ? materializeOpenCodeServerStorageValue(serverStorage[key]) : serverStorage[key];
     },
     setItem: function(key, value) {
       key = String(key);
       value = String(value);
+      if (isOpenCodeServerStorageKey(key)) value = normalizeOpenCodeServerStorageValue(value);
       var oldValue = Object.prototype.hasOwnProperty.call(serverStorage, key) ? serverStorage[key] : null;
       if (oldValue === value) return;
       serverStorage[key] = value;
@@ -476,6 +557,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (typeof value !== 'string') return value;
     return value.replace(/url\((['"]?)\/assets\//g, 'url($1' + base + '/assets/');
   }
+  function prefixHistoryURL(input) {
+    if (typeof input === 'undefined' || input === null) return input;
+    return prefixAbsoluteURL(input instanceof URL ? input.toString() : input);
+  }
 
   var OriginalRequest = window.Request;
   window.Request = function(input, init) {
@@ -566,6 +651,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     }
     return originalFetch.call(this, input, init);
   };
+
+  function patchHistoryMethod(method) {
+    var original = window.history && window.history[method];
+    if (typeof original !== 'function') return;
+    window.history[method] = function(state, title, url) {
+      if (arguments.length > 2) arguments[2] = prefixHistoryURL(url);
+      return original.apply(this, arguments);
+    };
+  }
+  patchHistoryMethod('pushState');
+  patchHistoryMethod('replaceState');
 
   var OriginalEventSource = window.EventSource;
   window.EventSource = function(url, config) {
