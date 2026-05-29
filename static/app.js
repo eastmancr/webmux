@@ -1514,6 +1514,32 @@ class TerminalMultiplexer {
         return true;
     }
 
+    getGroupPaneIdsInVisualOrder(group) {
+        if (!group || !Array.isArray(group.paneIds)) return [];
+
+        const paneIds = group.paneIds;
+        const mapping = Array.isArray(group.cellMapping)
+            ? group.cellMapping
+            : paneIds.map((_, i) => i);
+        const ordered = [];
+        const seen = new Set();
+
+        // cellMapping is pane-position order: top-left through bottom-right.
+        for (const paneIndex of mapping) {
+            if (!Number.isInteger(paneIndex) || paneIndex < 0 || paneIndex >= paneIds.length) continue;
+            const paneId = paneIds[paneIndex];
+            if (!paneId || seen.has(paneId)) continue;
+            ordered.push(paneId);
+            seen.add(paneId);
+        }
+
+        for (const paneId of paneIds) {
+            if (!seen.has(paneId)) ordered.push(paneId);
+        }
+
+        return ordered;
+    }
+
     updateGroupLayout(group) {
         const count = group.paneIds.length;
         group.layout = this.getDefaultLayout(count);
@@ -1835,7 +1861,7 @@ class TerminalMultiplexer {
         const group = this.groups.get(groupId);
         if (!group || group.paneIds.length <= 1) return;
 
-        const paneIds = [...group.paneIds];
+        const paneIds = this.getGroupPaneIdsInVisualOrder(group);
 
         this.groups.delete(groupId);
         document.getElementById(`group-${groupId}`)?.remove();
@@ -1923,7 +1949,7 @@ class TerminalMultiplexer {
             `;
         }
 
-        const paneItems = validPaneIds.map(sid => {
+        const paneItems = this.getGroupPaneIdsInVisualOrder(group).map(sid => {
             const pane = this.panes.get(sid);
             const displayName = this.getPaneDisplayName(pane);
             const processName = this.getPaneProcessDisplay(pane);
@@ -2034,7 +2060,7 @@ class TerminalMultiplexer {
             header.addEventListener('click', (e) => {
                 if (!e.target.closest('.actions')) {
                     // Focus first pane when clicking group header
-                    this.activateGroup(group.id, group.paneIds[0]);
+                    this.activateGroup(group.id, this.getGroupPaneIdsInVisualOrder(group)[0]);
                 }
             });
         }
@@ -2679,9 +2705,10 @@ class TerminalMultiplexer {
         const group = this.groups.get(groupId);
         if (!group) return;
 
+        const visualPaneIds = this.getGroupPaneIdsInVisualOrder(group);
         const paneToFocus = focusPaneId && group.paneIds.includes(focusPaneId)
             ? focusPaneId
-            : group.paneIds[0];
+            : visualPaneIds[0];
 
         const pane = this.panes.get(paneToFocus);
         if (this.activeGroupId === groupId && this.focusedPaneId === paneToFocus && this.isSharedPane(pane)) {
