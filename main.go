@@ -337,6 +337,31 @@ func instanceIDForPort(port string) string {
 	return b.String()
 }
 
+func webmuxInstancesDir() string {
+	return filepath.Join(xdgDataHome(), "webmux", "instances")
+}
+
+func webmuxInstanceDir(instanceID string) string {
+	return filepath.Join(webmuxInstancesDir(), instanceID)
+}
+
+func cleanupEmptyInstanceDirs() {
+	entries, err := os.ReadDir(webmuxInstancesDir())
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(webmuxInstancesDir(), entry.Name())
+		if err := os.Remove(path); err == nil {
+			log.Printf("Cleaned up empty instance directory: %s", path)
+		}
+	}
+}
+
 // xdgStateHome returns XDG_STATE_HOME or ~/.local/state
 // _ for now to silence unused function warning
 func _() string {

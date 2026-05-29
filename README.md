@@ -73,6 +73,7 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 
 - Multiple terminal panes with persistent tmux backing
 - Managed HTTP-backed pane types, including OpenCode when available
+- Shared pane browser storage mirrored server-side for localStorage state
 - Pane management (create, rename, refresh, close, pop out)
 - Split panes (2, 3, or 4 panes per group)
 - Drag-and-drop pane reordering and grouping
@@ -103,6 +104,7 @@ Settings and data follow XDG conventions:
 | `$XDG_CONFIG_HOME/webmux/settings.json` | UI and terminal color settings (defaults to `~/.config`) |
 | `$XDG_DATA_HOME/webmux/uploads` | Default upload directory (defaults to `~/.local/share`) |
 | `$XDG_DATA_HOME/webmux/instances/port-<port>/tmux.sock` | Tmux socket, scoped by webmux server port (defaults to `~/.local/share`) |
+| `$XDG_DATA_HOME/webmux/pane-storage/*.json` | Mirrored browser storage for shared HTTP-backed panes, including OpenCode |
 
 ## License
 

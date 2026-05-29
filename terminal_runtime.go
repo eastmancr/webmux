@@ -130,14 +130,17 @@ func (tr *TerminalRuntime) installShellScripts() {
 	}
 }
 
-func (tr *TerminalRuntime) tmuxSocketPath() string {
+func (tr *TerminalRuntime) tmuxSocketPathCreate() string {
 	// Use XDG_DATA_HOME (~/.local/share) for the socket to avoid issues with
 	// XDG_RUNTIME_DIR being cleaned up by systemd when user has no active panes
 	// (which happens when accessing webmux only via web/VPN without a local login)
-	dataDir := xdgDataHome()
-	socketDir := filepath.Join(dataDir, "webmux", "instances", tr.manager.instanceID)
+	socketDir := webmuxInstanceDir(tr.manager.instanceID)
 	os.MkdirAll(socketDir, 0700)
 	return filepath.Join(socketDir, "tmux.sock")
+}
+
+func (tr *TerminalRuntime) tmuxSocketPath() string {
+	return filepath.Join(webmuxInstanceDir(tr.manager.instanceID), "tmux.sock")
 }
 
 // paneEnvArgs returns tmux -e arguments for setting pane environment variables
@@ -157,7 +160,7 @@ func (tr *TerminalRuntime) paneEnvArgs() []string {
 
 // Start creates the terminal backend for a pane.
 func (tr *TerminalRuntime) Start(pane *Pane) error {
-	tmuxSocket := tr.tmuxSocketPath()
+	tmuxSocket := tr.tmuxSocketPathCreate()
 	tmuxSession := strings.Replace(pane.ID, "pane-", "mux-", 1)
 
 	// Build tmux command with our custom config.
@@ -558,6 +561,8 @@ func (tr *TerminalRuntime) Cleanup() {
 
 	// Kill the entire tmux server on our socket
 	exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run()
+	os.Remove(tmuxSocket)
+	cleanupEmptyInstanceDirs()
 
 	// Clean up temp files
 	if tr.tmuxConfigPath != "" {
