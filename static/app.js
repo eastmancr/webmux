@@ -91,7 +91,9 @@ class TerminalMultiplexer {
             currentX: 0,
             currentY: 0,
             threshold: 50, // Minimum horizontal distance for swipe
-            maxVerticalDeviation: 30 // Maximum vertical movement allowed
+            maxVerticalDeviation: 30, // Maximum vertical movement allowed
+            triggered: false,
+            suppressClick: false
         };
 
         this.init();
@@ -340,6 +342,8 @@ class TerminalMultiplexer {
             // No active pane
             this.mobilePaneName.textContent = 'Panes';
         }
+
+        this.updateMobileKeybarVisibility();
     }
 
     showMobilePanePicker() {
@@ -351,16 +355,15 @@ class TerminalMultiplexer {
     // =======================
 
     setupMobileSwipeNavigation() {
-        // Only setup swipe navigation if we have the mobile toolbar
-        if (!this.mobileBottomToolbar) return;
+        // Only the pane/sidebar button owns quick pane switching gestures.
+        if (!this.mobilePanePicker) return;
 
-        // Track touch events on the mobile toolbar
-        this.mobileBottomToolbar.addEventListener('touchstart', (e) => this.handleSwipeStart(e), { passive: true });
-        this.mobileBottomToolbar.addEventListener('touchmove', (e) => this.handleSwipeMove(e), { passive: true });
-        this.mobileBottomToolbar.addEventListener('touchend', (e) => this.handleSwipeEnd(e));
+        this.mobilePanePicker.addEventListener('touchstart', (e) => this.handleSwipeStart(e), { passive: true });
+        this.mobilePanePicker.addEventListener('touchmove', (e) => this.handleSwipeMove(e), { passive: true });
+        this.mobilePanePicker.addEventListener('touchend', (e) => this.handleSwipeEnd(e));
 
         // Also track mouse events for testing on desktop
-        this.mobileBottomToolbar.addEventListener('mousedown', (e) => this.handleSwipeStart(e));
+        this.mobilePanePicker.addEventListener('mousedown', (e) => this.handleSwipeStart(e));
         document.addEventListener('mousemove', (e) => this.handleSwipeMove(e));
         document.addEventListener('mouseup', (e) => this.handleSwipeEnd(e));
     }
@@ -373,6 +376,7 @@ class TerminalMultiplexer {
         this.swipeState.startY = this.getClientY(e);
         this.swipeState.currentX = this.swipeState.startX;
         this.swipeState.currentY = this.swipeState.startY;
+        this.swipeState.triggered = false;
     }
 
     handleSwipeMove(e) {
@@ -380,18 +384,30 @@ class TerminalMultiplexer {
 
         this.swipeState.currentX = this.getClientX(e);
         this.swipeState.currentY = this.getClientY(e);
+
+        this.triggerMobileSwipeIfReady();
     }
 
     handleSwipeEnd(e) {
         if (!this.swipeState.isTracking) return;
 
+        this.triggerMobileSwipeIfReady();
+        this.swipeState.isTracking = false;
+    }
+
+    triggerMobileSwipeIfReady() {
+        if (this.swipeState.triggered) return;
+
         const deltaX = this.swipeState.currentX - this.swipeState.startX;
         const deltaY = Math.abs(this.swipeState.currentY - this.swipeState.startY);
 
-        this.swipeState.isTracking = false;
-
         // Check if this is a valid horizontal swipe
         if (Math.abs(deltaX) >= this.swipeState.threshold && deltaY <= this.swipeState.maxVerticalDeviation) {
+            this.swipeState.triggered = true;
+            this.swipeState.suppressClick = true;
+            setTimeout(() => {
+                this.swipeState.suppressClick = false;
+            }, 300);
             if (deltaX > 0) {
                 // Swipe right - previous group
                 this.navigateGroup(-1);
@@ -940,10 +956,12 @@ class TerminalMultiplexer {
             if (nextGroupId) {
                 this.activateGroup(nextGroupId);
             } else {
+                this.focusedPaneId = null;
                 this.updateTerminalLayout();
                 this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
+                this.updateMobileKeybarVisibility();
                 // Keep expand button visible when no panes
                 this.clearIconFade?.();
             }
@@ -1447,7 +1465,12 @@ class TerminalMultiplexer {
 
         // Mobile toolbar event handlers
         if (this.mobilePanePicker) {
-            this.mobilePanePicker.addEventListener('click', () => {
+            this.mobilePanePicker.addEventListener('click', (e) => {
+                if (this.swipeState.suppressClick) {
+                    e.preventDefault();
+                    this.swipeState.suppressClick = false;
+                    return;
+                }
                 this.showMobilePanePicker();
             });
         }
@@ -1929,6 +1952,7 @@ class TerminalMultiplexer {
                 this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
+                this.updateMobileKeybarVisibility();
                 this.clearIconFade?.();
             }
         }
@@ -2917,11 +2941,24 @@ class TerminalMultiplexer {
         return pane?.type === 'terminal';
     }
 
-    updateKeybarVisibility() {
+    isKeybarVisibleForCurrentPane() {
         const pane = this.panes.get(this.focusedPaneId);
-        const visible = !!pane && this.paneSupportsKeybarInput(pane) && !this.keybarUserHidden;
+        return !!pane && this.paneSupportsKeybarInput(pane) && !this.keybarUserHidden;
+    }
+
+    updateKeybarVisibility() {
+        const visible = this.isKeybarVisibleForCurrentPane();
         this.keybar.classList.toggle('hidden', !visible);
         this.keybarToggle.classList.toggle('active', visible);
+        this.updateMobileKeybarVisibility();
+    }
+
+    updateMobileKeybarVisibility() {
+        if (!this.mobileBottomToolbar) return;
+
+        const visible = this.isKeybarVisibleForCurrentPane();
+        this.mobileBottomToolbar.classList.toggle('mobile-keybar-hidden', !visible);
+        this.mobileBottomToolbar.querySelector('.mobile-toolbar-center')?.classList.toggle('hidden', !visible);
     }
 
     createPaneIframe(pane) {
@@ -2950,6 +2987,7 @@ class TerminalMultiplexer {
                 try {
                     iframe.contentWindow.addEventListener('focus', () => {
                         this.focusedPaneId = iframe.dataset.paneId;
+                        this.updateKeybarVisibility();
                     });
                 } catch (e) {
                     // Cross-origin fallback - shouldn't happen since we proxy panes
@@ -5628,13 +5666,13 @@ class TerminalMultiplexer {
 
         const buttons = this.getKeybarButtonsFromSettings();
 
-        // Clear existing buttons except the "more" button
+        // Clear existing buttons
         const existingBtns = mobileKeybarScroll.querySelectorAll('.mobile-keybar-btn');
         existingBtns.forEach(btn => btn.remove());
 
-        // Add new buttons (limit to first 5 valid buttons for mobile)
+        // Add every configured button; the mobile keybar scrolls horizontally.
         const validButtons = buttons.filter(keys => this.validateKeyCombo(keys));
-        validButtons.slice(0, 5).forEach(keys => {
+        validButtons.forEach(keys => {
             const btn = document.createElement('button');
             btn.className = 'mobile-keybar-btn';
             btn.dataset.keys = keys;
@@ -5646,14 +5684,7 @@ class TerminalMultiplexer {
             label.textContent = this.formatKeyLabel(keys);
 
             btn.appendChild(label);
-
-            // Insert before the "more" button
-            const moreBtn = mobileKeybarScroll.querySelector('.mobile-keybar-more');
-            if (moreBtn) {
-                mobileKeybarScroll.insertBefore(btn, moreBtn);
-            } else {
-                mobileKeybarScroll.appendChild(btn);
-            }
+            mobileKeybarScroll.appendChild(btn);
         });
 
         // Re-bind event listeners for new buttons
@@ -5694,7 +5725,14 @@ class TerminalMultiplexer {
         }
 
         // Regular key combo - send to active pane
-        this.sendInputToActivePane({ keys: [keys] });
+        await this.sendInputToActivePane({ keys: [keys] });
+        this.refocusKeybarTargetPane();
+    }
+
+    refocusKeybarTargetPane() {
+        if (this.focusedPaneId && this.paneSupportsKeybarInput(this.panes.get(this.focusedPaneId))) {
+            this.focusPane(this.focusedPaneId);
+        }
     }
 
     // Paste server-side clipboard content to active pane
@@ -5713,6 +5751,7 @@ class TerminalMultiplexer {
             await this.sendInputToActivePane({
                 sequence: [{ type: 'text', value: text }]
             });
+            this.refocusKeybarTargetPane();
         } catch (err) {
             console.error('[clipboard] Failed to paste:', err);
             this.toastError('Failed to read clipboard');
@@ -5722,26 +5761,57 @@ class TerminalMultiplexer {
     bindMobileKeybarEvents() {
         if (!this.mobileBottomToolbar) return;
 
-        // Mobile keybar buttons - same functionality as desktop keybar
-        this.mobileBottomToolbar.querySelectorAll('.mobile-keybar-btn').forEach(btn => {
-            btn.addEventListener('pointerdown', (e) => {
-                e.preventDefault();
-            });
-            btn.addEventListener('mousedown', (e) => {
-                e.preventDefault(); // Prevent focus change
-            });
-            btn.addEventListener('touchstart', (e) => {
-                e.preventDefault();
-            }, { passive: false });
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                btn.blur(); // Remove focus so arrow keys don't navigate buttons
-                const keys = btn.dataset.keys;
-                if (keys) {
-                    this.handleKeybarAction(keys);
-                }
-            });
+        const scroll = this.mobileBottomToolbar.querySelector('.mobile-keybar-scroll');
+        if (!scroll || scroll.dataset.mobileKeybarBound === 'true') return;
+
+        scroll.dataset.mobileKeybarBound = 'true';
+        let startX = 0;
+        let startY = 0;
+        let didDrag = false;
+        let activePointerId = null;
+        let activeButton = null;
+
+        scroll.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+            activePointerId = e.pointerId;
+            activeButton = e.target.closest('.mobile-keybar-btn');
+            startX = e.clientX;
+            startY = e.clientY;
+            didDrag = false;
         });
+
+        scroll.addEventListener('pointermove', (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+                didDrag = true;
+            }
+        });
+
+        const resetPointer = (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            activePointerId = null;
+            activeButton = null;
+        };
+
+        const finishPointer = (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            if (!didDrag && activeButton?.dataset.keys) {
+                e.preventDefault();
+                activeButton.blur();
+                this.handleKeybarAction(activeButton.dataset.keys);
+            }
+
+            resetPointer(e);
+        };
+
+        scroll.addEventListener('pointerup', finishPointer);
+        scroll.addEventListener('pointercancel', resetPointer);
     }
 
     async exportSettings() {
