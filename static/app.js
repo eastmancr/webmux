@@ -22,7 +22,7 @@
 
 class TerminalMultiplexer {
     constructor() {
-        // Panes: individual terminal panes from the backend
+        // Panes: individual pane definitions from the backend
         this.panes = new Map();
         this.closingPaneIds = new Set();
 
@@ -134,7 +134,7 @@ class TerminalMultiplexer {
     async init() {
         this.bindElements();
         this.bindEvents();
-        this.setupTerminalDragTarget();
+        this.setupPaneDragTarget();
         this.setupPopoutRegistry();
 
         // Setup mobile mode detection
@@ -957,7 +957,7 @@ class TerminalMultiplexer {
                 this.activateGroup(nextGroupId);
             } else {
                 this.focusedPaneId = null;
-                this.updateTerminalLayout();
+                this.updatePaneLayout();
                 this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
@@ -970,7 +970,7 @@ class TerminalMultiplexer {
                 this.updateGroupLayout(group);
                 this.updateGroupInSidebar(group);
                 if (this.activeGroupId === groupId) {
-                    this.updateTerminalLayout();
+                    this.updatePaneLayout();
                     // Focus the next pane in pane order, or previous if we closed the last
                     const newCm = group.cellMapping || group.paneIds.map((_, i) => i);
                     const nextPanePosition = Math.min(paneIndex, newCm.length - 1);
@@ -992,12 +992,12 @@ class TerminalMultiplexer {
         this.openSettingsBtn = document.getElementById('open-settings');
         this.paneList = document.getElementById('pane-list');
         this.newPaneSplits = Array.from(document.querySelectorAll('.new-pane-split'));
-        this.terminalsContainer = document.getElementById('terminals');
+        this.paneDisplay = document.getElementById('panes');
         this.noPaneEl = document.getElementById('no-pane');
 
         this.sharedIframeLayer = document.createElement('div');
-        this.sharedIframeLayer.className = 'shared-iframe-layer';
-        this.terminalsContainer.appendChild(this.sharedIframeLayer);
+        this.sharedIframeLayer.className = 'shared-pane-iframe-layer';
+        this.paneDisplay.appendChild(this.sharedIframeLayer);
 
         // Modals
         this.uploadModal = document.getElementById('upload-modal');
@@ -1107,7 +1107,7 @@ class TerminalMultiplexer {
         window.addEventListener('resize', () => this.scheduleSharedIframePosition());
         if ('ResizeObserver' in window) {
             this.sharedIframeResizeObserver = new ResizeObserver(() => this.scheduleSharedIframePosition());
-            this.sharedIframeResizeObserver.observe(this.terminalsContainer);
+            this.sharedIframeResizeObserver.observe(this.paneDisplay);
         }
 
         // Sidebar toggle
@@ -1503,7 +1503,10 @@ class TerminalMultiplexer {
             this.panes.clear();
             this.groups.clear();
             this.groupOrder = [];
+            this.activeGroupId = null;
+            this.focusedPaneId = null;
             this.paneList.innerHTML = '';
+            this.resetPaneDisplayDOM();
 
             // Build map of server panes
             const serverPaneMap = new Map();
@@ -1532,6 +1535,8 @@ class TerminalMultiplexer {
                     const firstGroupId = this.groupOrder[0] || this.groups.keys().next().value;
                     if (firstGroupId) this.activateGroup(firstGroupId);
                 }
+            } else {
+                this.updatePaneLayout();
             }
 
             // Clear saved state after reconciliation
@@ -1539,6 +1544,20 @@ class TerminalMultiplexer {
             this.markUIStateSaved();
         } catch (error) {
             console.error('Failed to load panes:', error);
+        }
+    }
+
+    resetPaneDisplayDOM() {
+        this.sharedIframes.forEach(iframe => iframe.remove());
+        this.sharedIframes.clear();
+        if (this.sharedIframePositionFrame) {
+            cancelAnimationFrame(this.sharedIframePositionFrame);
+            this.sharedIframePositionFrame = null;
+        }
+
+        this.paneDisplay.querySelectorAll('.pane-container, .split-divider, #divider-control, #resize-overlay, #drag-capture-overlay').forEach(el => el.remove());
+        if (this.sharedIframeLayer.parentElement !== this.paneDisplay) {
+            this.paneDisplay.appendChild(this.sharedIframeLayer);
         }
     }
 
@@ -1790,7 +1809,7 @@ class TerminalMultiplexer {
             this.activateGroup(group.id);
             this.saveUIState();
             requestAnimationFrame(() => {
-                this.updateTerminalLayout();
+                this.updatePaneLayout();
                 this.focusPane(pane.id);
             });
         }
@@ -1847,7 +1866,7 @@ class TerminalMultiplexer {
                 this.updateGroupLayout(group);
                 this.updateGroupInSidebar(group);
                 if (this.activeGroupId === groupId) {
-                    this.updateTerminalLayout();
+                    this.updatePaneLayout();
                     // Focus the next pane in pane order, or previous if we closed the last
                     const newCm = group.cellMapping || group.paneIds.map((_, i) => i);
                     const nextPanePosition = Math.min(paneIndex, newCm.length - 1);
@@ -1950,7 +1969,7 @@ class TerminalMultiplexer {
                 this.activateGroup(nextGroupId);
             } else {
                 this.focusedPaneId = null;
-                this.updateTerminalLayout();
+                this.updatePaneLayout();
                 this.noPaneEl.classList.remove('hidden');
                 this.keybar.classList.add('hidden');
                 this.keybarToggle.classList.remove('active');
@@ -2423,14 +2442,14 @@ class TerminalMultiplexer {
     }
 
     highlightPaneInGroup(paneId, highlight) {
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         if (container) {
             container.classList.toggle('highlighted', highlight);
         }
     }
 
     clearAllHighlights() {
-        document.querySelectorAll('.terminal-container.highlighted').forEach(el => {
+        document.querySelectorAll('.pane-container.highlighted').forEach(el => {
             el.classList.remove('highlighted');
         });
     }
@@ -2581,7 +2600,7 @@ class TerminalMultiplexer {
         this.setPoppedOutContainers(key);
 
         if (!wasPoppedOut) {
-            this.updateTerminalLayout();
+            this.updatePaneLayout();
         }
     }
 
@@ -2600,7 +2619,7 @@ class TerminalMultiplexer {
             this.pendingPopoutCloses.delete(key);
             this.clearPopoutTracking(key);
             this.clearPoppedOutContainers(key);
-            this.updateTerminalLayout();
+            this.updatePaneLayout();
         }, 1200);
         this.pendingPopoutCloses.set(key, { timer, popoutId: msg.popoutId });
     }
@@ -2657,7 +2676,7 @@ class TerminalMultiplexer {
         }
         if (changed) {
             this.savePopoutStates();
-            this.updateTerminalLayout();
+            this.updatePaneLayout();
         }
     }
 
@@ -2695,7 +2714,7 @@ class TerminalMultiplexer {
     setPoppedOutContainers(popoutKey) {
         for (const pane of this.panes.values()) {
             if (this.getPopoutKey(pane) === popoutKey) {
-                document.getElementById(`terminal-${pane.id}`)?.classList.add('popped-out');
+                document.getElementById(`pane-${pane.id}`)?.classList.add('popped-out');
             }
         }
     }
@@ -2703,7 +2722,7 @@ class TerminalMultiplexer {
     clearPoppedOutContainers(popoutKey) {
         for (const pane of this.panes.values()) {
             if (this.getPopoutKey(pane) === popoutKey) {
-                document.getElementById(`terminal-${pane.id}`)?.classList.remove('popped-out');
+                document.getElementById(`pane-${pane.id}`)?.classList.remove('popped-out');
             }
         }
     }
@@ -2713,7 +2732,7 @@ class TerminalMultiplexer {
         this.clearPopoutTracking(popoutKey);
         this.clearPoppedOutContainers(popoutKey);
         panesToReload.forEach(pane => this.reloadSharedPaneIframe(pane));
-        this.updateTerminalLayout();
+        this.updatePaneLayout();
     }
 
     popOutPane(paneId) {
@@ -2738,7 +2757,7 @@ class TerminalMultiplexer {
             this.clearPopoutTracking(popoutKey);
         }
 
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
 
         const width = 800;
@@ -2767,7 +2786,7 @@ class TerminalMultiplexer {
             this.savePopoutStates();
             container.classList.add('popped-out');
             if (this.isSharedPane(pane)) {
-                this.updateTerminalLayout();
+                this.updatePaneLayout();
             }
 
             const checkClosed = setInterval(() => {
@@ -2780,7 +2799,7 @@ class TerminalMultiplexer {
     }
 
     popInPane(paneId) {
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
 
         const pane = this.panes.get(paneId);
@@ -2805,13 +2824,13 @@ class TerminalMultiplexer {
 
         if (this.isSharedPane(pane)) {
             this.reloadSharedPaneIframe(pane);
-            this.updateTerminalLayout();
+            this.updatePaneLayout();
             return;
         }
 
         const iframe = container.querySelector('iframe');
         if (iframe) {
-            // Reset to the correct terminal URL (not whatever the iframe might have navigated to)
+            // Reset to the correct pane URL (not whatever the iframe might have navigated to)
             const correctSrc = this.url(`/p/${paneId}/`);
             iframe.src = '';
             setTimeout(() => { iframe.src = correctSrc; }, 50);
@@ -2829,11 +2848,11 @@ class TerminalMultiplexer {
                 popoutWindow.location.href = this.url(`/p/${pane.id}/`);
             }
             this.reloadSharedPaneIframe(pane);
-            this.updateTerminalLayout();
+            this.updatePaneLayout();
             return;
         }
 
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         const iframe = container?.querySelector('iframe');
         if (!iframe) return;
 
@@ -2843,7 +2862,7 @@ class TerminalMultiplexer {
         setTimeout(() => { iframe.src = this.url(`/p/${paneId}/`); }, 50);
     }
 
-    // Terminal Rendering
+    // Pane Rendering
     // ==================
 
     activateGroup(groupId, focusPaneId = null) {
@@ -2867,7 +2886,7 @@ class TerminalMultiplexer {
         this.updateSidebarActiveStates();
         this.noPaneEl.classList.add('hidden');
         this.updateKeybarVisibility();
-        this.updateTerminalLayout();
+        this.updatePaneLayout();
 
         // Update mobile toolbar
         this.updateMobileToolbar();
@@ -2891,7 +2910,7 @@ class TerminalMultiplexer {
     }
 
     focusPane(paneId) {
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
 
         // Track focused pane for keybar targeting in split groups
@@ -2903,7 +2922,7 @@ class TerminalMultiplexer {
         if (this.isSharedPane(pane)) {
             const iframe = this.sharedIframes.get(pane.backendId);
             if (!this.isPanePoppedOut(pane) && iframe?.dataset.activePaneId !== paneId) {
-                this.updateTerminalLayout();
+                this.updatePaneLayout();
             }
         }
 
@@ -2965,7 +2984,7 @@ class TerminalMultiplexer {
 
     createPaneIframe(pane) {
         const iframe = document.createElement('iframe');
-        iframe.className = 'terminal-iframe';
+        iframe.className = 'pane-iframe';
         iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
         iframe.allow = 'clipboard-read; clipboard-write';
         iframe.dataset.paneId = pane.id;
@@ -2977,7 +2996,7 @@ class TerminalMultiplexer {
         let initialLoad = true;
         iframe.addEventListener('load', () => {
             iframe.dataset.loaded = 'true';
-            const hostContainer = iframe.closest('.terminal-container') || document.getElementById(`terminal-${iframe.dataset.activePaneId}`);
+            const hostContainer = iframe.closest('.pane-container') || document.getElementById(`pane-${iframe.dataset.activePaneId}`);
             hostContainer?.classList.remove('loading');
 
             if (initialLoad) {
@@ -3003,8 +3022,8 @@ class TerminalMultiplexer {
         // Also listen for errors to show loading failed
         iframe.addEventListener('error', () => {
             if (!iframe.dataset.loaded) {
-                const hostContainer = iframe.closest('.terminal-container') || document.getElementById(`terminal-${iframe.dataset.activePaneId}`);
-                hostContainer?.querySelector('.terminal-loading p')?.replaceChildren('Failed to connect');
+                const hostContainer = iframe.closest('.pane-container') || document.getElementById(`pane-${iframe.dataset.activePaneId}`);
+                hostContainer?.querySelector('.pane-loading p')?.replaceChildren('Failed to connect');
             }
         });
 
@@ -3038,7 +3057,7 @@ class TerminalMultiplexer {
 
         for (const candidate of this.panes.values()) {
             if (candidate.backendId !== pane.backendId) continue;
-            document.getElementById(`terminal-${candidate.id}`)?.classList.add('loading');
+            document.getElementById(`pane-${candidate.id}`)?.classList.add('loading');
         }
     }
 
@@ -3073,7 +3092,7 @@ class TerminalMultiplexer {
         for (const iframe of this.sharedIframes.values()) {
             const paneId = iframe.dataset.activePaneId;
             if (!paneId) continue;
-            const container = document.getElementById(`terminal-${paneId}`);
+            const container = document.getElementById(`pane-${paneId}`);
             if (container?.classList.contains('visible')) {
                 this.positionSharedIframe(iframe, container);
             }
@@ -3086,11 +3105,11 @@ class TerminalMultiplexer {
     }
 
     positionSharedIframe(iframe, container) {
-        const terminalsRect = this.terminalsContainer.getBoundingClientRect();
+        const paneDisplayRect = this.paneDisplay.getBoundingClientRect();
         const containerRect = container.getBoundingClientRect();
 
-        const nextLeft = `${containerRect.left - terminalsRect.left}px`;
-        const nextTop = `${containerRect.top - terminalsRect.top}px`;
+        const nextLeft = `${containerRect.left - paneDisplayRect.left}px`;
+        const nextTop = `${containerRect.top - paneDisplayRect.top}px`;
         const nextWidth = `${containerRect.width}px`;
         const nextHeight = `${containerRect.height}px`;
 
@@ -3134,17 +3153,17 @@ class TerminalMultiplexer {
 
     createPaneContainer(pane) {
         const container = document.createElement('div');
-        container.id = `terminal-${pane.id}`;
-        container.className = 'terminal-container loading';
+        container.id = `pane-${pane.id}`;
+        container.className = 'pane-container loading';
         container.dataset.paneId = pane.id;
 
-        // Loading overlay shown while terminal connects
+        // Loading overlay shown while the pane connects
         const loadingOverlay = document.createElement('div');
-        loadingOverlay.className = 'terminal-loading';
+        loadingOverlay.className = 'pane-loading';
         loadingOverlay.setAttribute('role', 'status');
         loadingOverlay.setAttribute('aria-live', 'polite');
         loadingOverlay.innerHTML = `
-            <div class="terminal-loading-spinner" aria-hidden="true"></div>
+            <div class="pane-loading-spinner" aria-hidden="true"></div>
             <p>Connecting...</p>
         `;
 
@@ -3173,7 +3192,7 @@ class TerminalMultiplexer {
             this.popInPane(pane.id);
         });
 
-        // Focus this terminal when clicking on the container (gaps/borders)
+        // Focus this pane when clicking on the container (gaps/borders)
         container.addEventListener('click', () => {
             this.focusPane(pane.id);
         });
@@ -3184,7 +3203,7 @@ class TerminalMultiplexer {
         }
         container.appendChild(mirrorPlaceholder);
         container.appendChild(placeholder);
-        this.terminalsContainer.appendChild(container);
+        this.paneDisplay.appendChild(container);
 
         if (this.isPanePoppedOut(pane)) {
             container.classList.add('popped-out');
@@ -3194,7 +3213,7 @@ class TerminalMultiplexer {
     }
 
     getPaneContainer(paneId) {
-        let container = document.getElementById(`terminal-${paneId}`);
+        let container = document.getElementById(`pane-${paneId}`);
         if (!container) {
             const pane = this.panes.get(paneId);
             if (pane) {
@@ -3205,7 +3224,7 @@ class TerminalMultiplexer {
     }
 
     removePaneContainer(paneId) {
-        const container = document.getElementById(`terminal-${paneId}`);
+        const container = document.getElementById(`pane-${paneId}`);
         if (container) {
             const iframe = container.querySelector('iframe');
             const backendId = iframe?.dataset.backendId;
@@ -3226,10 +3245,10 @@ class TerminalMultiplexer {
         }
     }
 
-    updateTerminalLayout(keepControlVisible = false) {
+    updatePaneLayout(keepControlVisible = false) {
         const activeGroup = this.groups.get(this.activeGroupId);
 
-        document.querySelectorAll('.terminal-container').forEach(el => {
+        document.querySelectorAll('.pane-container').forEach(el => {
             el.classList.remove('visible', 'pane-0', 'pane-1', 'pane-2', 'pane-3', 'expanded', 'expanded-top', 'expanded-left');
             el.style.gridArea = '';
             el.querySelector('.shared-mirror-placeholder')?.classList.add('hidden');
@@ -3242,9 +3261,9 @@ class TerminalMultiplexer {
         this.ensureResizeOverlay();
 
         if (!activeGroup || activeGroup.paneIds.length === 0) {
-            this.terminalsContainer.className = 'layout-single';
-            this.terminalsContainer.style.gridTemplateColumns = '';
-            this.terminalsContainer.style.gridTemplateRows = '';
+            this.paneDisplay.className = 'layout-single';
+            this.paneDisplay.style.gridTemplateColumns = '';
+            this.paneDisplay.style.gridTemplateRows = '';
             this.noPaneEl?.classList.remove('hidden');
             return;
         }
@@ -3269,11 +3288,11 @@ class TerminalMultiplexer {
             else if (dir === 'left') containerClass += ' left-wide';
         }
 
-        this.terminalsContainer.className = containerClass;
+        this.paneDisplay.className = containerClass;
         this.applyGridTemplate(layout, ratio, paneCount);
 
         // Force reflow to ensure grid template is applied before adding dividers
-        this.terminalsContainer.offsetHeight;
+        this.paneDisplay.offsetHeight;
 
         // cellMapping maps pane positions to pane indices
         // If not set, use identity mapping (pane 0 -> pane 0, etc.)
@@ -3337,7 +3356,7 @@ class TerminalMultiplexer {
         if (!document.getElementById('resize-overlay')) {
             const overlay = document.createElement('div');
             overlay.id = 'resize-overlay';
-            this.terminalsContainer.appendChild(overlay);
+            this.paneDisplay.appendChild(overlay);
         }
     }
 
@@ -3346,24 +3365,24 @@ class TerminalMultiplexer {
 
         switch (layout) {
             case 'single':
-                this.terminalsContainer.style.gridTemplateColumns = '1fr';
-                this.terminalsContainer.style.gridTemplateRows = '1fr';
+                this.paneDisplay.style.gridTemplateColumns = '1fr';
+                this.paneDisplay.style.gridTemplateRows = '1fr';
                 break;
             case 'horizontal':
                 const hRatio = ratio[0];
-                this.terminalsContainer.style.gridTemplateColumns = `${hRatio}fr ${gap} ${1 - hRatio}fr`;
-                this.terminalsContainer.style.gridTemplateRows = '1fr';
+                this.paneDisplay.style.gridTemplateColumns = `${hRatio}fr ${gap} ${1 - hRatio}fr`;
+                this.paneDisplay.style.gridTemplateRows = '1fr';
                 break;
             case 'vertical':
                 const vRatio = ratio[0];
-                this.terminalsContainer.style.gridTemplateColumns = '1fr';
-                this.terminalsContainer.style.gridTemplateRows = `${vRatio}fr ${gap} ${1 - vRatio}fr`;
+                this.paneDisplay.style.gridTemplateColumns = '1fr';
+                this.paneDisplay.style.gridTemplateRows = `${vRatio}fr ${gap} ${1 - vRatio}fr`;
                 break;
             case 'grid':
                 const colRatio = ratio[0];
                 const rowRatio = ratio[1];
-                this.terminalsContainer.style.gridTemplateColumns = `${colRatio}fr ${gap} ${1 - colRatio}fr`;
-                this.terminalsContainer.style.gridTemplateRows = `${rowRatio}fr ${gap} ${1 - rowRatio}fr`;
+                this.paneDisplay.style.gridTemplateColumns = `${colRatio}fr ${gap} ${1 - colRatio}fr`;
+                this.paneDisplay.style.gridTemplateRows = `${rowRatio}fr ${gap} ${1 - rowRatio}fr`;
                 break;
         }
         this.scheduleSharedIframePosition();
@@ -3379,7 +3398,7 @@ class TerminalMultiplexer {
             divider.style.gridRow = '1';
             divider.dataset.axis = 'horizontal';
             divider.dataset.index = '0';
-            this.terminalsContainer.appendChild(divider);
+            this.paneDisplay.appendChild(divider);
             this.bindDividerEvents(divider);
             this.createDividerControl('2-pane', null, keepControlVisible);
         } else if (layout === 'vertical') {
@@ -3389,7 +3408,7 @@ class TerminalMultiplexer {
             divider.style.gridRow = '2';
             divider.dataset.axis = 'vertical';
             divider.dataset.index = '0';
-            this.terminalsContainer.appendChild(divider);
+            this.paneDisplay.appendChild(divider);
             this.bindDividerEvents(divider);
             this.createDividerControl('2-pane', null, keepControlVisible);
         } else if (layout === 'grid') {
@@ -3410,7 +3429,7 @@ class TerminalMultiplexer {
             hDivider.style.gridRow = (is3Pane && !isHorizontalWide) ? (dir === 'bottom' ? '1' : '3') : '1 / -1';
             hDivider.dataset.axis = 'horizontal';
             hDivider.dataset.index = '0';
-            this.terminalsContainer.appendChild(hDivider);
+            this.paneDisplay.appendChild(hDivider);
             this.bindDividerEvents(hDivider);
 
             const vDivider = document.createElement('div');
@@ -3422,7 +3441,7 @@ class TerminalMultiplexer {
             vDivider.style.gridRow = '2';
             vDivider.dataset.axis = 'vertical';
             vDivider.dataset.index = '1';
-            this.terminalsContainer.appendChild(vDivider);
+            this.paneDisplay.appendChild(vDivider);
             this.bindDividerEvents(vDivider);
 
             this.createDividerControl(is3Pane ? '3-pane' : '4-pane', expandedQuadrant, keepControlVisible);
@@ -3460,7 +3479,7 @@ class TerminalMultiplexer {
                 this.handleDividerControlAction('rotate-cw');
             });
 
-            this.terminalsContainer.appendChild(control);
+            this.paneDisplay.appendChild(control);
             this.positionDividerControl();
             return;
         }
@@ -3546,7 +3565,7 @@ class TerminalMultiplexer {
             });
         });
 
-        this.terminalsContainer.appendChild(control);
+        this.paneDisplay.appendChild(control);
         this.positionDividerControl(showImmediately);
     }
 
@@ -3583,7 +3602,7 @@ class TerminalMultiplexer {
 
         const layout = activeGroup.layout;
         const ratio = activeGroup.splitRatio || [0.5, 0.5];
-        const rect = this.terminalsContainer.getBoundingClientRect();
+        const rect = this.paneDisplay.getBoundingClientRect();
 
         // If container isn't laid out yet, retry after a frame
         if (rect.width === 0 || rect.height === 0) {
@@ -3650,11 +3669,11 @@ class TerminalMultiplexer {
                 }
                 break;
 
-            // 3-pane layout changes - remap so terminals only move cardinally
+            // 3-pane layout changes - remap so panes only move cardinally
             //
             // Each 3-pane layout has one wide pane and two small panes.
-            // When switching layouts, we pick the small terminal closest to the
-            // target edge to become wide. Terminals only move cardinally.
+            // When switching layouts, we pick the small pane closest to the
+            // target edge to become wide. Panes only move cardinally.
             //
             // Pane index positions by expandDir:
             //   bottom: pane0=TL, pane1=TR, pane2=wide-bottom
@@ -3681,9 +3700,9 @@ class TerminalMultiplexer {
                         //   right:  pane0=TL, pane1=wide-right, pane2=BL
                         //
                         // Rules for cardinal movement:
-                        // 1. The small terminal on the target edge becomes wide
-                        // 2. The old wide terminal contracts to the opposite edge
-                        // 3. The other small terminal shifts cardinally (not diagonally)
+                        // 1. The small pane on the target edge becomes wide
+                        // 2. The old wide pane contracts to the opposite edge
+                        // 3. The other small pane shifts cardinally (not diagonally)
                         const transitions = {
                             bottom: {
                                 // bottom: TL=0, TR=1, wideB=2
@@ -3738,7 +3757,7 @@ class TerminalMultiplexer {
                 break;
         }
 
-        this.updateTerminalLayout(true); // keepControlVisible = true
+        this.updatePaneLayout(true); // keepControlVisible = true
         this.pinDividerControl(); // Keep menu open after action
         this.updateGroupInSidebar(activeGroup);
         this.saveUIState();
@@ -3762,7 +3781,7 @@ class TerminalMultiplexer {
         overlay.classList.add('active', axis === 'horizontal' ? 'col-resize' : 'row-resize');
         divider.classList.add('dragging');
 
-        const containerRect = this.terminalsContainer.getBoundingClientRect();
+        const containerRect = this.paneDisplay.getBoundingClientRect();
         const totalSize = axis === 'horizontal' ? containerRect.width : containerRect.height;
 
         // Hide control during resize
@@ -3797,7 +3816,7 @@ class TerminalMultiplexer {
     // Split/Drop Handling
     // ===================
 
-    setupTerminalDragTarget() {
+    setupPaneDragTarget() {
         document.addEventListener('dragstart', () => {
             setTimeout(() => {
                 if (this.draggedPaneId) {
@@ -3826,7 +3845,7 @@ class TerminalMultiplexer {
         if (!overlay) {
             overlay = document.createElement('div');
             overlay.id = 'drag-capture-overlay';
-            this.terminalsContainer.appendChild(overlay);
+            this.paneDisplay.appendChild(overlay);
         }
 
         overlay.innerHTML = this.generateDropZones(activeGroup);
@@ -3886,8 +3905,8 @@ class TerminalMultiplexer {
             const layout = activeGroup.layout;
             const r = ratio[0];
             // Show drop zones based on current layout
-            // New pane is always small, splitting the hovered terminal
-            // The OTHER terminal becomes the wide pane
+            // New pane is always small, splitting the hovered pane.
+            // The other pane becomes the wide pane.
             if (layout === 'horizontal') {
                 // Two panes side by side [left=0, right=1]
                 // Dropping on left side: right becomes wide (right-wide)
@@ -3976,7 +3995,7 @@ class TerminalMultiplexer {
             });
         }
 
-        document.querySelectorAll('.terminal-container.drop-target').forEach(el => {
+        document.querySelectorAll('.pane-container.drop-target').forEach(el => {
             el.classList.remove('drop-target');
         });
     }
@@ -4099,7 +4118,7 @@ class TerminalMultiplexer {
             }
         } else if (currentCount === 2) {
             // Handle 2->3 pane transition
-            // New pane is always small, other terminal becomes wide
+            // New pane is always small, other pane becomes wide.
             // paneIds stays in insertion order, cellMapping determines visual positions
             const currentLayout = activeGroup.layout;
             const cm = activeGroup.cellMapping || [0, 1]; // current cell mapping
@@ -4228,14 +4247,14 @@ class TerminalMultiplexer {
             let newCm = [null, null, null, null];
 
             if (isDropOnWide) {
-                // Splitting the wide pane - new terminal goes to target, wide stays in other half
+                // Splitting the wide pane - new pane goes to target, wide stays in other half.
                 const otherWideQuad = wideQuads.find(q => q !== targetQuad);
                 const otherWidePane = quadToPane[otherWideQuad];
 
                 newCm[targetPane] = newIdx;
                 newCm[otherWidePane] = widePaneIndex;
 
-                // Place the two small terminals in their current visual spots
+                // Place the two small panes in their current visual spots
                 if (expandDir === 'bottom') {
                     newCm[0] = cm[0]; // top-left stays
                     newCm[1] = cm[1]; // top-right stays
@@ -4266,9 +4285,9 @@ class TerminalMultiplexer {
                 const otherWideQuad = wideQuads.find(q => q !== wideNewQuad);
                 const otherWidePane = quadToPane[otherWideQuad];
 
-                // New terminal at target
+                // New pane at target
                 newCm[targetPane] = newIdx;
-                // Wide terminal moves
+                // Wide pane moves
                 newCm[wideNewPane] = widePaneIndex;
 
                 // Get current small pane positions
@@ -4304,7 +4323,7 @@ class TerminalMultiplexer {
         }
 
         this.updateGroupInSidebar(activeGroup);
-        this.updateTerminalLayout();
+        this.updatePaneLayout();
         this.hideDragOverlay();
         this.draggedPaneId = null;
         this.saveUIState();
@@ -6559,15 +6578,15 @@ class TerminalMultiplexer {
     // Clipboard Integration
     // =====================
 
-    // Get contentWindows of all terminal iframes in the active group.
+    // Get contentWindows of all pane iframes in the active group.
     // In split views, multiple iframes exist but only one has focus.
     // Clipboard operations are broadcast to all so the focused one can handle them.
-    getAllTerminalIframes() {
+    getAllPaneIframes() {
         const group = this.groups.get(this.activeGroupId);
         if (!group || group.paneIds.length === 0) return [];
         const wins = [];
         for (const paneId of group.paneIds) {
-            const container = document.getElementById(`terminal-${paneId}`);
+            const container = document.getElementById(`pane-${paneId}`);
             if (!container) continue;
             const iframe = container.querySelector('iframe');
             if (iframe?.contentWindow) wins.push(iframe.contentWindow);
@@ -6575,10 +6594,10 @@ class TerminalMultiplexer {
         return wins;
     }
 
-    // Write to browser clipboard via terminal iframes.
+    // Write to browser clipboard via pane iframes.
     // Broadcasts to all iframes; the focused one will succeed.
     writeClipboardViaIframes(text) {
-        const iframes = this.getAllTerminalIframes();
+        const iframes = this.getAllPaneIframes();
         for (const win of iframes) {
             win.postMessage({ type: 'clipboard-write', text: text }, '*');
         }

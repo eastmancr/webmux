@@ -650,8 +650,8 @@ body.mobile-mode .sidebar-panel {
     color: var(--bg-primary);
 }
 
-/* Main terminal area */
-#terminal-container {
+/* Main pane area */
+#pane-display-container {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -660,7 +660,7 @@ body.mobile-mode .sidebar-panel {
     position: relative;
 }
 
-#terminals {
+#panes {
     flex: 1;
     position: relative;
     overflow: hidden;
@@ -670,32 +670,32 @@ body.mobile-mode .sidebar-panel {
     background: var(--border);
 }
 
-/* Layout modes - applied to #terminals */
+/* Layout modes - applied to #panes */
 /* Grid templates are set dynamically via JS for resizable splits */
-#terminals.layout-single {
+#panes.layout-single {
     grid-template-columns: 1fr;
     grid-template-rows: 1fr;
 }
 
 /* Horizontal: 2 columns, 1 row */
-#terminals.layout-horizontal {
+#panes.layout-horizontal {
     grid-template-rows: 1fr;
     /* columns set by JS */
 }
 
 /* Vertical: 1 column, 2 rows */
-#terminals.layout-vertical {
+#panes.layout-vertical {
     grid-template-columns: 1fr;
     /* rows set by JS */
 }
 
 /* Grid: 2x2 */
-#terminals.layout-grid {
+#panes.layout-grid {
     /* both set by JS */
 }
 
-/* Terminal containers - one per pane, never moved */
-.terminal-container {
+/* Pane containers - one per pane, never moved */
+.pane-container {
     position: relative;
     overflow: hidden;
     /* Match ttyd's terminal background color so gaps blend in */
@@ -705,18 +705,18 @@ body.mobile-mode .sidebar-panel {
     display: none; /* Hidden by default */
 }
 
-.terminal-container.visible {
+.pane-container.visible {
     display: block;
 }
 
 /* Pane positioning - accounts for divider columns/rows in grid */
 /* Horizontal layout: col 1 | divider | col 3 */
-.layout-horizontal .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
-.layout-horizontal .terminal-container.pane-1 { grid-column: 3; grid-row: 1; }
+.layout-horizontal .pane-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-horizontal .pane-container.pane-1 { grid-column: 3; grid-row: 1; }
 
 /* Vertical layout: row 1 / divider / row 3 */
-.layout-vertical .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
-.layout-vertical .terminal-container.pane-1 { grid-column: 1; grid-row: 3; }
+.layout-vertical .pane-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-vertical .pane-container.pane-1 { grid-column: 1; grid-row: 3; }
 
 /* Grid layout:
    col 1 | divider | col 3
@@ -724,12 +724,12 @@ body.mobile-mode .sidebar-panel {
    divider  ---       ---
    row 3    [2]       [3]
 */
-.layout-grid .terminal-container.pane-0 { grid-column: 1; grid-row: 1; }
-.layout-grid .terminal-container.pane-1 { grid-column: 3; grid-row: 1; }
-.layout-grid .terminal-container.pane-2 { grid-column: 1; grid-row: 3; }
-.layout-grid .terminal-container.pane-3 { grid-column: 3; grid-row: 3; }
+.layout-grid .pane-container.pane-0 { grid-column: 1; grid-row: 1; }
+.layout-grid .pane-container.pane-1 { grid-column: 3; grid-row: 1; }
+.layout-grid .pane-container.pane-2 { grid-column: 1; grid-row: 3; }
+.layout-grid .pane-container.pane-3 { grid-column: 3; grid-row: 3; }
 
-.terminal-container iframe {
+.pane-container iframe {
     width: 100%;
     height: 100%;
     border: none;
@@ -738,14 +738,14 @@ body.mobile-mode .sidebar-panel {
     background: #1e1e2e;
 }
 
-.shared-iframe-layer {
+.shared-pane-iframe-layer {
     position: absolute;
     inset: 0;
     z-index: 5;
     pointer-events: none;
 }
 
-.shared-iframe-layer iframe {
+.shared-pane-iframe-layer iframe {
     position: absolute;
     border: none;
     display: block;
@@ -808,12 +808,12 @@ body.mobile-mode .sidebar-panel {
     display: none;
 }
 
-/* When terminal is popped out, hide iframe and show placeholder */
-.terminal-container.popped-out iframe {
+/* When a pane is popped out, hide iframe and show placeholder */
+.pane-container.popped-out iframe {
     visibility: hidden;
 }
 
-.terminal-container.popped-out .popout-placeholder.hidden {
+.pane-container.popped-out .popout-placeholder.hidden {
     display: flex !important;
 }
 
@@ -821,39 +821,39 @@ body.mobile-mode .sidebar-panel {
 /* 3-pane layouts - one pane spans full row or column */
 
 /* Bottom wide (pane-2): spans full bottom row - small panes at top */
-#terminals.layout-grid .terminal-container.pane-2.expanded {
+#panes.layout-grid .pane-container.pane-2.expanded {
     grid-column: 1 / 4;
 }
 
 /* Top wide (pane-0): spans full top row - small panes at bottom */
-#terminals.layout-grid .terminal-container.pane-0.expanded-top {
+#panes.layout-grid .pane-container.pane-0.expanded-top {
     grid-column: 1 / 4;
     grid-row: 1;
 }
-#terminals.layout-grid.top-wide .terminal-container.pane-1 {
+#panes.layout-grid.top-wide .pane-container.pane-1 {
     grid-column: 1;
     grid-row: 3;
 }
-#terminals.layout-grid.top-wide .terminal-container.pane-2 {
+#panes.layout-grid.top-wide .pane-container.pane-2 {
     grid-column: 3;
     grid-row: 3;
 }
 
 /* Right wide (pane-1): spans full right column - small panes at left */
-#terminals.layout-grid .terminal-container.pane-1.expanded {
+#panes.layout-grid .pane-container.pane-1.expanded {
     grid-row: 1 / 4;
 }
 
 /* Left wide (pane-0): spans full left column - small panes at right */
-#terminals.layout-grid .terminal-container.pane-0.expanded-left {
+#panes.layout-grid .pane-container.pane-0.expanded-left {
     grid-row: 1 / 4;
     grid-column: 1;
 }
-#terminals.layout-grid.left-wide .terminal-container.pane-1 {
+#panes.layout-grid.left-wide .pane-container.pane-1 {
     grid-column: 3;
     grid-row: 1;
 }
-#terminals.layout-grid.left-wide .terminal-container.pane-2 {
+#panes.layout-grid.left-wide .pane-container.pane-2 {
     grid-column: 3;
     grid-row: 3;
 }
@@ -1344,13 +1344,13 @@ body.mobile-mode .sidebar-panel {
     cursor: row-resize;
 }
 
-/* Highlighted terminal (on sidebar hover) */
-.terminal-container.highlighted {
+/* Highlighted pane (on sidebar hover) */
+.pane-container.highlighted {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
 }
 
-.terminal-container.highlighted::after {
+.pane-container.highlighted::after {
     content: '';
     position: absolute;
     top: 0;
@@ -1364,7 +1364,7 @@ body.mobile-mode .sidebar-panel {
 }
 
 /* Drop target highlight (when dragging to split) */
-.terminal-container.drop-target {
+.pane-container.drop-target {
     outline: 3px solid var(--accent);
     outline-offset: -3px;
 }
@@ -2934,12 +2934,12 @@ body.mobile-mode .sidebar-panel {
     flex: 1;
 }
 
-/* Terminal loading state */
-.terminal-container.loading .terminal-iframe {
+/* Pane loading state */
+.pane-container.loading .pane-iframe {
     visibility: hidden;
 }
 
-.terminal-loading {
+.pane-loading {
     position: absolute;
     top: 0;
     left: 0;
@@ -2955,26 +2955,26 @@ body.mobile-mode .sidebar-panel {
     z-index: 5;
 }
 
-.terminal-container.loading .terminal-loading {
+.pane-container.loading .pane-loading {
     display: flex;
 }
 
-.terminal-loading-spinner {
+.pane-loading-spinner {
     width: 32px;
     height: 32px;
     border: 3px solid var(--border);
     border-top-color: var(--accent);
     border-radius: 50%;
-    animation: terminal-spin 0.8s linear infinite;
+    animation: pane-spin 0.8s linear infinite;
 }
 
-@keyframes terminal-spin {
+@keyframes pane-spin {
     to {
         transform: rotate(360deg);
     }
 }
 
-.terminal-loading p {
+.pane-loading p {
     font-size: 14px;
     margin: 0;
 }
@@ -3165,13 +3165,13 @@ body.mobile-mode .keybar {
         min-height: 40px;
     }
 
-    /* Ensure terminals are reasonably sized on touch devices */
-    .terminal-container {
+    /* Ensure panes are reasonably sized on touch devices */
+    .pane-container {
         min-width: 200px;
         min-height: 150px;
     }
 
-    .terminal-container iframe {
+    .pane-container iframe {
         min-width: 200px;
         min-height: 150px;
     }
@@ -3250,14 +3250,14 @@ body.mobile-mode .sidebar.collapsed #open-keybinds {
     display: block;
 }
 
-/* Mobile terminal container */
-body.mobile-mode #terminal-container {
+/* Mobile pane container */
+body.mobile-mode #pane-display-container {
     margin-left: 0;
 }
 
-/* Mobile terminal iframes - make content larger and more readable */
-body.mobile-mode .terminal-container iframe {
-    /* Increase minimum size to prevent tiny terminals on mobile */
+/* Mobile pane iframes - make content larger and more readable */
+body.mobile-mode .pane-container iframe {
+    /* Increase minimum size to prevent tiny panes on mobile */
     min-width: 200px;
     min-height: 150px;
     /* Ensure proper scaling on mobile */
@@ -3265,25 +3265,25 @@ body.mobile-mode .terminal-container iframe {
     transform-origin: 0 0;
 }
 
-/* Mobile terminal font scaling */
-body.mobile-mode .terminal-container {
-    /* Ensure terminal containers have reasonable minimum sizes */
+/* Mobile pane sizing */
+body.mobile-mode .pane-container {
+    /* Ensure pane containers have reasonable minimum sizes */
     min-width: 200px;
     min-height: 150px;
 }
 
-/* Adjust grid layouts for mobile - give more space to terminals */
-body.mobile-mode #terminals.layout-horizontal .terminal-container.pane-0,
-body.mobile-mode #terminals.layout-horizontal .terminal-container.pane-1 {
+/* Adjust grid layouts for mobile - give more space to panes */
+body.mobile-mode #panes.layout-horizontal .pane-container.pane-0,
+body.mobile-mode #panes.layout-horizontal .pane-container.pane-1 {
     min-width: 200px;
 }
 
-body.mobile-mode #terminals.layout-vertical .terminal-container.pane-0,
-body.mobile-mode #terminals.layout-vertical .terminal-container.pane-1 {
+body.mobile-mode #panes.layout-vertical .pane-container.pane-0,
+body.mobile-mode #panes.layout-vertical .pane-container.pane-1 {
     min-height: 150px;
 }
 
-body.mobile-mode #terminals.layout-grid .terminal-container {
+body.mobile-mode #panes.layout-grid .pane-container {
     min-width: 200px;
     min-height: 150px;
 }
@@ -3355,8 +3355,8 @@ body.mobile-mode .mobile-bottom-toolbar {
     display: flex;
 }
 
-/* Add padding to terminal container to account for fixed bottom toolbar */
-body.mobile-mode #terminal-container {
+/* Add padding to pane display to account for fixed bottom toolbar */
+body.mobile-mode #pane-display-container {
     padding-bottom: 70px;
 }
 
@@ -3936,18 +3936,18 @@ body.mobile-mode .sidebar-icons-spacer {
     }
 
     /* Extra adjustments for very small mobile screens */
-    body.mobile-mode .terminal-container {
+    body.mobile-mode .pane-container {
         min-width: 150px;
         min-height: 120px;
     }
 
-    body.mobile-mode .terminal-container iframe {
+    body.mobile-mode .pane-container iframe {
         min-width: 150px;
         min-height: 120px;
     }
 
-    /* Make terminal panes larger on small screens */
-    body.mobile-mode #terminals.layout-grid .terminal-container {
+    /* Make panes larger on small screens */
+    body.mobile-mode #panes.layout-grid .pane-container {
         min-width: 150px;
         min-height: 120px;
     }
