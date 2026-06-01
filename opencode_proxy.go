@@ -44,6 +44,7 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string,
 
 	content := string(body)
 	content = rewriteRootRelativeHTML(content)
+	content = injectOpenCodeBaseElement(content, paneID)
 	content = injectPanePopoutBridge(content)
 	content = injectOpenCodeProxyScript(content, paneID, backendID, storage, diagnostics)
 
@@ -56,6 +57,18 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string,
 	resp.Header.Set("Expires", "0")
 
 	return nil
+}
+
+func injectOpenCodeBaseElement(content, paneID string) string {
+	script := fmt.Sprintf(`<script>
+(function() {
+  var marker = '/p/' + %q;
+  var markerIndex = window.location.pathname.indexOf(marker);
+  var base = markerIndex === -1 ? marker : window.location.pathname.slice(0, markerIndex + marker.length);
+  document.write('<base href="' + base.replace(/"/g, '%%22') + '/">');
+})();
+</script>`, paneID)
+	return injectIntoHTMLHead(content, script)
 }
 
 func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(_ string, resp *http.Response) error {
