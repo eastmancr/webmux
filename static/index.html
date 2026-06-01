@@ -453,6 +453,7 @@
                         <button class="settings-tab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="terminal-settings-panel">Terminal Colors</button>
                         <button class="settings-tab" data-tab="keybar" role="tab" aria-selected="false" aria-controls="keybar-settings-panel">Keybar</button>
                         <button class="settings-tab" data-tab="storage" role="tab" aria-selected="false" aria-controls="storage-settings-panel">Storage</button>
+                        <button class="settings-tab" data-tab="diagnostics" role="tab" aria-selected="false" aria-controls="diagnostics-settings-panel">Diagnostics</button>
                     </div>
                 </div>
 
@@ -818,6 +819,27 @@
                             </div>
 
                             <p class="settings-note">Import and clear replace the server copy and will be picked up by open OpenCode panes through the normal storage sync.</p>
+                        </div>
+                    </div>
+
+                    <!-- Diagnostics Tab -->
+                    <div class="settings-panel" data-panel="diagnostics" id="diagnostics-settings-panel" role="tabpanel" aria-labelledby="diagnostics-settings-tab">
+                        <div class="settings-section">
+                            <h4>Connection Diagnostics</h4>
+                            <p class="settings-note-inline">Off by default. When enabled, diagnostic events are written to server logs and are visible in the Logs modal and journalctl.</p>
+
+                            <div class="keybar-settings-container">
+                                <label><input type="checkbox" data-setting-bool="diagnostics.enabled"> Enable diagnostics</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.clientEvents"> Browser client events</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.iframeLifecycle"> Iframe lifecycle events</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.proxyWebSockets"> Proxy HTTP/WebSocket lifecycle</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.paneEvents"> Pane metadata WebSocket</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.storageEvents"> OpenCode storage WebSocket</label>
+                                <label><input type="checkbox" data-setting-bool="diagnostics.optionalPing"> Optional diagnostic ping for Webmux-owned sockets</label>
+                                <label>Ping interval seconds <input type="number" min="5" max="300" step="1" data-setting-number="diagnostics.pingIntervalSeconds" aria-label="Diagnostic ping interval seconds"></label>
+                            </div>
+
+                            <p class="settings-note">Use the Logs modal or <code>journalctl -u webmux -f</code> and filter for <code>[diag</code>.</p>
                         </div>
                     </div>
                 </div>

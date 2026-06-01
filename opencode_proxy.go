@@ -29,7 +29,7 @@ import (
 
 var sourceMapCommentRE = regexp.MustCompile(`(?m)\n?(//# sourceMappingURL=.*$|/\*# sourceMappingURL=.*\*/)`)
 
-func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string, storage PaneStorageState, resp *http.Response) error {
+func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string, storage PaneStorageState, diagnostics DiagnosticsSettings, resp *http.Response) error {
 	if resp.StatusCode >= 400 {
 		return nil
 	}
@@ -45,7 +45,7 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string,
 	content := string(body)
 	content = rewriteRootRelativeHTML(content)
 	content = injectPanePopoutBridge(content)
-	content = injectOpenCodeProxyScript(content, paneID, backendID, storage)
+	content = injectOpenCodeProxyScript(content, paneID, backendID, storage, diagnostics)
 
 	writeProxyResponseBody(resp, content)
 	resp.Header.Del("Content-Encoding")
@@ -134,16 +134,21 @@ func rewriteRootRelativeHTML(content string) string {
 	return content
 }
 
-func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneStorageState) string {
+func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneStorageState, diagnostics DiagnosticsSettings) string {
 	storageJSON, err := json.Marshal(storage.Items)
 	if err != nil {
 		storageJSON = []byte("{}")
+	}
+	diagnosticsJSON, err := json.Marshal(diagnostics)
+	if err != nil {
+		diagnosticsJSON = []byte("{}")
 	}
 	script := fmt.Sprintf(`<script>
 (function() {
   var paneID = %q;
   var backendID = %q;
   var serverStorage = %s;
+  var diagnostics = %s;
   var storageVersion = %d;
   var clientID = 'client-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
   var fallbackBase = '/p/' + paneID;
@@ -152,6 +157,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var base = markerIndex === -1 ? fallbackBase : window.location.pathname.slice(0, markerIndex + marker.length);
   var storageBase = base.replace(marker, '/api/pane-storage/' + encodeURIComponent(backendID));
   var storageEventsBase = base.replace(marker, '/api/pane-storage-events/' + encodeURIComponent(backendID));
+  var diagnosticsBase = base.replace(marker, '/api/diagnostics/client');
   var originalFetch = window.fetch;
   var OriginalWebSocketForStorage = window.WebSocket;
   var storageSyncIdleDelay = 1000;
@@ -167,6 +173,28 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var opencodeServerStorageKey = 'opencode.global.dat:server';
   var canonicalServerID = 'webmux';
   var currentServerID = projectsKeyForServerID(window.location.origin);
+
+  function diagnosticsEnabled() {
+    return diagnostics && diagnostics.enabled && diagnostics.clientEvents;
+  }
+  function postDiagnostic(source, event, details) {
+    if (!diagnosticsEnabled()) return;
+    details = details || {};
+    var payload = JSON.stringify([{
+      source: source,
+      event: event,
+      paneId: paneID,
+      backendId: backendID,
+      paneType: 'opencode',
+      path: details.path || '',
+      ageMs: details.ageMs || 0,
+      data: details.data || {}
+    }]);
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon(diagnosticsBase, new Blob([payload], { type: 'application/json' }))) return;
+    } catch (e) {}
+    try { originalFetch(diagnosticsBase, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function() {}); } catch (e) {}
+  }
 
   function sortedStorageKeys() {
     return Object.keys(serverStorage).sort();
@@ -381,14 +409,19 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       pendingSnapshotFetch = true;
       return;
     }
+    postDiagnostic('opencode-storage', 'snapshot-start', { data: { version: storageVersion } });
     originalFetch(storageBase, { cache: 'no-store' }).then(function(response) {
-      if (!response.ok) return null;
+      if (!response.ok) {
+        postDiagnostic('opencode-storage', 'snapshot-http-error', { data: { status: response.status } });
+        return null;
+      }
       return response.json();
     }).then(function(snapshot) {
       if (snapshot && snapshot.version > storageVersion) {
+        postDiagnostic('opencode-storage', 'snapshot-apply', { data: { from: storageVersion, to: snapshot.version } });
         replaceStorage(snapshot.items || {}, snapshot.version || 0);
       }
-    }).catch(function() {});
+    }).catch(function(err) { postDiagnostic('opencode-storage', 'snapshot-error', { data: { error: err && err.message } }); });
   }
   function storageWebSocketURL(path) {
     var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -400,13 +433,21 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     var connectedOnce = false;
     var connect = function() {
       var ws = new OriginalWebSocketForStorage(storageWebSocketURL(storageEventsBase));
+      var diagnosticPingTimer = null;
       ws.onopen = function() {
+        postDiagnostic('opencode-storage-ws', 'open', { path: storageEventsBase });
+        if (diagnostics && diagnostics.enabled && diagnostics.optionalPing) {
+          diagnosticPingTimer = setInterval(function() {
+            if (ws.readyState === OriginalWebSocketForStorage.OPEN) ws.send(JSON.stringify({ type: 'diagnostic-ping', ts: Date.now() }));
+          }, Math.max(5, diagnostics.pingIntervalSeconds || 30) * 1000);
+        }
         if (connectedOnce) fetchStorageSnapshot();
         connectedOnce = true;
       };
       ws.onmessage = function(event) {
         try {
           var message = JSON.parse(event.data);
+          postDiagnostic('opencode-storage-ws', 'message', { data: { version: message && message.version, updatedBy: message && message.updatedBy } });
           if (message && message.updatedBy === clientID) return;
           if (message && message.type === 'storage' && message.version > storageVersion) {
             fetchStorageSnapshot();
@@ -414,6 +455,8 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         } catch (e) {}
       };
       ws.onclose = function() {
+        if (diagnosticPingTimer) clearInterval(diagnosticPingTimer);
+        postDiagnostic('opencode-storage-ws', 'close', { path: storageEventsBase });
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(function() {
             reconnectTimer = null;
@@ -421,7 +464,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
           }, reconnectDelay);
         }
       };
-      ws.onerror = function() { ws.close(); };
+      ws.onerror = function() { postDiagnostic('opencode-storage-ws', 'error', { path: storageEventsBase }); ws.close(); };
     };
     connect();
   }
@@ -574,6 +617,18 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (typeof input === 'undefined' || input === null) return input;
     return prefixAbsoluteURL(input instanceof URL ? input.toString() : input);
   }
+  function diagnosticFetchInfo(input, init) {
+    try {
+      var method = (init && init.method) || (input && input.method) || 'GET';
+      var raw = input instanceof OriginalRequest ? input.url : input;
+      var url = new URL(raw instanceof URL ? raw.toString() : String(raw), window.location.href);
+      if (url.pathname.indexOf('/api/diagnostics/client') !== -1) return null;
+      if (url.pathname.indexOf('/assets/') !== -1 || /\.(css|js|png|svg|ico|woff2?)$/.test(url.pathname)) return null;
+      return { method: String(method).toUpperCase(), path: url.pathname + url.search };
+    } catch (e) {
+      return null;
+    }
+  }
 
   var OriginalRequest = window.Request;
   window.Request = function(input, init) {
@@ -666,7 +721,21 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (!(input instanceof OriginalRequest)) {
       input = prefixAbsoluteURL(input);
     }
-    return originalFetch.call(this, input, init);
+    var info = diagnosticFetchInfo(input, init);
+    var startedAt = Date.now();
+    if (info && info.method !== 'GET') postDiagnostic('opencode-fetch', 'start', { path: info.path, data: { method: info.method } });
+    return originalFetch.call(this, input, init).then(function(response) {
+      if (info) {
+        var age = Date.now() - startedAt;
+        if (!response.ok || age > 2000 || info.method !== 'GET') {
+          postDiagnostic('opencode-fetch', 'headers', { path: info.path, ageMs: age, data: { method: info.method, status: response.status, ok: response.ok } });
+        }
+      }
+      return response;
+    }).catch(function(err) {
+      if (info) postDiagnostic('opencode-fetch', 'error', { path: info.path, ageMs: Date.now() - startedAt, data: { method: info.method, error: err && err.message } });
+      throw err;
+    });
   };
 
   function patchHistoryMethod(method) {
@@ -682,7 +751,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
 
   var OriginalEventSource = window.EventSource;
   window.EventSource = function(url, config) {
-    return new OriginalEventSource(prefixAbsoluteURL(url), config);
+    var prefixed = prefixAbsoluteURL(url);
+    var es = new OriginalEventSource(prefixed, config);
+    try {
+      es.addEventListener('open', function() { postDiagnostic('opencode-eventsource', 'open', { path: prefixed }); });
+      es.addEventListener('error', function() { postDiagnostic('opencode-eventsource', 'error', { path: prefixed }); });
+    } catch (e) {}
+    return es;
   };
   window.EventSource.prototype = OriginalEventSource.prototype;
 
@@ -694,9 +769,14 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
 
   var OriginalWebSocket = window.WebSocket;
   window.WebSocket = function(url, protocols) {
-    url = prefixWebSocketURL(url);
-    if (protocols) return new OriginalWebSocket(url, protocols);
-    return new OriginalWebSocket(url);
+    var startedAt = Date.now();
+    var prefixed = prefixWebSocketURL(url);
+    postDiagnostic('opencode-ws', 'construct', { path: prefixed });
+    var ws = protocols ? new OriginalWebSocket(prefixed, protocols) : new OriginalWebSocket(prefixed);
+    ws.addEventListener('open', function() { postDiagnostic('opencode-ws', 'open', { path: prefixed, ageMs: Date.now() - startedAt }); });
+    ws.addEventListener('close', function(event) { postDiagnostic('opencode-ws', 'close', { path: prefixed, ageMs: Date.now() - startedAt, data: { code: event.code, reason: event.reason, clean: event.wasClean } }); });
+    ws.addEventListener('error', function() { postDiagnostic('opencode-ws', 'error', { path: prefixed, ageMs: Date.now() - startedAt }); });
+    return ws;
   };
   window.WebSocket.prototype = OriginalWebSocket.prototype;
   window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
@@ -710,7 +790,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return originalOpen.apply(this, arguments);
   };
 })();
-</script>`, paneID, backendID, string(storageJSON), storage.Version)
+</script>`, paneID, backendID, string(storageJSON), string(diagnosticsJSON), storage.Version)
 
 	return injectIntoHTMLHead(content, script)
 }

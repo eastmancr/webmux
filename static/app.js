@@ -70,6 +70,8 @@ class TerminalMultiplexer {
         // Server connection state
         this.serverConnected = true;
         this.connectionCheckInterval = null;
+        this.diagnosticQueue = [];
+        this.diagnosticFlushTimer = null;
         this.paneTypes = [
             { type: 'terminal', label: 'Terminal', backendScope: 'dedicated', supportsKeybar: true, available: true },
             { type: 'opencode', label: 'OpenCode', backendScope: 'shared', supportsKeybar: false, available: true },
@@ -171,6 +173,7 @@ class TerminalMultiplexer {
 
         // Save state on changes and page unload
         this.startAutoSave();
+        window.addEventListener('pagehide', () => this.flushDiagnostics());
 
         // Connect to scratch pad SSE
         this.connectScratchEvents();
@@ -188,9 +191,17 @@ class TerminalMultiplexer {
 
         const connect = () => {
             const ws = new WebSocket(this.wsUrl('/api/panes/events'));
+            let diagnosticPingTimer = null;
             this.paneSocket = ws;
 
             ws.onopen = () => {
+                this.logDiagnostic('pane-events', 'open', { path: '/api/panes/events' });
+                if (this.settings?.diagnostics?.enabled && this.settings.diagnostics.optionalPing) {
+                    const interval = Math.max(5, this.settings.diagnostics.pingIntervalSeconds || 30) * 1000;
+                    diagnosticPingTimer = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'diagnostic-ping', ts: Date.now() }));
+                    }, interval);
+                }
                 if (!this.serverConnected) {
                     this.setServerConnected(true);
                 }
@@ -206,6 +217,8 @@ class TerminalMultiplexer {
             };
 
             ws.onclose = () => {
+                if (diagnosticPingTimer) clearInterval(diagnosticPingTimer);
+                this.logDiagnostic('pane-events', 'close', { path: '/api/panes/events' });
                 if (this.paneSocket === ws) {
                     this.paneSocket = null;
                 }
@@ -221,6 +234,7 @@ class TerminalMultiplexer {
             };
 
             ws.onerror = () => {
+                this.logDiagnostic('pane-events', 'error', { path: '/api/panes/events' });
                 ws.close();
             };
         };
@@ -595,6 +609,7 @@ class TerminalMultiplexer {
         }
 
         this.serverConnected = connected;
+        this.logDiagnostic('server', connected ? 'connected' : 'disconnected');
 
         // Update UI to reflect connection state
         document.body.classList.toggle('server-disconnected', !connected);
@@ -1496,6 +1511,7 @@ class TerminalMultiplexer {
 
     async loadPanes() {
         try {
+            this.logDiagnostic('panes', 'load-start');
             const response = await fetch(this.url('/api/panes'));
             const serverPanes = await response.json();
 
@@ -1542,12 +1558,15 @@ class TerminalMultiplexer {
             // Clear saved state after reconciliation
             this.savedState = null;
             this.markUIStateSaved();
+            this.logDiagnostic('panes', 'load-complete', { data: { count: serverPanes.length } });
         } catch (error) {
+            this.logDiagnostic('panes', 'load-error', { data: { error: error.message } });
             console.error('Failed to load panes:', error);
         }
     }
 
     resetPaneDisplayDOM() {
+        this.logDiagnostic('iframe', 'reset-dom', { data: { shared: this.sharedIframes.size } });
         this.sharedIframes.forEach(iframe => iframe.remove());
         this.sharedIframes.clear();
         if (this.sharedIframePositionFrame) {
@@ -2842,6 +2861,7 @@ class TerminalMultiplexer {
         if (!pane) return;
 
         if (this.isSharedPane(pane)) {
+            this.logDiagnostic('iframe', 'refresh-shared', { paneId, backendId: pane.backendId, paneType: pane.type });
             const popoutKey = this.getPopoutKey(pane);
             const popoutWindow = this.popoutWindows.get(popoutKey);
             if (popoutWindow && !popoutWindow.closed) {
@@ -2857,6 +2877,7 @@ class TerminalMultiplexer {
         if (!iframe) return;
 
         container.classList.add('loading');
+        this.logDiagnostic('iframe', 'refresh', { paneId, backendId: pane.backendId, paneType: pane.type });
         iframe.dataset.loaded = '';
         iframe.src = '';
         setTimeout(() => { iframe.src = this.url(`/p/${paneId}/`); }, 50);
@@ -2990,12 +3011,20 @@ class TerminalMultiplexer {
         iframe.dataset.paneId = pane.id;
         iframe.dataset.srcPaneId = pane.id;
         iframe.dataset.backendId = this.getPaneBackendKey(pane) || pane.id;
+        iframe.dataset.createdAt = String(Date.now());
+        this.logDiagnostic('iframe', 'create', { paneId: pane.id, backendId: pane.backendId, paneType: pane.type, path: `/p/${pane.id}/` });
 
         // Listen for iframe navigation (happens when pane dies and ttyd redirects)
         // Only trigger on subsequent loads (not the initial load)
         let initialLoad = true;
         iframe.addEventListener('load', () => {
             iframe.dataset.loaded = 'true';
+            this.logDiagnostic('iframe', 'load', {
+                paneId: iframe.dataset.paneId,
+                backendId: iframe.dataset.backendId,
+                paneType: this.panes.get(iframe.dataset.paneId)?.type || '',
+                ageMs: Date.now() - Number(iframe.dataset.createdAt || Date.now())
+            });
             const hostContainer = iframe.closest('.pane-container') || document.getElementById(`pane-${iframe.dataset.activePaneId}`);
             hostContainer?.classList.remove('loading');
 
@@ -3021,6 +3050,7 @@ class TerminalMultiplexer {
 
         // Also listen for errors to show loading failed
         iframe.addEventListener('error', () => {
+            this.logDiagnostic('iframe', 'error', { paneId: iframe.dataset.paneId, backendId: iframe.dataset.backendId });
             if (!iframe.dataset.loaded) {
                 const hostContainer = iframe.closest('.pane-container') || document.getElementById(`pane-${iframe.dataset.activePaneId}`);
                 hostContainer?.querySelector('.pane-loading p')?.replaceChildren('Failed to connect');
@@ -3029,6 +3059,7 @@ class TerminalMultiplexer {
 
         // Assign src after handlers are attached. Fast local panes can load
         // before a later load listener is registered, leaving the iframe hidden.
+        this.logDiagnostic('iframe', 'src', { paneId: pane.id, backendId: pane.backendId, paneType: pane.type, path: `/p/${pane.id}/` });
         iframe.src = this.url(`/p/${pane.id}/`);
 
         return iframe;
@@ -3051,6 +3082,7 @@ class TerminalMultiplexer {
 
         const iframe = this.sharedIframes.get(backendKey);
         if (iframe) {
+            this.logDiagnostic('iframe', 'reload-shared', { paneId: pane.id, backendId: backendKey, paneType: pane.type });
             iframe.remove();
             this.sharedIframes.delete(backendKey);
         }
@@ -4893,8 +4925,60 @@ class TerminalMultiplexer {
             },
             keybar: {
                 buttons: ['C-c', 'C-d', 'C-z', 'C-\\', 'C-l', 'C-r', 'C-u', 'C-w']
+            },
+            diagnostics: {
+                enabled: false,
+                clientEvents: false,
+                proxyWebSockets: false,
+                paneEvents: false,
+                storageEvents: false,
+                iframeLifecycle: false,
+                optionalPing: false,
+                pingIntervalSeconds: 30
             }
         };
+    }
+
+    diagnosticsEnabled(category = 'clientEvents') {
+        const diagnostics = this.settings?.diagnostics;
+        if (!diagnostics?.enabled) return false;
+        return diagnostics[category] === true;
+    }
+
+    logDiagnostic(source, event, details = {}) {
+        if (!this.diagnosticsEnabled('clientEvents') && !(source === 'iframe' && this.diagnosticsEnabled('iframeLifecycle'))) return;
+        const payload = {
+            source,
+            event,
+            paneId: details.paneId || '',
+            backendId: details.backendId || '',
+            paneType: details.paneType || '',
+            path: details.path || '',
+            ageMs: details.ageMs || 0,
+            data: details.data || {}
+        };
+        this.diagnosticQueue.push(payload);
+        if (this.diagnosticQueue.length > 100) this.diagnosticQueue.splice(0, this.diagnosticQueue.length - 100);
+        if (this.diagnosticFlushTimer) return;
+        this.diagnosticFlushTimer = setTimeout(() => this.flushDiagnostics(), 500);
+    }
+
+    flushDiagnostics() {
+        clearTimeout(this.diagnosticFlushTimer);
+        this.diagnosticFlushTimer = null;
+        if (this.diagnosticQueue.length === 0) return;
+        const events = this.diagnosticQueue.splice(0, 50);
+        const body = JSON.stringify(events);
+        const url = this.url('/api/diagnostics/client');
+        if (navigator.sendBeacon) {
+            try {
+                if (navigator.sendBeacon(url, new Blob([body], { type: 'application/json' }))) return;
+            } catch (e) {}
+        }
+        fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, keepalive: true }).catch(() => {
+            this.diagnosticQueue.unshift(...events);
+            if (this.diagnosticQueue.length > 100) this.diagnosticQueue.length = 100;
+        });
     }
 
     validateKeyCombo(keys) {
@@ -5160,10 +5244,20 @@ class TerminalMultiplexer {
         }
         // Populate keybar buttons
         this.populateKeybarButtons();
+
+        const diagnostics = this.settings.diagnostics || this.getDefaultSettings().diagnostics;
+        this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
+            const [, key] = input.dataset.settingBool.split('.');
+            input.checked = diagnostics[key] === true;
+        });
+        this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
+            const [, key] = input.dataset.settingNumber.split('.');
+            input.value = diagnostics[key] ?? this.getDefaultSettings().diagnostics[key];
+        });
     }
 
     getSettingsFromInputs() {
-        const settings = { ui: {}, terminal: {}, keybar: {} };
+        const settings = { ui: {}, terminal: {}, keybar: {}, diagnostics: {} };
         const hexPattern = /^#[0-9A-Fa-f]{6}$/;
 
         this.settingsModal.querySelectorAll('[data-setting]').forEach(input => {
@@ -5184,6 +5278,20 @@ class TerminalMultiplexer {
         settings.keybar = {
             buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons
         };
+
+        this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
+            const [category, key] = input.dataset.settingBool.split('.');
+            if (!settings[category]) settings[category] = {};
+            settings[category][key] = input.checked;
+        });
+        this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
+            const [category, key] = input.dataset.settingNumber.split('.');
+            if (!settings[category]) settings[category] = {};
+            const min = Number(input.min || 0);
+            const max = Number(input.max || Number.MAX_SAFE_INTEGER);
+            const value = Math.min(max, Math.max(min, Number.parseInt(input.value, 10) || this.getDefaultSettings()[category]?.[key] || 0));
+            settings[category][key] = value;
+        });
 
         return settings;
     }
@@ -5236,6 +5344,16 @@ class TerminalMultiplexer {
         // Reset keybar settings
         this.settings.keybar = { ...defaults.keybar };
         this.populateKeybarButtons();
+
+        this.settings.diagnostics = { ...defaults.diagnostics };
+        this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
+            const [, key] = input.dataset.settingBool.split('.');
+            input.checked = defaults.diagnostics[key] === true;
+        });
+        this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
+            const [, key] = input.dataset.settingNumber.split('.');
+            input.value = defaults.diagnostics[key];
+        });
 
         // Preview the reset
         this.previewSettings();

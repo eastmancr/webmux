@@ -69,6 +69,7 @@ func (s *Server) notifyPaneStorageSubscribers(backendID string, event paneStorag
 		select {
 		case ch <- event:
 		default:
+			s.diagnosticf("storage-events", "event=drop backend=%s type=%s version=%d", diagSanitize(backendID, 48), diagSanitize(event.Type, 32), event.Version)
 		}
 	}
 }
@@ -95,6 +96,7 @@ func (s *Server) handlePaneStorageEvents(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer conn.Close()
+	s.diagnosticf("storage-events", "event=connect backend=%s remote=%s", diagSanitize(backendID, 48), diagSanitize(r.RemoteAddr, 80))
 
 	ch := make(chan paneStorageEvent, 20)
 	s.paneStorageSubMu.Lock()
@@ -115,14 +117,17 @@ func (s *Server) handlePaneStorageEvents(w http.ResponseWriter, r *http.Request)
 
 	snapshot := s.getPaneStorageSnapshot(backendID)
 	if err := conn.WriteJSON(paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy}); err != nil {
+		s.diagnosticf("storage-events", "event=write-error backend=%s version=%d err=%q", diagSanitize(backendID, 48), snapshot.Version, err.Error())
 		return
 	}
+	s.diagnosticf("storage-events", "event=initial backend=%s version=%d updatedBy=%s", diagSanitize(backendID, 48), snapshot.Version, diagSanitize(snapshot.UpdatedBy, 80))
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for {
 			if _, _, err := conn.NextReader(); err != nil {
+				s.diagnosticf("storage-events", "event=read-close backend=%s err=%q", diagSanitize(backendID, 48), err.Error())
 				return
 			}
 		}
@@ -135,11 +140,15 @@ func (s *Server) handlePaneStorageEvents(w http.ResponseWriter, r *http.Request)
 				return
 			}
 			if err := conn.WriteJSON(event); err != nil {
+				s.diagnosticf("storage-events", "event=write-error backend=%s version=%d err=%q", diagSanitize(backendID, 48), event.Version, err.Error())
 				return
 			}
+			s.diagnosticf("storage-events", "event=sent backend=%s version=%d updatedBy=%s", diagSanitize(backendID, 48), event.Version, diagSanitize(event.UpdatedBy, 80))
 		case <-done:
+			s.diagnosticf("storage-events", "event=disconnect backend=%s reason=reader", diagSanitize(backendID, 48))
 			return
 		case <-r.Context().Done():
+			s.diagnosticf("storage-events", "event=disconnect backend=%s reason=context", diagSanitize(backendID, 48))
 			return
 		}
 	}
@@ -365,6 +374,21 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 		log.Printf("Failed to save pane storage %s: %v", backendID, err)
 	}
 	if changed {
+		s.diagnosticf("storage-events", "event=updated backend=%s version=%d updatedBy=%s operations=%d", diagSanitize(backendID, 48), snapshot.Version, diagSanitize(snapshot.UpdatedBy, 80), len(operations))
+		if s.diagnosticsEnabled("storage-events") {
+			keys := make([]string, 0, min(len(operations), 12))
+			for _, op := range operations {
+				if op.Key == "" {
+					keys = append(keys, op.Operation)
+					continue
+				}
+				keys = append(keys, op.Operation+":"+diagSanitize(op.Key, 140))
+				if len(keys) >= 12 {
+					break
+				}
+			}
+			s.diagnosticf("storage-events", "event=updated-keys backend=%s version=%d keys=%s", diagSanitize(backendID, 48), snapshot.Version, strings.Join(keys, ","))
+		}
 		s.notifyPaneStorageSubscribers(backendID, paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy})
 	}
 

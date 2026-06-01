@@ -200,6 +200,21 @@ type Settings struct {
 	Terminal TerminalColors `json:"terminal"`
 	// Keybar configuration
 	Keybar KeybarSettings `json:"keybar"`
+	// Diagnostics configuration
+	Diagnostics DiagnosticsSettings `json:"diagnostics"`
+}
+
+// DiagnosticsSettings controls optional connection diagnostics. All fields are
+// disabled by default to avoid steady-state network or log noise.
+type DiagnosticsSettings struct {
+	Enabled             bool `json:"enabled"`
+	ClientEvents        bool `json:"clientEvents"`
+	ProxyWebSockets     bool `json:"proxyWebSockets"`
+	PaneEvents          bool `json:"paneEvents"`
+	StorageEvents       bool `json:"storageEvents"`
+	IframeLifecycle     bool `json:"iframeLifecycle"`
+	OptionalPing        bool `json:"optionalPing"`
+	PingIntervalSeconds int  `json:"pingIntervalSeconds"`
 }
 
 // KeybarSettings represents keybar button configuration
@@ -295,6 +310,9 @@ func DefaultSettings() *Settings {
 		},
 		Keybar: KeybarSettings{
 			Buttons: []string{"C-c", "C-d", "C-z", "C-\\", "C-l", "C-r", "C-u", "C-w"},
+		},
+		Diagnostics: DiagnosticsSettings{
+			PingIntervalSeconds: 30,
 		},
 	}
 }
@@ -506,6 +524,9 @@ func mergeWithDefaults(s *Settings) {
 	if len(s.Keybar.Buttons) == 0 {
 		s.Keybar.Buttons = d.Keybar.Buttons
 	}
+	if s.Diagnostics.PingIntervalSeconds <= 0 {
+		s.Diagnostics.PingIntervalSeconds = d.Diagnostics.PingIntervalSeconds
+	}
 }
 
 // SaveSettings saves settings to disk
@@ -614,6 +635,7 @@ func (s *Server) notifyPaneSubscribers(event paneEvent) {
 		select {
 		case ch <- event:
 		default:
+			s.diagnosticf("pane-events", "event=drop type=%s pane=%s", diagSanitize(event.Type, 32), diagSanitize(event.PaneID, 48))
 		}
 	}
 }
@@ -629,6 +651,7 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	s.diagnosticf("pane-events", "event=connect remote=%s", diagSanitize(r.RemoteAddr, 80))
 
 	ch := make(chan paneEvent, 20)
 	s.paneSubMu.Lock()
@@ -642,6 +665,7 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if err := conn.WriteJSON(paneEvent{Type: "ready"}); err != nil {
+		s.diagnosticf("pane-events", "event=write-error type=ready err=%q", err.Error())
 		return
 	}
 
@@ -650,6 +674,7 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
 		for {
 			if _, _, err := conn.NextReader(); err != nil {
+				s.diagnosticf("pane-events", "event=read-close err=%q", err.Error())
 				return
 			}
 		}
@@ -662,11 +687,14 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if err := conn.WriteJSON(event); err != nil {
+				s.diagnosticf("pane-events", "event=write-error type=%s pane=%s err=%q", diagSanitize(event.Type, 32), diagSanitize(event.PaneID, 48), err.Error())
 				return
 			}
 		case <-done:
+			s.diagnosticf("pane-events", "event=disconnect reason=reader")
 			return
 		case <-r.Context().Done():
+			s.diagnosticf("pane-events", "event=disconnect reason=context")
 			return
 		}
 	}
@@ -2275,6 +2303,7 @@ func main() {
 	mux.HandleFunc("/api/clipboard", server.handleClipboard)
 	mux.HandleFunc("/api/clipboard/events", server.handleClipboardEvents)
 	mux.HandleFunc("/api/clipboard/version", server.handleClipboardVersion)
+	mux.HandleFunc("/api/diagnostics/client", server.handleClientDiagnostics)
 
 	// Pane proxy - forwards requests to pane backends
 	mux.HandleFunc("/p/", server.handlePaneProxy)

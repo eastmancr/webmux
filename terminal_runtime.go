@@ -546,8 +546,8 @@ func (tr *TerminalRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 	return &PaneProxyConfig{
 		TargetHost:  fmt.Sprintf("127.0.0.1:%d", port),
 		BackendName: "terminal",
-		ModifyIndexResponse: func(_ *Server, resp *http.Response) error {
-			return tr.modifyTtydIndexResponse(resp)
+		ModifyIndexResponse: func(s *Server, resp *http.Response) error {
+			return tr.modifyTtydIndexResponse(resp, s.diagnosticsSettings())
 		},
 		NewWebSocketObserver: func(s *Server) WebSocketTrafficObserver {
 			return newOSC52Scanner(s)

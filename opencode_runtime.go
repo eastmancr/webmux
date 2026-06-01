@@ -293,7 +293,7 @@ func (or *OpenCodeRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 		},
 		ModifyResponse: func(s *Server, resp *http.Response) error {
 			if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-				return or.modifyOpenCodeIndexResponse(id, backendID, s.getPaneStorageSnapshot(backendID), resp)
+				return or.modifyOpenCodeIndexResponse(id, backendID, s.getPaneStorageSnapshot(backendID), s.diagnosticsSettings(), resp)
 			}
 			return or.modifyOpenCodeAssetResponse(id, resp)
 		},

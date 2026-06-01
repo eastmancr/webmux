@@ -19,6 +19,8 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -26,7 +28,7 @@ import (
 
 // SECTION: TERMINAL PROXY
 
-func (tr *TerminalRuntime) modifyTtydIndexResponse(resp *http.Response) error {
+func (tr *TerminalRuntime) modifyTtydIndexResponse(resp *http.Response, diagnostics DiagnosticsSettings) error {
 	if !strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
 		return nil
 	}
@@ -42,7 +44,7 @@ func (tr *TerminalRuntime) modifyTtydIndexResponse(resp *http.Response) error {
 	headIdx := strings.Index(bodyLower, "<head>")
 	var content string
 	if headIdx != -1 {
-		content = bodyStr[:headIdx] + ttydHeadScript + bodyStr[headIdx+6:]
+		content = bodyStr[:headIdx] + ttydHeadScript(diagnostics) + bodyStr[headIdx+6:]
 		log.Printf("[inject] Script injected into ttyd HTML at offset %d (%d -> %d bytes)", headIdx, len(body), len(content))
 	} else {
 		htmlIdx := strings.Index(bodyLower, "<html")
@@ -50,7 +52,7 @@ func (tr *TerminalRuntime) modifyTtydIndexResponse(resp *http.Response) error {
 			closeIdx := strings.Index(bodyStr[htmlIdx:], ">")
 			if closeIdx != -1 {
 				insertAt := htmlIdx + closeIdx + 1
-				content = bodyStr[:insertAt] + ttydHeadScript + bodyStr[insertAt:]
+				content = bodyStr[:insertAt] + ttydHeadScript(diagnostics) + bodyStr[insertAt:]
 				log.Printf("[inject] Script injected after <html> tag at offset %d (%d -> %d bytes)", insertAt, len(body), len(content))
 			}
 		}
@@ -72,11 +74,39 @@ func (tr *TerminalRuntime) modifyTtydIndexResponse(resp *http.Response) error {
 
 // ttydHeadScript is injected at the START of <head> to intercept WebSocket before ttyd loads
 // This MUST run before any other scripts to properly intercept WebSocket connections
-const ttydHeadScript = `<head><script>
+func ttydHeadScript(diagnostics DiagnosticsSettings) string {
+	diagnosticsJSON, err := json.Marshal(diagnostics)
+	if err != nil {
+		diagnosticsJSON = []byte("{}")
+	}
+	return fmt.Sprintf(`<head><script>
 // WebSocket proxy fix - must run before ttyd's JavaScript
 (function() {
+    var diagnostics = %s;
+    var markerMatch = window.location.pathname.match(/\/p\/([^\/]+)/);
+    var paneID = markerMatch ? markerMatch[1] : '';
+    var diagnosticsBase = window.location.pathname.replace(/\/p\/[^\/]+.*$/, '/api/diagnostics/client');
+    function diagnosticsEnabled() { return diagnostics && diagnostics.enabled && diagnostics.clientEvents; }
+    function postDiagnostic(source, event, details) {
+        if (!diagnosticsEnabled()) return;
+        details = details || {};
+        var payload = JSON.stringify([{
+            source: source,
+            event: event,
+            paneId: paneID,
+            paneType: 'terminal',
+            path: details.path || '',
+            ageMs: details.ageMs || 0,
+            data: details.data || {}
+        }]);
+        try {
+            if (navigator.sendBeacon && navigator.sendBeacon(diagnosticsBase, new Blob([payload], { type: 'application/json' }))) return;
+        } catch (e) {}
+        try { fetch(diagnosticsBase, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload, keepalive: true }).catch(function() {}); } catch (e) {}
+    }
     var OrigWebSocket = window.WebSocket;
     window.WebSocket = function(url, protocols) {
+        var startedAt = Date.now();
         var originalUrl = url;
         // Rewrite WebSocket URLs that point to localhost/127.0.0.1 or use a different host
         // than the current page (which happens when accessed through a reverse proxy)
@@ -95,10 +125,15 @@ const ttydHeadScript = `<head><script>
                 console.log('[webmux] Rewriting WebSocket URL:', originalUrl, '->', url);
             }
         }
-        if (protocols) {
-            return new OrigWebSocket(url, protocols);
-        }
-        return new OrigWebSocket(url);
+        postDiagnostic('terminal-ws', 'construct', { path: url });
+        var ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+        ws.addEventListener('open', function() { postDiagnostic('terminal-ws', 'open', { path: url, ageMs: Date.now() - startedAt }); });
+        ws.addEventListener('close', function(event) { postDiagnostic('terminal-ws', 'close', { path: url, ageMs: Date.now() - startedAt, data: { code: event.code, reason: event.reason, clean: event.wasClean } }); });
+        ws.addEventListener('error', function() { postDiagnostic('terminal-ws', 'error', { path: url, ageMs: Date.now() - startedAt }); });
+        setTimeout(function() {
+            if (ws.readyState === OrigWebSocket.CONNECTING) postDiagnostic('terminal-ws', 'still-connecting', { path: url, ageMs: Date.now() - startedAt });
+        }, 10000);
+        return ws;
     };
     window.WebSocket.prototype = OrigWebSocket.prototype;
     window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
@@ -147,7 +182,8 @@ const ttydHeadScript = `<head><script>
         }
     });
 })();
-</script>`
+</script>`, string(diagnosticsJSON))
+}
 
 // osc52Scanner scans a byte stream for OSC 52 clipboard escape sequences.
 // It buffers partial sequences across multiple Scan() calls and extracts
