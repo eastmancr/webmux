@@ -1079,6 +1079,7 @@ class TerminalMultiplexer {
         this.opencodeStorageExportToggle = document.getElementById('opencode-storage-export-toggle');
         this.opencodeStorageImportBtn = document.getElementById('opencode-storage-import');
         this.opencodeStorageImportToggle = document.getElementById('opencode-storage-import-toggle');
+        this.opencodeStorageResetSessionBtn = document.getElementById('opencode-storage-reset-session');
         this.opencodeStorageClearBtn = document.getElementById('opencode-storage-clear');
         this.opencodeStorageFileInput = document.getElementById('opencode-storage-file');
         this.opencodeStorageKeyCount = document.getElementById('opencode-storage-key-count');
@@ -1216,6 +1217,7 @@ class TerminalMultiplexer {
         this.opencodeStorageExportToggle?.addEventListener('click', (e) => this.toggleStorageActionMenu(e));
         this.opencodeStorageImportBtn?.addEventListener('click', () => this.pasteOpenCodeStorage());
         this.opencodeStorageImportToggle?.addEventListener('click', (e) => this.toggleStorageActionMenu(e));
+        this.opencodeStorageResetSessionBtn?.addEventListener('click', () => this.resetOpenCodeSessionState());
         this.opencodeStorageClearBtn?.addEventListener('click', () => this.clearOpenCodeStorage());
         this.opencodeStorageFileInput?.addEventListener('change', () => this.importOpenCodeStorage());
         this.settingsModal.querySelectorAll('.storage-action-menu').forEach(menu => {
@@ -5511,6 +5513,10 @@ class TerminalMultiplexer {
 
     async replaceOpenCodeStorageFromText(text) {
         const items = this.parseOpenCodeStorageImport(text);
+        return this.replaceOpenCodeStorageItems(items);
+    }
+
+    async replaceOpenCodeStorageItems(items) {
         const response = await fetch(this.url('/api/storage/opencode'), {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -5569,6 +5575,97 @@ class TerminalMultiplexer {
             result[key] = value;
         }
         return result;
+    }
+
+    buildOpenCodePreferenceStorage(items) {
+        const result = {};
+        const preservedKeys = new Set([
+            'settings.v3',
+            'highlights.v1',
+            'opencode-color-scheme',
+            'opencode-theme-id',
+            'opencode-theme-css-light',
+            'opencode-theme-css-dark',
+            'opencode.global.dat:model',
+            'opencode.global.dat:command.catalog.v1'
+        ]);
+
+        for (const [key, value] of Object.entries(items)) {
+            if (key.startsWith('opencode.workspace.')) continue;
+            if (key === 'opencode.global.dat:notification' || key === 'opencode.global.dat:prompt-history') continue;
+            if (key === 'opencode.global.dat:layout') {
+                result[key] = this.cleanOpenCodeLayout(value);
+                continue;
+            }
+            if (key === 'opencode.global.dat:layout.page') {
+                result[key] = this.cleanOpenCodeLayoutPage(value);
+                continue;
+            }
+            if (key === 'opencode.global.dat:server') {
+                result[key] = this.cleanOpenCodeServer(value);
+                continue;
+            }
+            if (preservedKeys.has(key) || key.startsWith('opencode-theme-')) {
+                result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    cleanOpenCodeLayout(value) {
+        try {
+            const layout = JSON.parse(value);
+            layout.sessionTabs = {};
+            layout.sessionView = {};
+            layout.handoff = {};
+            return JSON.stringify(layout);
+        } catch {
+            return '{}';
+        }
+    }
+
+    cleanOpenCodeLayoutPage(value) {
+        try {
+            const page = JSON.parse(value);
+            page.lastProjectSession = {};
+            page.workspaceOrder = {};
+            page.workspaceName = {};
+            page.workspaceBranchName = {};
+            page.workspaceExpanded = {};
+            return JSON.stringify(page);
+        } catch {
+            return JSON.stringify({ lastProjectSession: {} });
+        }
+    }
+
+    cleanOpenCodeServer(value) {
+        try {
+            const server = JSON.parse(value);
+            server.projects = {};
+            server.lastProject = {};
+            return JSON.stringify(server);
+        } catch {
+            return JSON.stringify({ list: [], projects: {}, lastProject: {} });
+        }
+    }
+
+    async resetOpenCodeSessionState() {
+        if (!confirm('Reset OpenCode session state? This removes workspace/session caches, project lists, notifications, prompt history, and last-session pointers while keeping theme, settings, model, and server preferences.')) {
+            return;
+        }
+
+        try {
+            const storage = await this.loadOpenCodeStorageSummary();
+            if (!storage?.items) throw new Error('Failed to load OpenCode storage');
+            const items = this.buildOpenCodePreferenceStorage(storage.items);
+            const updated = await this.replaceOpenCodeStorageItems(items);
+            this.updateOpenCodeStorageSummary(updated);
+            this.toastSuccess('OpenCode session state reset. Reload OpenCode panes to start from the cleaned state.');
+        } catch (error) {
+            console.error('Failed to reset OpenCode session state:', error);
+            this.toastError(`Failed to reset OpenCode session state: ${error.message}`);
+        }
     }
 
     isPlainObject(value) {
