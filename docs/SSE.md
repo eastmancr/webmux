@@ -1,10 +1,25 @@
-# SSE Clipboard Architecture (Removed)
+# SSE Usage
 
-This documents the SSE-based clipboard synchronization that was removed. Clipboard notifications now use WebSocket so idle clients do not need to poll.
+Webmux still uses Server-Sent Events (SSE) for small server-to-browser update streams, such as scratch pad and marked-file changes. Clipboard notifications no longer use SSE; they use WebSocket notifications so idle clients do not need to poll.
+
+This document records why the old clipboard-over-SSE design was removed and what remains true about SSE in Webmux today.
+
+## Current SSE Requirements
+
+SSE works well when each hop treats `text/event-stream` as a streaming response:
+
+- forward response headers promptly
+- do not buffer the response body
+- do not synthesize `Content-Length` for open streams
+- allow long-lived responses
+
+Webmux SSE handlers set `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `X-Accel-Buffering: no`. Reverse proxies still need to honor streaming semantics for SSE to remain low-latency.
 
 ## Why SSE Was Removed
 
-Reverse proxies (nginx, caddy, etc.) buffer SSE responses by default, causing ~30 second delays before events reach the browser. The `X-Accel-Buffering: no` header did not resolve this in all proxy configurations. This made SSE unusable for clipboard synchronization where latency matters.
+The removed clipboard design depended on low-latency SSE delivery for clipboard updates and browser clipboard-read requests. Some reverse-proxy configurations buffer SSE responses or impose whole-request timeouts, causing delayed or interrupted delivery. The `X-Accel-Buffering: no` header helps with compatible proxies, but it cannot fix every intermediary by itself.
+
+That made SSE a poor fit for clipboard synchronization, where latency and reliability matter and users often access Webmux through different proxy stacks.
 
 Additionally, `navigator.clipboard.readText()` requires both document focus and explicit `clipboard-read` permission. In the iframe architecture (where ttyd terminals run inside iframes), calling `readText()` from a postMessage handler consistently failed with "Read permission denied" and actively stole focus from the terminal, causing subsequent `writeText()` calls to fail as well.
 
