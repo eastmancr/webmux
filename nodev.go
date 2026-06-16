@@ -29,5 +29,14 @@ import (
 func InitDevMode(mux *http.ServeMux, server *Server) http.Handler {
 	// In production, serve from embedded files
 	staticFS, _ := fs.Sub(staticFiles, "static")
-	return http.FileServer(http.FS(staticFS))
+	return noCacheStaticHandler(http.FileServer(http.FS(staticFS)))
+}
+
+func noCacheStaticHandler(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		h.ServeHTTP(w, r)
+	})
 }
