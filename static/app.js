@@ -55,6 +55,7 @@ class TerminalMultiplexer {
         this.popoutStates = new Map();
         this.pendingPopoutAlives = new Map();
         this.pendingPopoutCloses = new Map();
+        this.popoutSuppressUntil = new Map();
         this.popoutChannel = null;
         this.popoutStorageKey = 'webmux.popouts';
         this.popoutStaleMs = 5000;
@@ -63,6 +64,7 @@ class TerminalMultiplexer {
         this.sharedIframes = new Map();
         this.sharedIframePositionFrame = null;
         this.sharedIframeResizeObserver = null;
+        this.pendingDedicatedIframeMounts = new Map();
 
         // Sidebar collapsed state
         this.sidebarCollapsed = false;
@@ -1571,6 +1573,8 @@ class TerminalMultiplexer {
         this.logDiagnostic('iframe', 'reset-dom', { data: { shared: this.sharedIframes.size } });
         this.sharedIframes.forEach(iframe => iframe.remove());
         this.sharedIframes.clear();
+        this.pendingDedicatedIframeMounts.forEach(frame => cancelAnimationFrame(frame));
+        this.pendingDedicatedIframeMounts.clear();
         if (this.sharedIframePositionFrame) {
             cancelAnimationFrame(this.sharedIframePositionFrame);
             this.sharedIframePositionFrame = null;
@@ -2601,8 +2605,17 @@ class TerminalMultiplexer {
             return;
         }
 
+        if (!this.isWebmuxOpenedPopout(msg)) {
+            this.broadcastPaneOwnerMain(msg.paneId, msg.popoutId, msg.windowName);
+            return;
+        }
+
         const key = this.getPopoutKey(pane);
         if (!key) return;
+
+        const suppressUntil = this.popoutSuppressUntil.get(key) || 0;
+        if (Date.now() < suppressUntil) return;
+        this.popoutSuppressUntil.delete(key);
 
         this.cancelPendingPopoutClose(key, msg.popoutId);
 
@@ -2643,6 +2656,20 @@ class TerminalMultiplexer {
             this.updatePaneLayout();
         }, 1200);
         this.pendingPopoutCloses.set(key, { timer, popoutId: msg.popoutId });
+    }
+
+    isWebmuxOpenedPopout(msg) {
+        return typeof msg.windowName === 'string' && msg.windowName.startsWith('webmux-');
+    }
+
+    broadcastPaneOwnerMain(paneId, popoutId = null, windowName = null) {
+        if (!paneId) return;
+        this.popoutChannel?.postMessage({
+            type: 'webmux-pane-owner-main',
+            paneId,
+            popoutId,
+            windowName,
+        });
     }
 
     cancelPendingPopoutClose(key, popoutId = null) {
@@ -2689,6 +2716,9 @@ class TerminalMultiplexer {
     pruneStalePopouts() {
         const now = Date.now();
         let changed = false;
+        for (const [key, until] of Array.from(this.popoutSuppressUntil)) {
+            if (now >= until) this.popoutSuppressUntil.delete(key);
+        }
         for (const [key, state] of Array.from(this.popoutStates)) {
             if (now - (state.lastSeen || 0) <= this.popoutStaleMs) continue;
             this.clearPopoutTracking(key);
@@ -2732,6 +2762,11 @@ class TerminalMultiplexer {
         this.savePopoutStates();
     }
 
+    suppressPopoutTracking(popoutKey) {
+        if (!popoutKey) return;
+        this.popoutSuppressUntil.set(popoutKey, Infinity);
+    }
+
     setPoppedOutContainers(popoutKey) {
         for (const pane of this.panes.values()) {
             if (this.getPopoutKey(pane) === popoutKey) {
@@ -2762,6 +2797,7 @@ class TerminalMultiplexer {
 
         const popoutKey = this.getPopoutKey(pane);
         if (!popoutKey) return;
+        this.popoutSuppressUntil.delete(popoutKey);
 
         const existingWindow = this.popoutWindows.get(popoutKey);
         if (existingWindow && !existingWindow.closed) {
@@ -2820,16 +2856,18 @@ class TerminalMultiplexer {
     }
 
     popInPane(paneId) {
-        const container = document.getElementById(`pane-${paneId}`);
-        if (!container) return;
-
         const pane = this.panes.get(paneId);
+        if (!pane) return;
+
+        const container = document.getElementById(`pane-${paneId}`);
         const popoutKey = this.getPopoutKey(pane);
+        this.suppressPopoutTracking(popoutKey);
 
         const popoutWindow = this.popoutWindows.get(popoutKey);
         if (popoutWindow && !popoutWindow.closed) {
             popoutWindow.close();
         }
+        this.broadcastPaneOwnerMain(pane.id);
         const state = this.popoutStates.get(popoutKey);
         if (state) {
             this.popoutChannel?.postMessage({
@@ -2841,7 +2879,7 @@ class TerminalMultiplexer {
         this.clearPopoutTracking(popoutKey);
         this.clearPoppedOutContainers(popoutKey);
 
-        container.classList.remove('popped-out');
+        container?.classList.remove('popped-out');
 
         if (this.isSharedPane(pane)) {
             this.reloadSharedPaneIframe(pane);
@@ -2849,13 +2887,7 @@ class TerminalMultiplexer {
             return;
         }
 
-        const iframe = container.querySelector('iframe');
-        if (iframe) {
-            // Reset to the correct pane URL (not whatever the iframe might have navigated to)
-            const correctSrc = this.url(`/p/${paneId}/`);
-            iframe.src = '';
-            setTimeout(() => { iframe.src = correctSrc; }, 50);
-        }
+        if (container) this.rebuildDedicatedPaneIframe(pane, container);
     }
 
     refreshPane(paneId) {
@@ -2875,14 +2907,11 @@ class TerminalMultiplexer {
         }
 
         const container = document.getElementById(`pane-${paneId}`);
-        const iframe = container?.querySelector('iframe');
-        if (!iframe) return;
+        if (!container) return;
 
         container.classList.add('loading');
         this.logDiagnostic('iframe', 'refresh', { paneId, backendId: pane.backendId, paneType: pane.type });
-        iframe.dataset.loaded = '';
-        iframe.src = '';
-        setTimeout(() => { iframe.src = this.url(`/p/${paneId}/`); }, 50);
+        this.rebuildDedicatedPaneIframe(pane, container);
     }
 
     // Pane Rendering
@@ -3005,7 +3034,12 @@ class TerminalMultiplexer {
         this.mobileBottomToolbar.querySelector('.mobile-toolbar-center')?.classList.toggle('hidden', !visible);
     }
 
-    createPaneIframe(pane) {
+    paneIframeSrc(paneId, options = {}) {
+        const suffix = options.forceReload ? `?wm_reload=${Date.now().toString(36)}` : '';
+        return this.url(`/p/${paneId}/${suffix}`);
+    }
+
+    createPaneIframe(pane, options = {}) {
         const iframe = document.createElement('iframe');
         iframe.className = 'pane-iframe';
         iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
@@ -3062,9 +3096,52 @@ class TerminalMultiplexer {
         // Assign src after handlers are attached. Fast local panes can load
         // before a later load listener is registered, leaving the iframe hidden.
         this.logDiagnostic('iframe', 'src', { paneId: pane.id, backendId: pane.backendId, paneType: pane.type, path: `/p/${pane.id}/` });
-        iframe.src = this.url(`/p/${pane.id}/`);
+        iframe.src = this.paneIframeSrc(pane.id, options);
 
         return iframe;
+    }
+
+    ensureDedicatedPaneIframe(pane, container) {
+        if (!pane || this.isSharedPane(pane) || !container) return;
+        if (container.querySelector('iframe')) return;
+
+        const rect = container.getBoundingClientRect();
+        if (!container.classList.contains('visible') || rect.width <= 0 || rect.height <= 0) {
+            if (this.pendingDedicatedIframeMounts.has(pane.id)) return;
+            const frame = requestAnimationFrame(() => {
+                this.pendingDedicatedIframeMounts.delete(pane.id);
+                this.ensureDedicatedPaneIframe(pane, container);
+            });
+            this.pendingDedicatedIframeMounts.set(pane.id, frame);
+            return;
+        }
+
+        container.classList.add('loading');
+        const iframe = this.createPaneIframe(pane);
+        const before = container.querySelector('.shared-mirror-placeholder') || container.querySelector('.popout-placeholder');
+        if (before) container.insertBefore(iframe, before);
+        else container.appendChild(iframe);
+
+        requestAnimationFrame(() => {
+            try {
+                iframe.contentWindow?.dispatchEvent(new Event('resize'));
+            } catch (e) {}
+        });
+    }
+
+    rebuildDedicatedPaneIframe(pane, container) {
+        if (!pane || this.isSharedPane(pane) || !container) return;
+        const pending = this.pendingDedicatedIframeMounts.get(pane.id);
+        if (pending) {
+            cancelAnimationFrame(pending);
+            this.pendingDedicatedIframeMounts.delete(pane.id);
+        }
+        container.querySelector('iframe')?.remove();
+        container.classList.add('loading');
+        const iframe = this.createPaneIframe(pane, { forceReload: true });
+        const before = container.querySelector('.shared-mirror-placeholder') || container.querySelector('.popout-placeholder');
+        if (before) container.insertBefore(iframe, before);
+        else container.appendChild(iframe);
     }
 
     getSharedPaneIframe(pane) {
@@ -3201,8 +3278,6 @@ class TerminalMultiplexer {
             <p>Connecting...</p>
         `;
 
-        const iframe = this.isSharedPane(pane) ? null : this.createPaneIframe(pane);
-
         const mirrorPlaceholder = document.createElement('div');
         mirrorPlaceholder.className = 'shared-mirror-placeholder hidden';
         mirrorPlaceholder.setAttribute('role', 'status');
@@ -3232,9 +3307,6 @@ class TerminalMultiplexer {
         });
 
         container.appendChild(loadingOverlay);
-        if (iframe) {
-            container.appendChild(iframe);
-        }
         container.appendChild(mirrorPlaceholder);
         container.appendChild(placeholder);
         this.paneDisplay.appendChild(container);
@@ -3258,6 +3330,11 @@ class TerminalMultiplexer {
     }
 
     removePaneContainer(paneId) {
+        const pending = this.pendingDedicatedIframeMounts.get(paneId);
+        if (pending) {
+            cancelAnimationFrame(pending);
+            this.pendingDedicatedIframeMounts.delete(paneId);
+        }
         const container = document.getElementById(`pane-${paneId}`);
         if (container) {
             const iframe = container.querySelector('iframe');
@@ -3379,6 +3456,8 @@ class TerminalMultiplexer {
                         container.classList.remove('loading');
                         placeholder?.classList.remove('hidden');
                     }
+                } else {
+                    this.ensureDedicatedPaneIframe(pane, container);
                 }
             }
         });

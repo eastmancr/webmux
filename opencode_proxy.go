@@ -184,8 +184,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var storageFlushInFlight = false;
   var pendingSnapshotFetch = false;
   var opencodeServerStorageKey = 'opencode.global.dat:server';
+  var opencodeGlobalStoragePrefix = 'opencode.global.dat:';
+  var opencodeScopeSeparator = '\u0000';
   var canonicalServerID = 'webmux';
-  var currentServerID = projectsKeyForServerID(window.location.origin);
+  // The OpenCode web app treats the current page origin as its canonical local
+  // server and maps that server scope to "local" internally. Store as webmux,
+  // but present local-scoped state back to OpenCode for the active origin.
+  var currentServerID = 'local';
 
   function diagnosticsEnabled() {
     return diagnostics && diagnostics.enabled && diagnostics.clientEvents;
@@ -210,7 +215,12 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
 
   function sortedStorageKeys() {
-    return Object.keys(serverStorage).sort();
+    var seen = {};
+    return Object.keys(serverStorage).map(materializeOpenCodeStorageKey).filter(function(key) {
+      if (seen[key]) return false;
+      seen[key] = true;
+      return true;
+    }).sort();
   }
   function dispatchStorageChange(key, oldValue, newValue) {
     try {
@@ -232,12 +242,12 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     Object.keys(oldStorage).forEach(function(key) {
       seen[key] = true;
       if (oldStorage[key] !== serverStorage[key]) {
-        dispatchStorageChange(key, oldStorage[key], Object.prototype.hasOwnProperty.call(serverStorage, key) ? serverStorage[key] : null);
+        dispatchStorageChange(materializeOpenCodeStorageKey(key), materializeOpenCodeStorageValue(key, oldStorage[key]), Object.prototype.hasOwnProperty.call(serverStorage, key) ? materializeOpenCodeStorageValue(key, serverStorage[key]) : null);
       }
     });
     Object.keys(serverStorage).forEach(function(key) {
       if (!seen[key]) {
-        dispatchStorageChange(key, null, serverStorage[key]);
+        dispatchStorageChange(materializeOpenCodeStorageKey(key), null, materializeOpenCodeStorageValue(key, serverStorage[key]));
       }
     });
   }
@@ -282,7 +292,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   function queueStorageUpdate(payload) {
     if (payload.operation === 'set' && payload.key === opencodeServerStorageKey) {
       payload.value = normalizeOpenCodeServerStorageValue(payload.value);
+    } else if (payload.operation === 'set') {
+      payload.value = normalizeOpenCodeRoutingStorageValue(payload.key, payload.value);
     }
+    postStorageRoutingDiagnostic(payload);
     if (payload.operation === 'clear') {
       pendingStorageClear = true;
       pendingStorageSets = {};
@@ -313,7 +326,44 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     return operations;
   }
   function isOpenCodeServerStorageKey(key) {
-    return String(key) === opencodeServerStorageKey;
+    return canonicalizeOpenCodeStorageKey(key) === opencodeServerStorageKey;
+  }
+  function isOpenCodeRoutingStorageKey(key) {
+    key = canonicalizeOpenCodeStorageKey(key);
+    return key === opencodeServerStorageKey
+      || key === 'opencode.global.dat:layout'
+      || key === 'opencode.global.dat:layout.page';
+  }
+  function postStorageRoutingDiagnostic(payload) {
+    if (!payload || !isOpenCodeRoutingStorageKey(payload.key)) return;
+    postDiagnostic('opencode-storage-route', payload.operation || 'unknown', {
+      data: summarizeOpenCodeRoutingStorageValue(payload.key, payload.value)
+    });
+  }
+  function summarizeOpenCodeRoutingStorageValue(key, value) {
+    key = canonicalizeOpenCodeStorageKey(key);
+    var summary = { key: String(key) };
+    if (typeof value !== 'string') return summary;
+    try {
+      var parsed = JSON.parse(value);
+      if (key === opencodeServerStorageKey) {
+        summary.projectServers = parsed.projects && typeof parsed.projects === 'object' ? Object.keys(parsed.projects) : [];
+        summary.lastProjectServers = parsed.lastProject && typeof parsed.lastProject === 'object' ? Object.keys(parsed.lastProject) : [];
+      } else if (key === 'opencode.global.dat:layout.page') {
+        summary.lastProjectSessionCount = parsed.lastProjectSession && typeof parsed.lastProjectSession === 'object' ? Object.keys(parsed.lastProjectSession).length : 0;
+        summary.lastProjectSessionIDs = [];
+        if (parsed.lastProjectSession && typeof parsed.lastProjectSession === 'object') {
+          Object.keys(parsed.lastProjectSession).slice(0, 8).forEach(function(project) {
+            var session = parsed.lastProjectSession[project];
+            if (session && session.id) summary.lastProjectSessionIDs.push(project + ':' + session.id);
+          });
+        }
+      } else if (key === 'opencode.global.dat:layout') {
+        summary.sessionTabsCount = parsed.sessionTabs && typeof parsed.sessionTabs === 'object' ? Object.keys(parsed.sessionTabs).length : 0;
+        summary.sessionViewCount = parsed.sessionView && typeof parsed.sessionView === 'object' ? Object.keys(parsed.sessionView).length : 0;
+      }
+    } catch (e) {}
+    return summary;
   }
   function projectsKeyForServerID(serverID) {
     try {
@@ -324,6 +374,64 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
   function hasOwn(object, key) {
     return Object.prototype.hasOwnProperty.call(object, key);
+  }
+  function isOpenCodeGlobalStorageKey(key) {
+    return String(key).startsWith(opencodeGlobalStoragePrefix);
+  }
+  function scopedOpenCodeGlobalKey(scope, name) {
+    return opencodeGlobalStoragePrefix + scope + opencodeScopeSeparator + name;
+  }
+  function canonicalizeOpenCodeStorageKey(key) {
+    key = String(key);
+    if (!isOpenCodeGlobalStorageKey(key)) return key;
+    var suffix = key.slice(opencodeGlobalStoragePrefix.length);
+    var currentPrefix = currentServerID + opencodeScopeSeparator;
+    var canonicalPrefix = canonicalServerID + opencodeScopeSeparator;
+    if (suffix.startsWith(currentPrefix)) return opencodeGlobalStoragePrefix + suffix.slice(currentPrefix.length);
+    if (suffix.startsWith(canonicalPrefix)) return opencodeGlobalStoragePrefix + suffix.slice(canonicalPrefix.length);
+    return key;
+  }
+  function materializeOpenCodeStorageKey(key) {
+    key = String(key);
+    if (currentServerID === 'local' || currentServerID === canonicalServerID || !isOpenCodeGlobalStorageKey(key)) return key;
+    var suffix = key.slice(opencodeGlobalStoragePrefix.length);
+    if (suffix.indexOf(opencodeScopeSeparator) !== -1) return key;
+    if (suffix === 'server') return key;
+    return scopedOpenCodeGlobalKey(currentServerID, suffix);
+  }
+  function materializeOpenCodeStorageValue(key, value) {
+    key = canonicalizeOpenCodeStorageKey(key);
+    if (key === opencodeServerStorageKey) return materializeOpenCodeServerStorageValue(value);
+    if (key === 'opencode.global.dat:layout') return materializeOpenCodeLayoutStorageValue(value);
+    if (key === 'opencode.global.dat:layout.page') return materializeOpenCodeLayoutPageStorageValue(value);
+    return value;
+  }
+  function currentOpenCodeScopeID() {
+    return currentServerID || 'local';
+  }
+  function canonicalizeOpenCodeScopedObjectKeys(object) {
+    return translateOpenCodeScopedObjectKeys(object, canonicalServerID);
+  }
+  function materializeOpenCodeScopedObjectKeys(object) {
+    return translateOpenCodeScopedObjectKeys(object, currentOpenCodeScopeID());
+  }
+  function translateOpenCodeScopedObjectKeys(object, targetScope) {
+    if (!object || typeof object !== 'object' || Array.isArray(object)) return object;
+    var translated = {};
+    Object.keys(object).forEach(function(key) {
+      translated[translateOpenCodeScopedKey(key, targetScope)] = object[key];
+    });
+    return translated;
+  }
+  function translateOpenCodeScopedKey(key, targetScope) {
+    key = String(key);
+    var sep = key.indexOf(opencodeScopeSeparator);
+    if (sep === -1) return key;
+    var scope = key.slice(0, sep);
+    if (scope === currentOpenCodeScopeID() || scope === canonicalServerID || scope === 'local') {
+      return targetScope + opencodeScopeSeparator + key.slice(sep + 1);
+    }
+    return key;
   }
   function firstProjectList(projects) {
     var keys = Object.keys(projects);
@@ -383,10 +491,75 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   }
   function normalizeOpenCodeStorageItems(items) {
     if (!items || typeof items !== 'object') return {};
-    if (Object.prototype.hasOwnProperty.call(items, opencodeServerStorageKey)) {
-      items[opencodeServerStorageKey] = normalizeOpenCodeServerStorageValue(items[opencodeServerStorageKey]);
+    var normalized = {};
+    Object.keys(items).forEach(function(key) {
+      var canonicalKey = canonicalizeOpenCodeStorageKey(key);
+      if (canonicalKey === opencodeServerStorageKey) {
+        normalized[canonicalKey] = normalizeOpenCodeServerStorageValue(items[key]);
+      } else {
+        normalized[canonicalKey] = normalizeOpenCodeRoutingStorageValue(canonicalKey, items[key]);
+      }
+    });
+    return normalized;
+  }
+  function normalizeOpenCodeRoutingStorageValue(key, value) {
+    if (key === 'opencode.global.dat:layout') return normalizeOpenCodeLayoutStorageValue(value);
+    if (key === 'opencode.global.dat:layout.page') return normalizeOpenCodeLayoutPageStorageValue(value);
+    return value;
+  }
+  function normalizeOpenCodeLayoutStorageValue(value) {
+    if (typeof value !== 'string' || value === '') return value;
+    try {
+      var parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== 'object') return value;
+      if (!parsed.sessionTabs || typeof parsed.sessionTabs !== 'object' || Array.isArray(parsed.sessionTabs)) parsed.sessionTabs = {};
+      if (!parsed.sessionView || typeof parsed.sessionView !== 'object' || Array.isArray(parsed.sessionView)) parsed.sessionView = {};
+      if (!parsed.handoff || typeof parsed.handoff !== 'object' || Array.isArray(parsed.handoff)) parsed.handoff = {};
+      parsed.sessionTabs = canonicalizeOpenCodeScopedObjectKeys(parsed.sessionTabs);
+      parsed.sessionView = canonicalizeOpenCodeScopedObjectKeys(parsed.sessionView);
+      parsed.handoff = canonicalizeOpenCodeScopedObjectKeys(parsed.handoff);
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
     }
-    return items;
+  }
+  function materializeOpenCodeLayoutStorageValue(value) {
+    if (typeof value !== 'string' || value === '') return value;
+    try {
+      var parsed = JSON.parse(normalizeOpenCodeLayoutStorageValue(value));
+      if (!parsed || typeof parsed !== 'object') return value;
+      parsed.sessionTabs = materializeOpenCodeScopedObjectKeys(parsed.sessionTabs);
+      parsed.sessionView = materializeOpenCodeScopedObjectKeys(parsed.sessionView);
+      parsed.handoff = materializeOpenCodeScopedObjectKeys(parsed.handoff);
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
+    }
+  }
+  function normalizeOpenCodeLayoutPageStorageValue(value) {
+    if (typeof value !== 'string' || value === '') return value;
+    try {
+      var parsed = JSON.parse(value);
+      if (!parsed || typeof parsed !== 'object') return value;
+      if (!parsed.lastProjectSession || typeof parsed.lastProjectSession !== 'object' || Array.isArray(parsed.lastProjectSession)) parsed.lastProjectSession = {};
+      if (!parsed.workspaceOrder || typeof parsed.workspaceOrder !== 'object' || Array.isArray(parsed.workspaceOrder)) parsed.workspaceOrder = {};
+      if (!parsed.workspaceName || typeof parsed.workspaceName !== 'object' || Array.isArray(parsed.workspaceName)) parsed.workspaceName = {};
+      if (!parsed.workspaceBranchName || typeof parsed.workspaceBranchName !== 'object' || Array.isArray(parsed.workspaceBranchName)) parsed.workspaceBranchName = {};
+      if (!parsed.workspaceExpanded || typeof parsed.workspaceExpanded !== 'object' || Array.isArray(parsed.workspaceExpanded)) parsed.workspaceExpanded = {};
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
+    }
+  }
+  function materializeOpenCodeLayoutPageStorageValue(value) {
+    if (typeof value !== 'string' || value === '') return value;
+    try {
+      var parsed = JSON.parse(normalizeOpenCodeLayoutPageStorageValue(value));
+      if (!parsed || typeof parsed !== 'object') return value;
+      return JSON.stringify(parsed);
+    } catch (e) {
+      return value;
+    }
   }
   var originalOpenCodeServerStorageValue = Object.prototype.hasOwnProperty.call(serverStorage, opencodeServerStorageKey) ? serverStorage[opencodeServerStorageKey] : null;
   serverStorage = normalizeOpenCodeStorageItems(serverStorage);
@@ -489,31 +662,38 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     },
     getItem: function(key) {
       key = String(key);
-      if (!Object.prototype.hasOwnProperty.call(serverStorage, key)) return null;
-      return isOpenCodeServerStorageKey(key) ? materializeOpenCodeServerStorageValue(serverStorage[key]) : serverStorage[key];
+      var canonicalKey = canonicalizeOpenCodeStorageKey(key);
+      if (!Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey)) return null;
+      return materializeOpenCodeStorageValue(canonicalKey, serverStorage[canonicalKey]);
     },
     setItem: function(key, value) {
       key = String(key);
       value = String(value);
-      if (isOpenCodeServerStorageKey(key)) value = normalizeOpenCodeServerStorageValue(value);
-      var oldValue = Object.prototype.hasOwnProperty.call(serverStorage, key) ? serverStorage[key] : null;
+      var canonicalKey = canonicalizeOpenCodeStorageKey(key);
+      if (canonicalKey !== key) {
+        postDiagnostic('opencode-storage-key', 'canonicalize', { data: { from: key, to: canonicalKey } });
+      }
+      if (isOpenCodeServerStorageKey(canonicalKey)) value = normalizeOpenCodeServerStorageValue(value);
+      else value = normalizeOpenCodeRoutingStorageValue(canonicalKey, value);
+      var oldValue = Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey) ? serverStorage[canonicalKey] : null;
       if (oldValue === value) return;
-      serverStorage[key] = value;
-      dispatchStorageChange(key, oldValue, value);
-      queueStorageUpdate({ operation: 'set', key: key, value: value });
+      serverStorage[canonicalKey] = value;
+      dispatchStorageChange(key, oldValue === null ? null : materializeOpenCodeStorageValue(canonicalKey, oldValue), materializeOpenCodeStorageValue(canonicalKey, value));
+      queueStorageUpdate({ operation: 'set', key: canonicalKey, value: value });
     },
     removeItem: function(key) {
       key = String(key);
-      if (!Object.prototype.hasOwnProperty.call(serverStorage, key)) return;
-      var oldValue = serverStorage[key];
-      delete serverStorage[key];
-      dispatchStorageChange(key, oldValue, null);
-      queueStorageUpdate({ operation: 'remove', key: key });
+      var canonicalKey = canonicalizeOpenCodeStorageKey(key);
+      if (!Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey)) return;
+      var oldValue = serverStorage[canonicalKey];
+      delete serverStorage[canonicalKey];
+      dispatchStorageChange(key, materializeOpenCodeStorageValue(canonicalKey, oldValue), null);
+      queueStorageUpdate({ operation: 'remove', key: canonicalKey });
     },
     clear: function() {
       var oldStorage = serverStorage;
       serverStorage = {};
-      Object.keys(oldStorage).forEach(function(key) { dispatchStorageChange(key, oldStorage[key], null); });
+      Object.keys(oldStorage).forEach(function(key) { dispatchStorageChange(materializeOpenCodeStorageKey(key), materializeOpenCodeStorageValue(key, oldStorage[key]), null); });
       queueStorageUpdate({ operation: 'clear' });
     }
   };
@@ -730,6 +910,45 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     };
   }
 
+  function decodeOpenCodeRouteDir(slug) {
+    try {
+      var binary = atob(String(slug).replace(/-/g, '+').replace(/_/g, '/'));
+      var bytes = Uint8Array.from(binary, function(ch) { return ch.charCodeAt(0); });
+      return new TextDecoder().decode(bytes);
+    } catch (e) {
+      return '';
+    }
+  }
+  function currentOpenCodeRouteInfo(url) {
+    try {
+      var parsed = new URL(url || window.location.href, window.location.href);
+      var path = parsed.pathname;
+      if (path.startsWith(base + '/')) path = path.slice(base.length);
+      var match = path.match(/^\/([^\/]+)\/session\/?([^\/?#]*)/);
+      if (!match) return null;
+      return {
+        slug: match[1],
+        directory: decodeOpenCodeRouteDir(match[1]),
+        sessionID: match[2] || '',
+        currentServerID: currentServerID,
+        canonicalServerID: canonicalServerID,
+        path: path
+      };
+    } catch (e) {
+      return null;
+    }
+  }
+  function postRouteDiagnostic(event, url) {
+    var info = currentOpenCodeRouteInfo(url);
+    if (info) postDiagnostic('opencode-route', event, { path: info.path, data: info });
+  }
+  document.addEventListener('click', function(event) {
+    var anchor = event.target && event.target.closest ? event.target.closest('a[href]') : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute('href') || '';
+    if (href.indexOf('/session') !== -1) postRouteDiagnostic('session-link-click', anchor.href);
+  }, true);
+
   window.fetch = function(input, init) {
     if (!(input instanceof OriginalRequest)) {
       input = prefixAbsoluteURL(input);
@@ -756,7 +975,9 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (typeof original !== 'function') return;
     window.history[method] = function(state, title, url) {
       if (arguments.length > 2) arguments[2] = prefixHistoryURL(url);
-      return original.apply(this, arguments);
+      var result = original.apply(this, arguments);
+      if (arguments.length > 2) postRouteDiagnostic(method, arguments[2]);
+      return result;
     };
   }
   patchHistoryMethod('pushState');
