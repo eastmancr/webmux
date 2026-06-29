@@ -1768,7 +1768,7 @@ class TerminalMultiplexer {
 
             menu?.addEventListener('click', (e) => {
                 const option = e.target.closest('.new-pane-option');
-                if (!option || option.disabled) return;
+                if (!option || option.disabled || option.getAttribute('aria-disabled') === 'true') return;
                 e.stopPropagation();
                 this.closePaneMenu(menu, toggleButton);
                 this.createNewPaneAndGroup(option.dataset.paneType || 'terminal');
@@ -1780,11 +1780,16 @@ class TerminalMultiplexer {
         const paneTypes = this.paneTypes.filter(paneType => paneType.type !== 'terminal' || paneType.available !== false);
         const html = paneTypes.map(paneType => {
             const disabled = paneType.available === false;
-            const reason = disabled && paneType.unavailableReason ? ` title="${this.escapeHtml(paneType.unavailableReason)}"` : '';
+            const statusMessage = disabled ? paneType.unavailableReason : paneType.warningReason;
+            const versionMessage = paneType.version ? `Version: ${paneType.version}` : '';
+            const titleMessage = [statusMessage, versionMessage].filter(Boolean).join(' ');
+            const title = titleMessage ? ` title="${this.escapeHtml(titleMessage)}"` : '';
+            const statusIcon = this.getPaneTypeStatusIconSvg(disabled ? 'error' : (paneType.warningReason ? 'warning' : ''), statusMessage);
             return `
-                <button class="new-pane-option" data-pane-type="${this.escapeHtml(paneType.type)}" role="menuitem" ${disabled ? 'disabled aria-disabled="true"' : ''}${reason}>
+                <button class="new-pane-option" data-pane-type="${this.escapeHtml(paneType.type)}" role="menuitem" ${disabled ? 'aria-disabled="true"' : ''}${title}>
                     ${this.getPaneTypeIconSvg(paneType.type, 18)}
-                    <span>${this.escapeHtml(paneType.label || paneType.type)}</span>
+                    <span class="new-pane-option-label">${this.escapeHtml(paneType.label || paneType.type)}</span>
+                    ${statusIcon}
                 </button>
             `;
         }).join('');
@@ -1793,6 +1798,31 @@ class TerminalMultiplexer {
             const menu = split.querySelector('.new-pane-menu');
             if (menu) menu.innerHTML = html;
         });
+    }
+
+    getPaneTypeStatusIconSvg(status, message = '') {
+        if (!status) return '';
+        const escapedMessage = this.escapeHtml(message || (status === 'error' ? 'Pane type unavailable' : 'Pane type warning'));
+        if (status === 'error') {
+            return `
+                <span class="pane-type-status-icon pane-type-status-icon-error" title="${escapedMessage}" aria-label="${escapedMessage}">
+                    <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                        <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/>
+                        <path d="M12 7v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <circle cx="12" cy="16.5" r="1" fill="currentColor"/>
+                    </svg>
+                </span>
+            `;
+        }
+        return `
+            <span class="pane-type-status-icon pane-type-status-icon-warning" title="${escapedMessage}" aria-label="${escapedMessage}">
+                <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                    <path d="M12 4l9 16H3L12 4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                    <path d="M12 9v5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    <circle cx="12" cy="17" r="1" fill="currentColor"/>
+                </svg>
+            </span>
+        `;
     }
 
     closeNewPaneMenus(exceptSplit = null) {
@@ -1863,6 +1893,9 @@ class TerminalMultiplexer {
             // Mark when this pane was added to the frontend (for race condition protection)
             pane._addedAt = Date.now();
             this.panes.set(pane.id, pane);
+            if (type === 'opencode') {
+                this.loadServerInfo().catch(() => {});
+            }
             return pane;
         } catch (error) {
             console.error('Failed to create pane:', error);
@@ -3063,6 +3096,10 @@ class TerminalMultiplexer {
             });
             const hostContainer = iframe.closest('.pane-container') || document.getElementById(`pane-${iframe.dataset.activePaneId}`);
             hostContainer?.classList.remove('loading');
+
+            if ((this.panes.get(iframe.dataset.paneId)?.type || '') === 'opencode') {
+                this.loadServerInfo().catch(() => {});
+            }
 
             if (initialLoad) {
                 initialLoad = false;

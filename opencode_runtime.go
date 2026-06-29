@@ -19,7 +19,9 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -73,9 +75,11 @@ func (b *processOutputBuffer) String() string {
 
 // OpenCodeRuntime owns managed opencode server processes.
 type OpenCodeRuntime struct {
-	manager *PaneManager
-	states  map[string]*OpenCodePaneState
-	mu      sync.RWMutex
+	manager       *PaneManager
+	states        map[string]*OpenCodePaneState
+	mu            sync.RWMutex
+	warningReason string
+	warningDetail string
 }
 
 func (or *OpenCodeRuntime) Start(pane *Pane) error {
@@ -128,8 +132,10 @@ func (or *OpenCodeRuntime) Start(pane *Pane) error {
 	or.mu.Lock()
 	or.states[pane.BackendID] = state
 	or.mu.Unlock()
+	or.setWarningReason("")
 
 	addr := fmt.Sprintf("127.0.0.1:%d", pane.Port)
+	baseURL := "http://" + addr
 	deadline := time.After(15 * time.Second)
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
@@ -137,6 +143,7 @@ func (or *OpenCodeRuntime) Start(pane *Pane) error {
 		conn, err := net.DialTimeout("tcp", addr, 20*time.Millisecond)
 		if err == nil {
 			conn.Close()
+			go or.probeBackendCompatibilityInBackground(baseURL, pane.BackendID)
 			log.Printf("OpenCode backend %s ready on %s", pane.BackendID, addr)
 			return nil
 		}
@@ -151,6 +158,88 @@ func (or *OpenCodeRuntime) Start(pane *Pane) error {
 		case <-tick.C:
 		}
 	}
+}
+
+func (or *OpenCodeRuntime) probeBackendCompatibilityInBackground(baseURL, backendID string) {
+	deadline := time.After(15 * time.Second)
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+	var lastErr error
+	for {
+		warning, err := or.probeBackendCompatibility(baseURL)
+		if err == nil {
+			if warning != "" {
+				if or.updateWarningReason(warning) {
+					log.Printf("OpenCode compatibility warning for backend %s: %s", backendID, warning)
+				}
+			}
+			return
+		}
+		lastErr = err
+
+		select {
+		case <-deadline:
+			warning := "OpenCode index compatibility check failed; pane may not render correctly."
+			if or.updateWarningReason(warning) {
+				log.Printf("OpenCode compatibility warning for backend %s: %s detail=%q", backendID, warning, lastErr.Error())
+			}
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func (or *OpenCodeRuntime) probeBackendCompatibility(baseURL string) (string, error) {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get(baseURL + "/")
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch OpenCode index: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("OpenCode index returned HTTP %d", resp.StatusCode)
+	}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" && !strings.Contains(strings.ToLower(contentType), "text/html") {
+		return "", fmt.Errorf("OpenCode index returned %s instead of HTML", contentType)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
+	if err != nil {
+		return "", fmt.Errorf("failed to read OpenCode index: %w", err)
+	}
+	result := analyzeOpenCodeIndexCompatibility(string(body))
+	if result.Error != "" {
+		return "", errors.New(result.Error)
+	}
+	return result.Warning, nil
+}
+
+func (or *OpenCodeRuntime) WarningReason() string {
+	or.mu.RLock()
+	defer or.mu.RUnlock()
+	return or.warningReason
+}
+
+func (or *OpenCodeRuntime) setWarningReason(reason string) {
+	or.mu.Lock()
+	defer or.mu.Unlock()
+	or.warningReason = reason
+	or.warningDetail = ""
+}
+
+func (or *OpenCodeRuntime) updateWarningReason(reason string) bool {
+	return or.updateWarning(reason, "")
+}
+
+func (or *OpenCodeRuntime) updateWarning(reason, detail string) bool {
+	or.mu.Lock()
+	defer or.mu.Unlock()
+	if or.warningReason == reason && or.warningDetail == detail {
+		return false
+	}
+	or.warningReason = reason
+	or.warningDetail = detail
+	return true
 }
 
 func captureProcessOutput(processName, backendID, stream string, pipe interface{ Read([]byte) (int, error) }, output *processOutputBuffer) {
@@ -293,7 +382,7 @@ func (or *OpenCodeRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 		},
 		ModifyResponse: func(s *Server, resp *http.Response) error {
 			if strings.Contains(resp.Header.Get("Content-Type"), "text/html") {
-				return or.modifyOpenCodeIndexResponse(id, backendID, s.getPaneStorageSnapshot(backendID), s.diagnosticsSettings(), resp)
+				return or.modifyOpenCodeIndexResponse(s, id, backendID, s.getPaneStorageSnapshot(backendID), s.diagnosticsSettings(), resp)
 			}
 			return or.modifyOpenCodeAssetResponse(id, resp)
 		},

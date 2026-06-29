@@ -249,14 +249,37 @@ body.mobile-mode .sidebar-panel {
     outline: none;
 }
 
-.new-pane-option:disabled {
+.new-pane-option:disabled,
+.new-pane-option[aria-disabled="true"] {
     color: var(--text-muted);
     cursor: not-allowed;
     opacity: 0.55;
 }
 
-.new-pane-option:disabled:hover {
+.new-pane-option:disabled:hover,
+.new-pane-option[aria-disabled="true"]:hover {
     background: transparent;
+}
+
+.new-pane-option-label {
+    min-width: 0;
+    flex: 1;
+}
+
+.pane-type-status-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+
+.pane-type-status-icon-warning {
+    color: var(--warning);
+}
+
+.pane-type-status-icon-error {
+    color: var(--error);
 }
 
 .pane-type-icon-opencode {

@@ -18,11 +18,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,6 +52,8 @@ type PaneTypeInfo struct {
 	SupportsKeybar    bool   `json:"supportsKeybar"`
 	Available         bool   `json:"available"`
 	UnavailableReason string `json:"unavailableReason,omitempty"`
+	WarningReason     string `json:"warningReason,omitempty"`
+	Version           string `json:"version,omitempty"`
 }
 
 const (
@@ -232,6 +236,14 @@ func (sm *PaneManager) paneTypeAvailability(paneType string) (bool, string) {
 
 func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 	opencodeAvailable, opencodeReason := sm.paneTypeAvailability("opencode")
+	opencodeVersion := ""
+	if opencodeAvailable {
+		opencodeVersion = paneTypeCommandVersion("opencode")
+	}
+	opencodeWarning := ""
+	if sm.opencode != nil {
+		opencodeWarning = sm.opencode.WarningReason()
+	}
 	return []PaneTypeInfo{
 		{
 			Type:           "terminal",
@@ -247,8 +259,20 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 			SupportsKeybar:    false,
 			Available:         opencodeAvailable,
 			UnavailableReason: opencodeReason,
+			WarningReason:     opencodeWarning,
+			Version:           opencodeVersion,
 		},
 	}
+}
+
+func paneTypeCommandVersion(command string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, command, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
 }
 
 func (sm *PaneManager) backendScope(paneType string) string {

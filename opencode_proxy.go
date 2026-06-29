@@ -19,7 +19,9 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,7 +31,117 @@ import (
 
 var sourceMapCommentRE = regexp.MustCompile(`(?m)\n?(//# sourceMappingURL=.*$|/\*# sourceMappingURL=.*\*/)`)
 
-func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string, storage PaneStorageState, diagnostics DiagnosticsSettings, resp *http.Response) error {
+type openCodeCompatibilityResult struct {
+	Warning string
+	Error   string
+	Details []string
+}
+
+func analyzeOpenCodeIndexCompatibility(content string) openCodeCompatibilityResult {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return openCodeCompatibilityResult{Error: "OpenCode index response was empty"}
+	}
+	lower := strings.ToLower(trimmed)
+	if !strings.Contains(lower, "<html") && !strings.Contains(lower, "<!doctype html") && !strings.Contains(lower, "<head") && !strings.Contains(lower, "<body") {
+		return openCodeCompatibilityResult{Error: "OpenCode index response is not an HTML document"}
+	}
+
+	warnings := []string{}
+	if !strings.Contains(lower, "<head") {
+		warnings = append(warnings, "OpenCode HTML has no head element; Webmux will prepend proxy shims instead of injecting them into the document head.")
+	}
+	if !strings.Contains(lower, "<script") {
+		warnings = append(warnings, "OpenCode HTML has no script tags; its web app structure may have changed.")
+	}
+	if !strings.Contains(lower, "assets/") && !strings.Contains(lower, "/assets/") {
+		warnings = append(warnings, "OpenCode HTML has no recognizable asset references; routing or rendering may have changed.")
+	}
+	if len(warnings) > 0 {
+		return openCodeCompatibilityResult{Warning: strings.Join(warnings, " "), Details: warnings}
+	}
+	return openCodeCompatibilityResult{}
+}
+
+func analyzeOpenCodeStorageSchema(items map[string]string) openCodeCompatibilityResult {
+	if len(items) == 0 {
+		return openCodeCompatibilityResult{}
+	}
+	knownGlobal := map[string]bool{
+		"opencode.global.dat:server":             true,
+		"opencode.global.dat:layout":             true,
+		"opencode.global.dat:layout.page":        true,
+		"opencode.global.dat:model":              true,
+		"opencode.global.dat:command.catalog.v1": true,
+		"opencode.global.dat:notification":       true,
+		"opencode.global.dat:prompt-history":     true,
+	}
+	structuredGlobal := map[string]bool{
+		"opencode.global.dat:server":      true,
+		"opencode.global.dat:layout":      true,
+		"opencode.global.dat:layout.page": true,
+	}
+	unknownGlobal := []string{}
+	malformedKnown := []string{}
+	for key, value := range items {
+		if !strings.HasPrefix(key, "opencode.global.dat:") {
+			continue
+		}
+		if !knownGlobal[key] {
+			unknownGlobal = append(unknownGlobal, key)
+			continue
+		}
+		if !structuredGlobal[key] || value == "" || value == "null" {
+			continue
+		}
+		var parsed any
+		if err := json.Unmarshal([]byte(value), &parsed); err != nil {
+			malformedKnown = append(malformedKnown, key)
+		}
+	}
+	if len(malformedKnown) > 0 {
+		return openCodeCompatibilityResult{
+			Warning: fmt.Sprintf("OpenCode storage contains %s. Shared pane state may not restore correctly.", pluralizeCount(len(malformedKnown), "malformed known key", "malformed known keys")),
+			Details: []string{"malformed known storage keys: " + strings.Join(malformedKnown, ", ")},
+		}
+	}
+	if len(unknownGlobal) > 0 {
+		return openCodeCompatibilityResult{
+			Warning: fmt.Sprintf("OpenCode storage contains %s. Rendering will continue, but shared pane state may be incomplete.", pluralizeCount(len(unknownGlobal), "unrecognized global key", "unrecognized global keys")),
+			Details: []string{"unrecognized global storage keys: " + strings.Join(unknownGlobal, ", ")},
+		}
+	}
+	return openCodeCompatibilityResult{}
+}
+
+func pluralizeCount(count int, singular string, plural string) string {
+	if count == 1 {
+		return fmt.Sprintf("1 %s", singular)
+	}
+	return fmt.Sprintf("%d %s", count, plural)
+}
+
+func combineOpenCodeCompatibilityWarnings(results ...openCodeCompatibilityResult) (string, []string) {
+	warnings := []string{}
+	details := []string{}
+	for _, result := range results {
+		if result.Warning != "" {
+			warnings = append(warnings, result.Warning)
+		}
+		details = append(details, result.Details...)
+	}
+	return strings.TrimSpace(strings.Join(warnings, " ")), details
+}
+
+func logOpenCodeCompatibilityWarning(paneID, backendID, warning string, details []string) {
+	if len(details) == 0 {
+		log.Printf("OpenCode compatibility warning for pane %s backend %s: %s", paneID, backendID, warning)
+		return
+	}
+	log.Printf("OpenCode compatibility warning for pane %s backend %s: %s details=%q", paneID, backendID, warning, strings.Join(details, "; "))
+}
+
+func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(s *Server, paneID, backendID string, storage PaneStorageState, diagnostics DiagnosticsSettings, resp *http.Response) error {
 	if resp.StatusCode >= 400 {
 		return nil
 	}
@@ -43,6 +155,17 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(paneID, backendID string,
 	}
 
 	content := string(body)
+	compatibility := analyzeOpenCodeIndexCompatibility(content)
+	if compatibility.Error != "" {
+		return errors.New(compatibility.Error)
+	}
+	storageCompatibility := analyzeOpenCodeStorageSchema(storage.Items)
+	warning, details := combineOpenCodeCompatibilityWarnings(compatibility, storageCompatibility)
+	detail := strings.Join(details, "; ")
+	if or.updateWarning(warning, detail) && warning != "" && s != nil {
+		logOpenCodeCompatibilityWarning(paneID, backendID, warning, details)
+		s.diagnosticf("proxy", "event=opencode-compat-warning pane=%s backend=%s warning=%q", diagSanitize(paneID, 48), diagSanitize(backendID, 48), warning)
+	}
 	content = rewriteRootRelativeHTML(content)
 	content = injectOpenCodeBaseElement(content, paneID)
 	content = injectPanePopoutBridge(content)
@@ -92,6 +215,9 @@ func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(_ string, resp *http.Resp
 	}
 
 	content := string(body)
+	if isJS {
+		content = rewriteOpenCodeJSInitialLocation(content)
+	}
 	if isCSS {
 		content = rewriteOpenCodeCSSAssetURLs(content)
 	}
@@ -102,6 +228,13 @@ func (or *OpenCodeRuntime) modifyOpenCodeAssetResponse(_ string, resp *http.Resp
 	resp.Header.Del("Etag")
 
 	return nil
+}
+
+func rewriteOpenCodeJSInitialLocation(content string) string {
+	return strings.ReplaceAll(content,
+		`window.location.pathname.replace(/^\/+/,"/")`,
+		`(window.__webmuxOpenCodePathname||window.location.pathname).replace(/^\/+/,"/")`,
+	)
 }
 
 func rewriteOpenCodeCSSAssetURLs(content string) string {
@@ -168,6 +301,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var marker = '/p/' + paneID;
   var markerIndex = window.location.pathname.indexOf(marker);
   var base = markerIndex === -1 ? fallbackBase : window.location.pathname.slice(0, markerIndex + marker.length);
+  window.__webmuxOpenCodePathname = markerIndex === -1 ? '/' : (window.location.pathname.slice(markerIndex + marker.length) || '/');
   var storageBase = base.replace(marker, '/api/pane-storage/' + encodeURIComponent(backendID));
   var storageEventsBase = base.replace(marker, '/api/pane-storage-events/' + encodeURIComponent(backendID));
   var diagnosticsBase = base.replace(marker, '/api/diagnostics/client');
