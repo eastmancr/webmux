@@ -245,10 +245,20 @@ func (or *OpenCodeRuntime) updateWarning(reason, detail string) bool {
 func captureProcessOutput(processName, backendID, stream string, pipe interface{ Read([]byte) (int, error) }, output *processOutputBuffer) {
 	scanner := bufio.NewScanner(pipe)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	suppressWarningDetails := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		output.Add(stream + ": " + line)
+		if suppressWarningDetails {
+			if line == "" || line[0] == ' ' || line[0] == '\t' {
+				continue
+			}
+			suppressWarningDetails = false
+		}
 		log.Printf("%s backend %s %s: %s", processName, backendID, stream, line)
+		if processName == "opencode" && strings.HasPrefix(line, "MaxListenersExceededWarning:") {
+			suppressWarningDetails = true
+		}
 	}
 	if err := scanner.Err(); err != nil {
 		log.Printf("%s backend %s %s read error: %v", processName, backendID, stream, err)
@@ -292,15 +302,15 @@ func (or *OpenCodeRuntime) Monitor(pane *Pane) {
 	}
 
 	err := <-state.exitCh
+	currentState, stateOK := or.getState(backendID)
+	if !stateOK || currentState.cmd != state.cmd {
+		return
+	}
 	log.Printf("OpenCode backend %s exited with: %v%s", backendID, err, formatProcessOutput(state.output))
 
 	or.manager.mu.Lock()
 	defer or.manager.mu.Unlock()
 
-	currentState, stateOK := or.getState(backendID)
-	if !stateOK || currentState.cmd != state.cmd {
-		return
-	}
 	if !or.manager.hasPaneForBackend(backendID) {
 		return
 	}

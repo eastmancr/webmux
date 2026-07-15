@@ -18,6 +18,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -89,6 +91,9 @@ func (s *Server) handlePaneProxy(w http.ResponseWriter, r *http.Request) {
 	// Create reverse proxy
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, context.Canceled) || errors.Is(r.Context().Err(), context.Canceled) {
+			return
+		}
 		log.Printf("Pane %s %s proxy error for %s: %v", paneID, proxyConfig.BackendName, r.URL.Path, err)
 		http.Error(w, "Failed to connect to "+proxyConfig.BackendName, http.StatusBadGateway)
 	}

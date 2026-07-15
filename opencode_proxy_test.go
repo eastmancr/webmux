@@ -64,35 +64,42 @@ func TestAnalyzeOpenCodeStorageSchema(t *testing.T) {
 		{
 			name: "known storage keys",
 			items: map[string]string{
-				"opencode.global.dat:server":         `{"projects":{"webmux":[]},"lastProject":{"webmux":"/tmp/project"}}`,
-				"opencode.global.dat:layout":         `{"sessionTabs":{},"sessionView":{},"handoff":{}}`,
-				"opencode.global.dat:layout.page":    `{"lastProjectSession":{},"workspaceOrder":{}}`,
-				"opencode.global.dat:model":          `anthropic/claude-sonnet-4`,
-				"opencode.global.dat:notification":   `{}`,
-				"opencode.global.dat:prompt-history": `[]`,
+				"opencode.global.dat:server":               `{"projects":{"webmux":[]},"lastProject":{"webmux":"/tmp/project"}}`,
+				"opencode.global.dat:layout":               `{"sessionTabs":{},"sessionView":{},"handoff":{}}`,
+				"opencode.global.dat:layout.page":          `{"lastProjectSession":{},"workspaceOrder":{}}`,
+				"opencode.global.dat:model":                `anthropic/claude-sonnet-4`,
+				"opencode.global.dat:notification":         `{}`,
+				"opencode.global.dat:prompt-history":       `[]`,
+				"opencode.global.dat:prompt-history-shell": `[]`,
+				"opencode.global.dat:route.context":        `{"server":"webmux"}`,
+				"opencode.global.dat:go-upsell":            `{}`,
+				"opencode.global.dat:home.servers":         `{"collapsed":{}}`,
+				"opencode.global.dat:language":             `{"locale":"en"}`,
+				"opencode.global.dat:open.app":             `{"app":"finder"}`,
+				"opencode.global.dat:review-panel-v2":      `{}`,
 			},
 			wantWarning: false,
 		},
 		{
 			name: "one unknown global storage key",
 			items: map[string]string{
-				"opencode.global.dat:server":        `{"projects":{},"lastProject":{}}`,
-				"opencode.global.dat:route.context": `{"server":"local"}`,
+				"opencode.global.dat:server":         `{"projects":{},"lastProject":{}}`,
+				"opencode.global.dat:future.context": `{"server":"local"}`,
 			},
 			wantWarning: true,
 			wantText:    "1 unrecognized global key",
-			wantDetail:  "opencode.global.dat:route.context",
+			wantDetail:  "opencode.global.dat:future.context",
 		},
 		{
 			name: "unknown global storage keys",
 			items: map[string]string{
 				"opencode.global.dat:server":          `{"projects":{},"lastProject":{}}`,
-				"opencode.global.dat:route.context":   `{"server":"local"}`,
+				"opencode.global.dat:future.context":  `{"server":"local"}`,
 				"opencode.global.dat:workspace.index": `[]`,
 			},
 			wantWarning: true,
 			wantText:    "2 unrecognized global keys",
-			wantDetail:  "opencode.global.dat:route.context",
+			wantDetail:  "opencode.global.dat:future.context",
 		},
 		{
 			name: "malformed known storage key",
@@ -135,8 +142,8 @@ func TestModifyOpenCodeIndexResponseInjectsAndWarns(t *testing.T) {
 		Body:       io.NopCloser(strings.NewReader(`<html><body><script type="module">window.__OPENCODE__ = true</script><div id="root"></div></body></html>`)),
 	}
 	storage := PaneStorageState{Items: map[string]string{
-		"opencode.global.dat:server":        `{"projects":{},"lastProject":{}}`,
-		"opencode.global.dat:route.context": `{"server":"local"}`,
+		"opencode.global.dat:server":         `{"projects":{},"lastProject":{}}`,
+		"opencode.global.dat:future.context": `{"server":"local"}`,
 	}}
 
 	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", storage, DiagnosticsSettings{}, resp); err != nil {
@@ -158,6 +165,97 @@ func TestModifyOpenCodeIndexResponseInjectsAndWarns(t *testing.T) {
 	}
 	if !strings.Contains(warning, "unrecognized global key") || !strings.Contains(warning, "no head element") {
 		t.Fatalf("warning = %q, want storage and html warnings", warning)
+	}
+}
+
+func TestModifyOpenCodeIndexResponseCanonicalizesDefaultServerOrigin(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+	storage := PaneStorageState{Items: map[string]string{
+		"opencode.settings.dat:defaultServerUrl": "https://old.example.com",
+	}}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", storage, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"opencode.settings.dat:defaultServerUrl",
+		"key === opencodeDefaultServerStorageKey) return window.location.origin",
+		"key === opencodeDefaultServerStorageKey && typeof value === 'string'",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing default-server migration %q", want)
+		}
+	}
+}
+
+func TestModifyOpenCodeIndexResponseCanonicalizesHomeServerSelection(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+	storage := PaneStorageState{Items: map[string]string{
+		"opencode.global.dat:layout": `{"home":{"selection":{"server":"https://old.example.com"}}}`,
+	}}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", storage, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"parsed.home.selection.server = canonicalizeOpenCodeServerReference",
+		"parsed.home.selection.server = materializeOpenCodeServerReference",
+		"window.location.origin",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing home-server migration %q", want)
+		}
+	}
+}
+
+func TestModifyOpenCodeIndexResponseMaterializesWindowTabs(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+	storage := PaneStorageState{Items: map[string]string{
+		openCodeWindowTabsKey: `[{"type":"session","server":"webmux","sessionId":"ses_1"}]`,
+	}}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", storage, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"opencode.window.browser.dat:tabs",
+		"translateOpenCodeTabsStorageValue(value, window.location.origin)",
+		"translateOpenCodeTabInfoStorageValue(value, canonicalServerID)",
+		"encodeOpenCodeServerID(serverID)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing window-tab translation %q", want)
+		}
 	}
 }
 

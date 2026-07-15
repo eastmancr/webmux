@@ -210,6 +210,15 @@ func LoadPaneStorage() map[string]*PaneStorageState {
 		if state.Version == 0 && len(state.Items) > 0 {
 			state.Version = 1
 		}
+		canonicalItems := canonicalizePaneStorageItems(namespace, state.Items)
+		if !paneStorageItemsEqual(state.Items, canonicalItems) {
+			state.Items = canonicalItems
+			state.Version++
+			state.UpdatedBy = "migration"
+			if err := SavePaneStorage(namespace, state); err != nil {
+				log.Printf("Failed to migrate pane storage %s: %v", namespace, err)
+			}
+		}
 		states[namespace] = &state
 	}
 	return states
@@ -327,7 +336,7 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 		switch op.Operation {
 		case "seed":
 			if len(state.Items) == 0 && state.Version == 0 {
-				for key, value := range op.Items {
+				for key, value := range canonicalizePaneStorageItems(backendID, op.Items) {
 					state.Items[key] = value
 				}
 				if len(op.Items) > 0 {
@@ -337,15 +346,25 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 				}
 			}
 		case "set":
-			if state.Items[op.Key] != op.Value {
-				state.Items[op.Key] = op.Value
+			key := op.Key
+			value := op.Value
+			if backendID == openCodeStorageNamespace {
+				key = canonicalizeOpenCodeStorageKey(key)
+				value = canonicalizeOpenCodeStorageValue(key, value)
+			}
+			if state.Items[key] != value {
+				state.Items[key] = value
 				state.Version++
 				state.UpdatedBy = clientID
 				changed = true
 			}
 		case "remove":
-			if _, ok := state.Items[op.Key]; ok {
-				delete(state.Items, op.Key)
+			key := op.Key
+			if backendID == openCodeStorageNamespace {
+				key = canonicalizeOpenCodeStorageKey(key)
+			}
+			if _, ok := state.Items[key]; ok {
+				delete(state.Items, key)
 				state.Version++
 				state.UpdatedBy = clientID
 				changed = true
@@ -443,7 +462,7 @@ func (s *Server) replacePaneStorage(namespace string, items map[string]string, u
 		state = &PaneStorageState{Items: make(map[string]string)}
 		s.paneStorage[namespace] = state
 	}
-	state.Items = copyPaneStorageItems(items)
+	state.Items = canonicalizePaneStorageItems(namespace, items)
 	state.Version++
 	state.UpdatedBy = updatedBy
 	snapshot := PaneStorageState{
@@ -483,4 +502,16 @@ func copyPaneStorageItems(items map[string]string) map[string]string {
 		copy[key] = value
 	}
 	return copy
+}
+
+func paneStorageItemsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
