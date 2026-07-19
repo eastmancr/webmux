@@ -92,7 +92,7 @@ grep -n "mobileMode\|Mobile" static/app.js # Find mobile-specific code
 - `cmd/wm/main.go` - CLI helper for terminal-to-browser interaction
 - `internal/shell/init.go` - Shell initialization scripts for webmux terminals
 - `panes.go` - Generic pane model, manager, UI state types
-- `terminal_runtime.go` / `terminal_proxy.go` / `terminal_input.go` - Terminal pane runtime, ttyd proxying, tmux input
+- `terminal_runtime.go` / `terminal_ws.go` / `terminal_proxy.go` / `terminal_input.go` - Terminal pane runtime, WebSocket/PTTY transport, OSC 52 handling, tmux input
 - `opencode_runtime.go` / `opencode_proxy.go` - Managed OpenCode shared backend and URL/storage proxy shims
 - `proxy.go` / `proxy_helpers.go` - Generic pane HTTP/WebSocket proxy pipeline
 - `static/` - Frontend SPA (vanilla JS, no framework)

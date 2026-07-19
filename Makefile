@@ -50,5 +50,6 @@ pkg: build
 		--transform 's,^,$(BINARY)-$(VERSION)/,' \
 		*.go go.mod go.sum webmux.1 README.md LICENSE \
 		cmd/wm/main.go internal/shell/*.go \
-		static/app.js static/index.html static/style.css static/tmux.conf static/favicon.ico
+		static/app.js static/index.html static/style.css static/terminal-popout.* \
+		static/tmux.conf static/favicon.ico static/vendor/xterm/*
 	cp PKGBUILD $(PKG)/

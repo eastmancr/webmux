@@ -20,12 +20,9 @@ package main
 import (
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -39,10 +36,9 @@ import (
 // TerminalPaneState stores runtime-only state for terminal panes.
 type TerminalPaneState struct {
 	tmuxSession string
-	ttydCmd     *exec.Cmd
 }
 
-// TerminalRuntime owns tmux/ttyd lifecycle for terminal panes.
+// TerminalRuntime owns tmux lifecycle for terminal panes.
 type TerminalRuntime struct {
 	manager        *PaneManager
 	states         map[string]*TerminalPaneState
@@ -258,102 +254,6 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 	tr.states[pane.ID] = state
 	tr.mu.Unlock()
 
-	// Start ttyd attached to the tmux session (must be called without lock)
-	if err := tr.startTtyd(pane); err != nil {
-		// Clean up tmux session
-		exec.Command("tmux", "-S", tmuxSocket, "kill-session", "-t", tmuxSession).Run()
-		tr.mu.Lock()
-		delete(tr.states, pane.ID)
-		tr.mu.Unlock()
-		return err
-	}
-
-	return nil
-}
-
-// startTtyd starts a ttyd process attached to the pane's tmux session
-// NOTE: This must be called WITHOUT holding manager.mu lock.
-func (tr *TerminalRuntime) startTtyd(pane *Pane) error {
-	tmuxSocket := tr.tmuxSocketPath()
-	state, ok := tr.getState(pane.ID)
-	if !ok {
-		return fmt.Errorf("terminal state not found: %s", pane.ID)
-	}
-	tmuxSession := state.tmuxSession
-
-	// Get terminal colors from settings
-	var termColors TerminalColors
-	if tr.manager.getSettings != nil {
-		termColors = tr.manager.getSettings().Terminal
-	} else {
-		termColors = DefaultSettings().Terminal
-	}
-
-	// Build theme JSON for ttyd using Base24 mapping
-	// ttyd xterm.js theme format -> Base24 mapping:
-	// background=base00, foreground=base05, cursor=base06, cursorAccent=base00
-	// selection=base02, black=base03, red=base08, green=base0B, yellow=base0A
-	// blue=base0D, magenta=base0E, cyan=base0C, white=base06
-	// brightBlack=base04, brightRed=base12, brightGreen=base14, brightYellow=base13
-	// brightBlue=base16, brightMagenta=base17, brightCyan=base15, brightWhite=base07
-	themeJSON := fmt.Sprintf(`{"background":"%s","foreground":"%s","cursor":"%s","cursorAccent":"%s","selection":"%s","black":"%s","red":"%s","green":"%s","yellow":"%s","blue":"%s","magenta":"%s","cyan":"%s","white":"%s","brightBlack":"%s","brightRed":"%s","brightGreen":"%s","brightYellow":"%s","brightBlue":"%s","brightMagenta":"%s","brightCyan":"%s","brightWhite":"%s"}`,
-		termColors.Base00, termColors.Base05, termColors.Base06, termColors.Base00,
-		termColors.Base02, termColors.Base03, termColors.Base08, termColors.Base0B, termColors.Base0A,
-		termColors.Base0D, termColors.Base0E, termColors.Base0C, termColors.Base06,
-		termColors.Base04, termColors.Base12, termColors.Base14, termColors.Base13,
-		termColors.Base16, termColors.Base17, termColors.Base15, termColors.Base07)
-
-	// No --once: ttyd stays running and each client connection runs tmux attach
-	// Multiple tmux attach calls to the same session share the view
-	args := []string{
-		"--port", strconv.Itoa(pane.Port),
-		"--writable",
-		"--client-option", "fontSize=14",
-		"--client-option", "fontFamily=JetBrains Mono,Fira Code,SF Mono,Menlo,Monaco,Courier New,monospace",
-		"--client-option", "theme=" + themeJSON,
-		"--client-option", "disableLeaveAlert=true",
-		"--client-option", "scrollback=50000",
-		"--client-option", "allowProposedApi=true",
-		"--client-option", "rightClickSelectsWord=true",
-	}
-
-	// Build tmux attach command with our config
-	tmuxArgs := []string{"-S", tmuxSocket}
-	if tr.tmuxConfigPath != "" {
-		tmuxArgs = append(tmuxArgs, "-f", tr.tmuxConfigPath)
-	}
-	tmuxArgs = append(tmuxArgs, "attach-session", "-t", tmuxSession)
-
-	args = append(args, "tmux")
-	args = append(args, tmuxArgs...)
-
-	cmd := exec.Command("ttyd", args...)
-	// Don't inherit stdout/stderr to avoid echoing to parent terminal
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ttyd: %w", err)
-	}
-
-	tr.mu.Lock()
-	if currentState, ok := tr.states[pane.ID]; ok {
-		currentState.ttydCmd = cmd
-	}
-	tr.mu.Unlock()
-
-	// Monitor ttyd process and restart when client disconnects
-	go tr.handleTtydExit(pane, cmd)
-
-	// Wait for ttyd to be ready (port accepting connections)
-	addr := fmt.Sprintf("127.0.0.1:%d", pane.Port)
-	for range 50 {
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	return nil
 }
 
@@ -362,69 +262,6 @@ func (tr *TerminalRuntime) getState(paneID string) (*TerminalPaneState, bool) {
 	defer tr.mu.RUnlock()
 	state, ok := tr.states[paneID]
 	return state, ok
-}
-
-// handleTtydExit handles ttyd process exit and restarts for reconnection.
-func (tr *TerminalRuntime) handleTtydExit(pane *Pane, cmd *exec.Cmd) {
-	exitState := cmd.Wait()
-	log.Printf("Pane %s: ttyd process exited with: %v", pane.ID, exitState)
-
-	sm := tr.manager
-	sm.mu.Lock()
-	// Check if pane still exists
-	s, ok := sm.panes[pane.ID]
-	if !ok {
-		log.Printf("Pane %s: already removed from panes map", pane.ID)
-		sm.mu.Unlock()
-		return
-	}
-
-	state, stateOK := tr.getState(pane.ID)
-	if !stateOK {
-		log.Printf("Pane %s: terminal state missing, cleaning up", pane.ID)
-		sm.deletePane(pane.ID)
-		if len(sm.panes) == 0 {
-			sm.resetCounters()
-		}
-		sm.mu.Unlock()
-		return
-	}
-
-	// Check if tmux session still exists
-	tmuxSocket := tr.tmuxSocketPath()
-	checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", state.tmuxSession)
-	if err := checkCmd.Run(); err != nil {
-		// tmux session is gone, clean up
-		log.Printf("Pane %s: tmux session %s no longer exists, cleaning up", pane.ID, state.tmuxSession)
-		tr.mu.Lock()
-		delete(tr.states, pane.ID)
-		tr.mu.Unlock()
-		sm.deletePane(pane.ID)
-		if len(sm.panes) == 0 {
-			sm.resetCounters()
-		}
-		sm.mu.Unlock()
-		return
-	}
-
-	log.Printf("Pane %s: ttyd exited but tmux session %s still exists, restarting ttyd...", pane.ID, state.tmuxSession)
-	sm.mu.Unlock()
-
-	// Restart ttyd (outside of lock)
-	if err := tr.startTtyd(s); err != nil {
-		log.Printf("Pane %s: failed to restart ttyd: %v", pane.ID, err)
-		sm.mu.Lock()
-		tr.mu.Lock()
-		delete(tr.states, pane.ID)
-		tr.mu.Unlock()
-		sm.deletePane(pane.ID)
-		if len(sm.panes) == 0 {
-			sm.resetCounters()
-		}
-		sm.mu.Unlock()
-	} else {
-		log.Printf("Pane %s: ttyd restarted successfully", pane.ID)
-	}
 }
 
 // monitorPane watches the tmux session to detect when the shell exits
@@ -458,12 +295,8 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 		checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", tmuxSession)
 		if err := checkCmd.Run(); err != nil {
 			log.Printf("Pane %s: tmux session %s exited after %d checks (%v), cleaning up", pane.ID, tmuxSession, checkCount, time.Since(startTime))
-			// Kill ttyd process if running
 			sm.mu.Lock()
-			if s, ok := sm.panes[pane.ID]; ok {
-				if state, ok := tr.getState(s.ID); ok && state.ttydCmd != nil && state.ttydCmd.Process != nil {
-					state.ttydCmd.Process.Kill()
-				}
+			if _, ok := sm.panes[pane.ID]; ok {
 				tr.mu.Lock()
 				delete(tr.states, pane.ID)
 				tr.mu.Unlock()
@@ -517,42 +350,12 @@ func (tr *TerminalRuntime) Stop(pane *Pane) {
 	if !ok {
 		return
 	}
-	if state.ttydCmd != nil && state.ttydCmd.Process != nil {
-		state.ttydCmd.Process.Kill()
-	}
 	if state.tmuxSession != "" {
 		exec.Command("tmux", "-S", tr.tmuxSocketPath(), "kill-session", "-t", state.tmuxSession).Run()
 	}
 	tr.mu.Lock()
 	delete(tr.states, pane.ID)
 	tr.mu.Unlock()
-}
-
-// ProxyConfig returns the ttyd proxy behavior for a terminal pane.
-func (tr *TerminalRuntime) ProxyConfig(id string) (*PaneProxyConfig, bool) {
-	tr.manager.mu.RLock()
-	pane, ok := tr.manager.panes[id]
-	port := 0
-	if ok {
-		port = pane.Port
-	}
-	tr.manager.mu.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if _, ok := tr.getState(id); !ok {
-		return nil, false
-	}
-	return &PaneProxyConfig{
-		TargetHost:  fmt.Sprintf("127.0.0.1:%d", port),
-		BackendName: "terminal",
-		ModifyIndexResponse: func(s *Server, resp *http.Response) error {
-			return tr.modifyTtydIndexResponse(resp, s.diagnosticsSettings())
-		},
-		NewWebSocketObserver: func(s *Server) WebSocketTrafficObserver {
-			return newOSC52Scanner(s)
-		},
-	}, true
 }
 
 // Cleanup releases terminal runtime resources.

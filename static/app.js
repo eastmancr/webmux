@@ -65,6 +65,7 @@ class TerminalMultiplexer {
         this.sharedIframePositionFrame = null;
         this.sharedIframeResizeObserver = null;
         this.pendingDedicatedIframeMounts = new Map();
+        this.terminals = new Map();
 
         // Sidebar collapsed state
         this.sidebarCollapsed = false;
@@ -1571,6 +1572,7 @@ class TerminalMultiplexer {
 
     resetPaneDisplayDOM() {
         this.logDiagnostic('iframe', 'reset-dom', { data: { shared: this.sharedIframes.size } });
+        for (const paneId of this.terminals.keys()) this.disposeTerminal(paneId);
         this.sharedIframes.forEach(iframe => iframe.remove());
         this.sharedIframes.clear();
         this.pendingDedicatedIframeMounts.forEach(frame => cancelAnimationFrame(frame));
@@ -3014,6 +3016,11 @@ class TerminalMultiplexer {
         // Don't focus if popped out
         if (container.classList.contains('popped-out')) return;
 
+        if (pane?.type === 'terminal') {
+            setTimeout(() => this.terminals.get(paneId)?.terminal.focus(), 0);
+            return;
+        }
+
         const iframe = this.isSharedPane(pane)
             ? this.sharedIframes.get(pane.backendId)
             : container.querySelector('iframe');
@@ -3029,7 +3036,7 @@ class TerminalMultiplexer {
                 iframe.contentWindow?.focus();
                 iframe.contentDocument?.querySelector('.xterm-helper-textarea')?.focus();
             } catch (e) {
-                // Cross-origin fallback (shouldn't happen since we proxy ttyd)
+                // Cross-origin fallback for proxied HTTP panes.
                 iframe.focus();
             }
         }, 100);
@@ -3083,7 +3090,7 @@ class TerminalMultiplexer {
         iframe.dataset.createdAt = String(Date.now());
         this.logDiagnostic('iframe', 'create', { paneId: pane.id, backendId: pane.backendId, paneType: pane.type, path: `/p/${pane.id}/` });
 
-        // Listen for iframe navigation (happens when pane dies and ttyd redirects)
+        // Listen for iframe navigation, which can happen when an HTTP backend dies.
         // Only trigger on subsequent loads (not the initial load)
         let initialLoad = true;
         iframe.addEventListener('load', () => {
@@ -3138,8 +3145,188 @@ class TerminalMultiplexer {
         return iframe;
     }
 
+    terminalTheme() {
+        const colors = this.settings?.terminal || this.getDefaultSettings().terminal;
+        return {
+            background: colors.base00,
+            foreground: colors.base05,
+            cursor: colors.base06,
+            cursorAccent: colors.base00,
+            selectionBackground: colors.base02,
+            scrollbarSliderBackground: '#00000000',
+            scrollbarSliderHoverBackground: '#00000000',
+            scrollbarSliderActiveBackground: '#00000000',
+            overviewRulerBorder: '#00000000',
+            black: colors.base00,
+            red: colors.base08,
+            green: colors.base0B,
+            yellow: colors.base0A,
+            blue: colors.base0D,
+            magenta: colors.base0E,
+            cyan: colors.base0C,
+            white: colors.base05,
+            brightBlack: colors.base03,
+            brightRed: colors.base12,
+            brightGreen: colors.base14,
+            brightYellow: colors.base13,
+            brightBlue: colors.base16,
+            brightMagenta: colors.base17,
+            brightCyan: colors.base15,
+            brightWhite: colors.base07,
+        };
+    }
+
+    ensureTerminal(pane, container) {
+        if (this.terminals.has(pane.id)) {
+            requestAnimationFrame(() => this.fitTerminal(pane.id));
+            return;
+        }
+
+        const rect = container.getBoundingClientRect();
+        if (!container.classList.contains('visible') || rect.width <= 0 || rect.height <= 0) {
+            if (this.pendingDedicatedIframeMounts.has(pane.id)) return;
+            const frame = requestAnimationFrame(() => {
+                this.pendingDedicatedIframeMounts.delete(pane.id);
+                this.ensureTerminal(pane, container);
+            });
+            this.pendingDedicatedIframeMounts.set(pane.id, frame);
+            return;
+        }
+
+        const theme = this.terminalTheme();
+        const host = document.createElement('div');
+        host.className = 'terminal-host';
+        host.dataset.paneId = pane.id;
+        host.style.setProperty('--terminal-background', theme.background);
+        const before = container.querySelector('.shared-mirror-placeholder') || container.querySelector('.popout-placeholder');
+        if (before) container.insertBefore(host, before);
+        else container.appendChild(host);
+
+        const terminal = new Terminal({
+            fontSize: 14,
+            fontFamily: 'JetBrains Mono, Fira Code, SF Mono, Menlo, Monaco, Courier New, monospace',
+            theme,
+            scrollback: 50000,
+            rightClickSelectsWord: true,
+            scrollOnUserInput: true,
+            allowProposedApi: true,
+        });
+        const fitAddon = new FitAddon.FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.open(host);
+
+        let webglAddon = null;
+        try {
+            webglAddon = new WebglAddon.WebglAddon();
+            webglAddon.onContextLoss(() => {
+                webglAddon.dispose();
+                webglAddon = null;
+                this.logDiagnostic('terminal', 'webgl-context-lost', { paneId: pane.id });
+            });
+            terminal.loadAddon(webglAddon);
+        } catch (error) {
+            webglAddon?.dispose();
+            webglAddon = null;
+            this.logDiagnostic('terminal', 'webgl-unavailable', { paneId: pane.id, data: { error: error.message } });
+        }
+
+        const entry = {
+            terminal,
+            fitAddon,
+            webglAddon,
+            socket: null,
+            reconnectTimer: null,
+            disposed: false,
+            resizeObserver: null,
+        };
+        this.terminals.set(pane.id, entry);
+
+        terminal.onData(data => {
+            if (entry.socket?.readyState === WebSocket.OPEN) {
+                entry.socket.send(new TextEncoder().encode(data));
+            }
+        });
+        terminal.onBinary(data => {
+            if (entry.socket?.readyState !== WebSocket.OPEN) return;
+            entry.socket.send(Uint8Array.from(data, char => char.charCodeAt(0)));
+        });
+        terminal.onResize(({ cols, rows }) => this.sendTerminalResize(entry, cols, rows));
+
+        entry.resizeObserver = new ResizeObserver(() => this.fitTerminal(pane.id));
+        entry.resizeObserver.observe(container);
+        this.connectTerminal(pane.id, entry);
+        requestAnimationFrame(() => this.fitTerminal(pane.id));
+    }
+
+    connectTerminal(paneId, entry) {
+        if (entry.disposed || !this.panes.has(paneId)) return;
+        const socket = new WebSocket(this.wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
+        socket.binaryType = 'arraybuffer';
+        entry.socket = socket;
+
+        socket.onopen = () => {
+            if (entry.disposed || entry.socket !== socket) return;
+            document.getElementById(`pane-${paneId}`)?.classList.remove('loading');
+            this.fitTerminal(paneId);
+            this.sendTerminalResize(entry, entry.terminal.cols, entry.terminal.rows);
+            if (this.focusedPaneId === paneId) entry.terminal.focus();
+            this.logDiagnostic('terminal', 'open', { paneId });
+        };
+        socket.onmessage = event => {
+            if (entry.disposed || entry.socket !== socket) return;
+            if (event.data instanceof ArrayBuffer) {
+                entry.terminal.write(new Uint8Array(event.data));
+            } else if (event.data instanceof Blob) {
+                event.data.arrayBuffer().then(data => entry.terminal.write(new Uint8Array(data)));
+            }
+        };
+        socket.onerror = () => socket.close();
+        socket.onclose = () => {
+            if (entry.disposed || entry.socket !== socket) return;
+            this.logDiagnostic('terminal', 'close', { paneId });
+            entry.socket = null;
+            entry.reconnectTimer = setTimeout(() => {
+                entry.reconnectTimer = null;
+                this.connectTerminal(paneId, entry);
+            }, 1000);
+        };
+    }
+
+    sendTerminalResize(entry, cols, rows) {
+        if (entry.socket?.readyState !== WebSocket.OPEN) return;
+        entry.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+    }
+
+    fitTerminal(paneId) {
+        const entry = this.terminals.get(paneId);
+        const container = document.getElementById(`pane-${paneId}`);
+        if (!entry || !container?.classList.contains('visible') || container.classList.contains('popped-out')) return;
+        const rect = container.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        try {
+            entry.fitAddon.fit();
+        } catch (error) {
+            this.logDiagnostic('terminal', 'fit-error', { paneId, data: { error: error.message } });
+        }
+    }
+
+    disposeTerminal(paneId) {
+        const entry = this.terminals.get(paneId);
+        if (!entry) return;
+        this.terminals.delete(paneId);
+        entry.disposed = true;
+        if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
+        entry.resizeObserver?.disconnect();
+        entry.socket?.close(1000, 'terminal disposed');
+        entry.terminal.dispose();
+    }
+
     ensureDedicatedPaneIframe(pane, container) {
         if (!pane || this.isSharedPane(pane) || !container) return;
+        if (pane.type === 'terminal') {
+            this.ensureTerminal(pane, container);
+            return;
+        }
         if (container.querySelector('iframe')) return;
 
         const rect = container.getBoundingClientRect();
@@ -3168,6 +3355,13 @@ class TerminalMultiplexer {
 
     rebuildDedicatedPaneIframe(pane, container) {
         if (!pane || this.isSharedPane(pane) || !container) return;
+        if (pane.type === 'terminal') {
+            this.disposeTerminal(pane.id);
+            container.querySelector('.terminal-host')?.remove();
+            container.classList.add('loading');
+            this.ensureTerminal(pane, container);
+            return;
+        }
         const pending = this.pendingDedicatedIframeMounts.get(pane.id);
         if (pending) {
             cancelAnimationFrame(pending);
@@ -3367,6 +3561,7 @@ class TerminalMultiplexer {
     }
 
     removePaneContainer(paneId) {
+        this.disposeTerminal(paneId);
         const pending = this.pendingDedicatedIframeMounts.get(paneId);
         if (pending) {
             cancelAnimationFrame(pending);
@@ -6931,6 +7126,25 @@ class TerminalMultiplexer {
         const iframes = this.getAllPaneIframes();
         for (const win of iframes) {
             win.postMessage({ type: 'clipboard-write', text: text }, '*');
+        }
+
+        if (document.hasFocus() && this.terminals.has(this.focusedPaneId)) {
+            const fallbackCopy = () => {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                textarea.remove();
+                this.terminals.get(this.focusedPaneId)?.terminal.focus();
+            };
+            if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(text).catch(fallbackCopy);
+            } else {
+                fallbackCopy();
+            }
         }
     }
 

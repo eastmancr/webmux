@@ -497,7 +497,7 @@ func (sm *PaneManager) ProxyConfig(id string) (*PaneProxyConfig, bool) {
 
 	switch paneType {
 	case "terminal":
-		return sm.terminal.ProxyConfig(id)
+		return nil, false
 	case "opencode":
 		return sm.opencode.ProxyConfig(id)
 	default:

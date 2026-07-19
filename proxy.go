@@ -60,8 +60,13 @@ func (s *Server) handlePaneProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	paneID := parts[0]
 
-	if _, ok := s.manager.GetPane(paneID); !ok {
+	pane, ok := s.manager.GetPane(paneID)
+	if !ok {
 		http.Error(w, "pane not found", http.StatusNotFound)
+		return
+	}
+	if pane.Type == "terminal" {
+		s.serveTerminalPopout(w, r, pane)
 		return
 	}
 	proxyConfig, ok := s.manager.ProxyConfig(paneID)

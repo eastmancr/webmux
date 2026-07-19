@@ -1,4 +1,4 @@
-.TH WEBMUX 1 "February 2026" "0.2" "Webmux Manual"
+.TH WEBMUX 1 "July 2026" "0.3" "Webmux Manual"
 .SH NAME
 webmux \- browser-based pane multiplexer
 .SH SYNOPSIS
@@ -8,7 +8,7 @@ webmux \- browser-based pane multiplexer
 .B webmux
 is a browser-based pane multiplexer. It runs an HTTP server that manages local pane backends and proxies them into a shared browser workspace.
 .P
-Terminal panes run inside \fBtmux\fR sessions through \fBttyd\fR(1), allowing terminal state to persist even when the browser disconnects. OpenCode panes use a managed shared HTTP backend when \fBopencode\fR is available in \fBPATH\fR.
+Terminal panes use xterm.js in the browser and attach through a webmux WebSocket to dedicated \fBtmux\fR sessions, allowing terminal state to persist even when the browser disconnects. OpenCode panes use a managed shared HTTP backend when \fBopencode\fR is available in \fBPATH\fR.
 .P
 The optional \fIDIRECTORY\fR argument sets the starting directory for new terminal panes and managed backends.
 
@@ -21,7 +21,7 @@ HTTP server port. Default: \fB8080\fR
 Shell to spawn in new terminal panes. Default: \fB$SHELL\fR environment variable, or \fB/bin/bash\fR if unset.
 .TP
 .BR \-pane-port-start =\fIPORT\fR
-Starting port for managed pane backends. Default: \fB10000\fR
+Starting port for managed pane backends and pane IDs. Default: \fB7700\fR
 .TP
 .BR \-upload-dir =\fIPATH\fR
 Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
@@ -82,7 +82,7 @@ Create, rename, refresh, pop out, and close panes from the web UI. Terminal pane
 Group up to 4 panes in resizable split layouts.
 .TP
 .B Managed Pane Types
-Terminal panes are dedicated tmux/ttyd backends. OpenCode panes share one managed OpenCode backend and mirror the same state.
+Terminal panes use main-document xterm.js renderers backed by dedicated tmux sessions. OpenCode panes share one managed OpenCode backend and mirror the same state.
 .TP
 .B File Transfer
 Upload files via drag-and-drop or file picker. Download files by browsing the server filesystem.
@@ -132,13 +132,10 @@ Clipboard mode indicator. Set to \fBosc52\fR in webmux terminals.
 .SH REQUIREMENTS
 .B webmux
 requires
-.B ttyd
-and
 .B tmux
 to be installed and available in PATH for terminal panes. OpenCode panes require
 .B opencode
 in PATH.
 
 .SH SEE ALSO
-.BR ttyd (1),
 .BR tmux (1)

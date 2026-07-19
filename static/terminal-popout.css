@@ -1,0 +1,30 @@
+html,
+body,
+#terminal {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #1e1e2e;
+}
+
+#terminal {
+    box-sizing: border-box;
+    overflow: hidden;
+    padding: 4px 6px;
+}
+
+#terminal .xterm {
+    height: 100%;
+}
+
+#terminal .xterm-viewport {
+    scrollbar-width: none;
+    background-color: var(--terminal-background, #1e1e2e) !important;
+}
+
+#terminal .xterm-viewport::-webkit-scrollbar,
+#terminal .xterm-scrollable-element > .scrollbar,
+#terminal .xterm-decoration-overview-ruler {
+    display: none !important;
+}

@@ -5,7 +5,6 @@ Browser-based pane multiplexer. The Go backend manages local pane backends and p
 ## Requirements
 
 - Go 1.25+
-- [ttyd](https://github.com/tsl0922/ttyd)
 - [tmux](https://github.com/tmux/tmux)
 
 ## Build
@@ -30,7 +29,7 @@ Then open `http://localhost:8080` in a browser.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-port` | `8080` | HTTP server port |
-| `-pane-port-start` | `10000` | Starting port for managed pane backends |
+| `-pane-port-start` | `7700` | Starting port for managed pane backends and pane IDs |
 | `-shell` | `$SHELL` or `/bin/bash` | Shell to spawn in terminals |
 | `-upload-dir` | `~/.local/share/webmux/uploads` | Directory for uploaded files |
 
@@ -90,7 +89,7 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 
 ## Pane Types
 
-- Terminal panes are dedicated: each pane owns its tmux session and ttyd backend. Keybar input is sent server-side through tmux.
+- Terminal panes are dedicated: each pane owns a tmux session, while xterm.js runs directly in the webmux page and connects through a webmux WebSocket. Keybar input is sent server-side through tmux.
 - HTTP-backed pane types may be dedicated or shared depending on the backend. OpenCode is currently supported as a shared managed backend when `opencode` is available in `PATH`.
 - Pane creation options are advertised by the server; unavailable optional backends are disabled in the UI.
 - Popouts preserve the same dedicated/shared semantics. A popped-out shared backend suppresses duplicate in-page clients until it is popped back in or closed.

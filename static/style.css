@@ -721,7 +721,7 @@ body.mobile-mode .sidebar-panel {
 .pane-container {
     position: relative;
     overflow: hidden;
-    /* Match ttyd's terminal background color so gaps blend in */
+    /* Match the default terminal background color so gaps blend in */
     background: #1e1e2e;
     min-width: 100px;
     min-height: 50px;
@@ -759,6 +759,33 @@ body.mobile-mode .sidebar-panel {
     display: block;
     /* Ensure iframe background matches */
     background: #1e1e2e;
+}
+
+.pane-container .terminal-host {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    overflow: hidden;
+    padding: 4px 6px;
+    background: var(--terminal-background, #1e1e2e);
+}
+
+.terminal-host .xterm {
+    width: 100%;
+    height: 100%;
+}
+
+.terminal-host .xterm-viewport {
+    scrollbar-width: none;
+    background-color: var(--terminal-background, #1e1e2e) !important;
+}
+
+.terminal-host .xterm-viewport::-webkit-scrollbar,
+.terminal-host .xterm-scrollable-element > .scrollbar,
+.terminal-host .xterm-decoration-overview-ruler {
+    display: none !important;
 }
 
 .shared-pane-iframe-layer {
@@ -831,8 +858,9 @@ body.mobile-mode .sidebar-panel {
     display: none;
 }
 
-/* When a pane is popped out, hide iframe and show placeholder */
-.pane-container.popped-out iframe {
+/* When a pane is popped out, hide its live client and show the placeholder. */
+.pane-container.popped-out iframe,
+.pane-container.popped-out .terminal-host {
     visibility: hidden;
 }
 
@@ -2959,6 +2987,10 @@ body.mobile-mode .sidebar-panel {
 
 /* Pane loading state */
 .pane-container.loading .pane-iframe {
+    visibility: hidden;
+}
+
+.pane-container.loading .terminal-host {
     visibility: hidden;
 }
 

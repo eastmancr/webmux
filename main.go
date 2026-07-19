@@ -1419,6 +1419,10 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 		s.handlePaneInput(w, r)
 		return
 	}
+	if len(parts) >= 5 && parts[4] == "terminal" {
+		s.handleTerminalWebSocket(w, r, paneID)
+		return
+	}
 
 	switch r.Method {
 	case http.MethodDelete:
@@ -2250,9 +2254,6 @@ func main() {
 	}
 
 	// Check for required dependencies
-	if _, err := exec.LookPath("ttyd"); err != nil {
-		log.Fatal("ttyd not found in PATH. Please install ttyd: https://github.com/tsl0922/ttyd")
-	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		log.Fatal("tmux not found in PATH. Please install tmux: https://github.com/tmux/tmux")
 	}
@@ -2325,12 +2326,12 @@ func main() {
 func mountPathHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
-		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/p/") {
+		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/p/") || strings.HasPrefix(path, "/vendor/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		for _, marker := range []string{"/api/", "/p/"} {
+		for _, marker := range []string{"/api/", "/p/", "/vendor/"} {
 			if idx := strings.Index(path, marker); idx > 0 {
 				r2 := r.Clone(r.Context())
 				r2.URL.Path = path[idx:]
