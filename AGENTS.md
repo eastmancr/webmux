@@ -103,7 +103,7 @@ grep -n "mobileMode\|Mobile" static/app.js # Find mobile-specific code
   - `wm` - Built CLI binary (embedded in production builds)
 
 ## Clipboard
-Clipboard sync uses WebSocket notifications (`/api/clipboard/events`) instead of SSE or polling. See `docs/SSE.md` for the removed SSE architecture and rationale.
+Clipboard sync uses WebSocket notifications (`/api/clipboard/events`) instead of SSE or polling.
 
 ## Style
 - Go: Standard library preferred, minimal dependencies

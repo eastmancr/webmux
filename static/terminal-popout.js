@@ -30,6 +30,7 @@
         rightClickSelectsWord: false,
         scrollOnUserInput: true,
         allowProposedApi: true,
+        disableStdin: true,
         theme: {
             background: colors.base00, foreground: colors.base05, cursor: colors.base06,
             cursorAccent: colors.base00, selectionBackground: colors.base02,
@@ -46,22 +47,31 @@
     terminal.loadAddon(fitAddon);
     const host = document.getElementById('terminal');
     terminal.open(host);
-    const copyTerminalSelection = () => {
-        const selection = terminal.getSelection();
-        if (!selection) return false;
+    const writeClipboardText = async text => {
         const fallbackCopy = () => {
             const textarea = document.createElement('textarea');
-            textarea.value = selection;
+            textarea.value = text;
             textarea.style.position = 'fixed';
             textarea.style.opacity = '0';
             document.body.appendChild(textarea);
             textarea.select();
-            document.execCommand('copy');
+            const copied = document.execCommand('copy');
             textarea.remove();
             terminal.focus();
+            return copied;
         };
-        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(selection).catch(fallbackCopy);
-        else fallbackCopy();
+        if (!navigator.clipboard?.writeText) return fallbackCopy();
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch (error) {
+            return fallbackCopy();
+        }
+    };
+    const copyTerminalSelection = () => {
+        const selection = terminal.getSelection();
+        if (!selection) return false;
+        writeClipboardText(selection);
         return true;
     };
     let shiftSelecting = false;
@@ -97,6 +107,13 @@
 
     let socket = null;
     let reconnectTimer = null;
+    const sendInput = data => {
+        if (socket?.readyState !== WebSocket.OPEN) return;
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        for (let offset = 0; offset < bytes.length; offset += 32 * 1024) {
+            socket.send(bytes.subarray(offset, offset + 32 * 1024));
+        }
+    };
     const sendResize = () => {
         if (socket?.readyState === WebSocket.OPEN) {
             const rect = terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect();
@@ -121,6 +138,7 @@
         connection.binaryType = 'arraybuffer';
         connection.onopen = () => {
             if (socket !== connection) return;
+            terminal.options.disableStdin = false;
             fit();
             terminal.focus();
         };
@@ -133,6 +151,7 @@
         connection.onclose = () => {
             if (socket !== connection) return;
             socket = null;
+            terminal.options.disableStdin = true;
             if (!reconnectTimer) {
                 reconnectTimer = setTimeout(() => {
                     reconnectTimer = null;
@@ -143,36 +162,69 @@
     };
 
     terminal.onData(data => {
-        if (socket?.readyState === WebSocket.OPEN) socket.send(new TextEncoder().encode(data));
+        sendInput(new TextEncoder().encode(data));
     });
     terminal.onBinary(data => {
-        if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(Uint8Array.from(data, char => char.charCodeAt(0)));
-        }
+        sendInput(Uint8Array.from(data, char => char.charCodeAt(0)));
     });
     terminal.onResize(sendResize);
     new ResizeObserver(fit).observe(document.body);
-    window.addEventListener('focus', () => terminal.focus());
     connect();
     requestAnimationFrame(fit);
 
     let knownClipboardVersion = -1;
-    const clipboardEvents = new WebSocket(wsUrl('/api/clipboard/events'));
-    clipboardEvents.onmessage = async event => {
+    let pendingClipboardVersion = -1;
+    let syncingClipboard = false;
+    let clipboardSocket = null;
+    let clipboardReconnectTimer = null;
+    const syncClipboard = async version => {
+        pendingClipboardVersion = Math.max(pendingClipboardVersion, version);
+        if (syncingClipboard || !document.hasFocus()) return;
+        syncingClipboard = true;
         try {
-            const message = JSON.parse(event.data);
-            const version = Number(message.version);
-            if (message.type !== 'clipboard' || !Number.isSafeInteger(version)) return;
-            if (knownClipboardVersion === -1) {
-                knownClipboardVersion = version;
-                return;
+            while (pendingClipboardVersion > knownClipboardVersion && document.hasFocus()) {
+                const targetVersion = pendingClipboardVersion;
+                const response = await fetch(url('/api/clipboard'));
+                if (!response.ok || !await writeClipboardText(await response.text())) return;
+                knownClipboardVersion = Math.max(knownClipboardVersion, targetVersion);
+                if (pendingClipboardVersion <= knownClipboardVersion) pendingClipboardVersion = -1;
+                terminal.focus();
             }
-            if (version === knownClipboardVersion || !document.hasFocus()) return;
-            const response = await fetch(url('/api/clipboard'));
-            if (!response.ok) return;
-            await navigator.clipboard.writeText(await response.text());
-            knownClipboardVersion = version;
-            terminal.focus();
-        } catch (error) {}
+        } catch (error) {
+        } finally {
+            syncingClipboard = false;
+        }
     };
+    const connectClipboard = () => {
+        const connection = new WebSocket(wsUrl('/api/clipboard/events'));
+        clipboardSocket = connection;
+        connection.onmessage = event => {
+            try {
+                const message = JSON.parse(event.data);
+                const version = Number(message.version);
+                if (message.type !== 'clipboard' || !Number.isSafeInteger(version)) return;
+                if (knownClipboardVersion === -1) {
+                    knownClipboardVersion = version;
+                    return;
+                }
+                if (version !== knownClipboardVersion) syncClipboard(version);
+            } catch (error) {}
+        };
+        connection.onerror = () => connection.close();
+        connection.onclose = () => {
+            if (clipboardSocket !== connection) return;
+            clipboardSocket = null;
+            if (!clipboardReconnectTimer) {
+                clipboardReconnectTimer = setTimeout(() => {
+                    clipboardReconnectTimer = null;
+                    connectClipboard();
+                }, 2000);
+            }
+        };
+    };
+    window.addEventListener('focus', () => {
+        terminal.focus();
+        if (pendingClipboardVersion > knownClipboardVersion) syncClipboard(pendingClipboardVersion);
+    });
+    connectClipboard();
 })();

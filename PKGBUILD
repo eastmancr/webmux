@@ -6,7 +6,7 @@ pkgdesc="Browser-based terminal multiplexer with tmux persistence"
 arch=('x86_64' 'aarch64')
 url="https://github.com/eastmancr/webmux"
 license=('GPL-3.0-or-later')
-depends=('tmux')
+depends=('tmux>=3.4')
 makedepends=('go')
 options=('!strip' '!debug') # Go binaries don't play well with standard strip/debug
 

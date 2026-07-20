@@ -37,8 +37,9 @@ run: build
 run-dev: dev
 	./$(BINARY)
 
-# Check that everything compiles
-check:
+# Run tests and verify production compilation with the embedded CLI present.
+check: $(WM_EMBEDDED)
+	go test ./...
 	go build -o /dev/null .
 	go build -o /dev/null ./cmd/wm
 

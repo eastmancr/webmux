@@ -1,9 +1,14 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestPaneTypesIncludesOpenCodeWarning(t *testing.T) {
 	manager := NewPaneManager(10000, "/bin/sh", "", "8080")
+	defer os.Remove(manager.terminal.tmuxConfigPath)
+	defer os.RemoveAll(manager.terminal.wmBinDir)
 	manager.opencode.setWarningReason("OpenCode schema changed")
 
 	found := false

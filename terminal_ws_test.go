@@ -4,10 +4,17 @@ import (
 	"bytes"
 	"encoding/base64"
 	"io"
+	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/creack/pty"
 )
 
 type shortWriter struct {
@@ -91,8 +98,61 @@ func TestTerminalClientEnvironment(t *testing.T) {
 	}
 }
 
+func TestTerminalOriginAllowed(t *testing.T) {
+	tests := []struct {
+		name        string
+		host        string
+		origin      string
+		forwarded   http.Header
+		wantAllowed bool
+	}{
+		{name: "same origin", host: "localhost:7788", origin: "http://localhost:7788", wantAllowed: true},
+		{name: "different host", host: "localhost:7788", origin: "http://attacker.example", wantAllowed: false},
+		{name: "different scheme", host: "webmux.example", origin: "http://webmux.example", forwarded: http.Header{"X-Forwarded-Proto": {"https"}}, wantAllowed: false},
+		{name: "forwarded origin", host: "127.0.0.1:7788", origin: "https://webmux.example", forwarded: http.Header{"X-Forwarded-Proto": {"https"}, "X-Forwarded-Host": {"webmux.example"}}, wantAllowed: true},
+		{name: "first forwarded value", host: "127.0.0.1:7788", origin: "https://webmux.example", forwarded: http.Header{"X-Forwarded-Proto": {"https, http"}, "X-Forwarded-Host": {"webmux.example, proxy.internal"}}, wantAllowed: true},
+		{name: "default port", host: "webmux.example:443", origin: "https://webmux.example", forwarded: http.Header{"X-Forwarded-Proto": {"https"}}, wantAllowed: true},
+		{name: "missing origin", host: "localhost:7788", wantAllowed: true},
+		{name: "null origin", host: "localhost:7788", origin: "null", wantAllowed: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://"+tt.host+"/api/panes/pane-1/terminal", nil)
+			req.Host = tt.host
+			req.Header.Set("Origin", tt.origin)
+			for key, values := range tt.forwarded {
+				req.Header[key] = values
+			}
+			if got := terminalOriginAllowed(req); got != tt.wantAllowed {
+				t.Fatalf("terminalOriginAllowed() = %v, want %v", got, tt.wantAllowed)
+			}
+		})
+	}
+}
+
+func TestTerminalWinsize(t *testing.T) {
+	size, ok := terminalWinsize([]byte(`{"type":"resize","cols":123,"rows":47,"pixelWidth":984,"pixelHeight":752}`))
+	if !ok {
+		t.Fatal("terminalWinsize rejected valid resize")
+	}
+	if size.Cols != 123 || size.Rows != 47 || size.X != 984 || size.Y != 752 {
+		t.Fatalf("terminalWinsize() = %+v", size)
+	}
+	for _, invalid := range []string{
+		`{"type":"input","cols":123,"rows":47}`,
+		`{"type":"resize","cols":1,"rows":47}`,
+		`{"type":"resize","cols":123,"rows":47,"pixelWidth":984}`,
+		`not json`,
+	} {
+		if _, ok := terminalWinsize([]byte(invalid)); ok {
+			t.Fatalf("terminalWinsize accepted %q", invalid)
+		}
+	}
+}
+
 func TestTerminalAttachArgsAdvertiseSixel(t *testing.T) {
-	got := terminalAttachArgs("/tmp/tmux.sock", "/tmp/tmux.conf", "mux-7701")
+	got := terminalAttachArgs("/tmp/tmux.sock", "/tmp/tmux.conf", "mux-7701", true)
 	want := []string{
 		"-S", "/tmp/tmux.sock",
 		"-f", "/tmp/tmux.conf",
@@ -101,6 +161,10 @@ func TestTerminalAttachArgsAdvertiseSixel(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("terminalAttachArgs() = %v, want %v", got, want)
+	}
+	withoutSixel := terminalAttachArgs("/tmp/tmux.sock", "", "mux-7701", false)
+	if slices.Contains(withoutSixel, "sixel") || slices.Contains(withoutSixel, "-T") {
+		t.Fatalf("terminalAttachArgs advertised unsupported SIXEL: %v", withoutSixel)
 	}
 }
 
@@ -124,10 +188,74 @@ type zeroWriter struct{}
 func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
 
 func TestPaneEnvironmentAdvertisesSixel(t *testing.T) {
-	runtime := &TerminalRuntime{manager: &PaneManager{serverPort: "7788"}}
+	runtime := &TerminalRuntime{manager: &PaneManager{serverPort: "7788"}, sixelSupported: true}
 	args := runtime.paneEnvArgs()
 	if !slices.Contains(args, "WEBMUX_IMAGE_PROTOCOL=sixel") {
 		t.Fatalf("pane environment missing SIXEL indicator: %v", args)
+	}
+	runtime.sixelSupported = false
+	if args := runtime.paneEnvArgs(); slices.Contains(args, "WEBMUX_IMAGE_PROTOCOL=sixel") {
+		t.Fatalf("pane environment advertised unsupported SIXEL: %v", args)
+	}
+}
+
+func TestDestroyedTmuxSessionDetachesClient(t *testing.T) {
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	root := t.TempDir()
+	socket := filepath.Join(root, "tmux.sock")
+	config := filepath.Join(root, "tmux.conf")
+	contents, err := staticFiles.ReadFile("static/tmux.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config, contents, 0600); err != nil {
+		t.Fatal(err)
+	}
+	runTmux := func(args ...string) error {
+		return exec.Command("tmux", append([]string{"-S", socket, "-f", config}, args...)...).Run()
+	}
+	if err := runTmux("new-session", "-d", "-s", "pane-a", "sleep", "30"); err != nil {
+		t.Fatal(err)
+	}
+	defer exec.Command("tmux", "-S", socket, "kill-server").Run()
+	if err := runTmux("new-session", "-d", "-s", "pane-b", "sleep", "30"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("tmux", "-S", socket, "-f", config, "attach-session", "-t", "pane-a")
+	cmd.Env = terminalClientEnvironment(os.Environ())
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	attached := false
+	for time.Now().Before(deadline) {
+		out, _ := exec.Command("tmux", "-S", socket, "list-clients", "-t", "pane-a", "-F", "#{session_name}").Output()
+		if strings.TrimSpace(string(out)) == "pane-a" {
+			attached = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !attached {
+		_ = cmd.Process.Kill()
+		t.Fatal("tmux client did not attach to pane-a")
+	}
+	if err := exec.Command("tmux", "-S", socket, "kill-session", "-t", "pane-a").Run(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		_ = cmd.Process.Kill()
+		t.Fatal("tmux client remained attached after its pane session was destroyed")
 	}
 }
 

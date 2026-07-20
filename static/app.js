@@ -1199,6 +1199,7 @@ class TerminalMultiplexer {
 
         // Global keyboard shortcuts
         document.addEventListener('keydown', (e) => {
+            if (e.target instanceof Element && e.target.closest('.terminal-host')) return;
             // Ctrl+/ to open keybinds modal
             if (e.ctrlKey && e.key === '/') {
                 e.preventDefault();
@@ -1305,6 +1306,7 @@ class TerminalMultiplexer {
             }
         });
         document.addEventListener('keydown', (e) => {
+            if (e.target instanceof Element && e.target.closest('.terminal-host')) return;
             if (e.key !== 'Escape') return;
             this.closeNewPaneMenus();
             this.closeStorageActionMenus();
@@ -1442,6 +1444,7 @@ class TerminalMultiplexer {
 
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
+            if (e.target instanceof Element && e.target.closest('.terminal-host')) return;
             if (e.ctrlKey && e.shiftKey && (e.key === 'T' || e.key === 't')) {
                 e.preventDefault();
                 this.createNewPaneAndGroup();
@@ -3202,6 +3205,14 @@ class TerminalMultiplexer {
         return true;
     }
 
+    sendTerminalInput(socket, data) {
+        if (socket?.readyState !== WebSocket.OPEN) return;
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        for (let offset = 0; offset < bytes.length; offset += 32 * 1024) {
+            socket.send(bytes.subarray(offset, offset + 32 * 1024));
+        }
+    }
+
     ensureTerminal(pane, container) {
         if (this.terminals.has(pane.id)) {
             requestAnimationFrame(() => this.fitTerminal(pane.id));
@@ -3236,6 +3247,7 @@ class TerminalMultiplexer {
             rightClickSelectsWord: false,
             scrollOnUserInput: true,
             allowProposedApi: true,
+            disableStdin: true,
         });
         const fitAddon = new FitAddon.FitAddon();
         terminal.loadAddon(fitAddon);
@@ -3297,13 +3309,10 @@ class TerminalMultiplexer {
         this.terminals.set(pane.id, entry);
 
         terminal.onData(data => {
-            if (entry.socket?.readyState === WebSocket.OPEN) {
-                entry.socket.send(new TextEncoder().encode(data));
-            }
+            this.sendTerminalInput(entry.socket, new TextEncoder().encode(data));
         });
         terminal.onBinary(data => {
-            if (entry.socket?.readyState !== WebSocket.OPEN) return;
-            entry.socket.send(Uint8Array.from(data, char => char.charCodeAt(0)));
+            this.sendTerminalInput(entry.socket, Uint8Array.from(data, char => char.charCodeAt(0)));
         });
         terminal.onResize(({ cols, rows }) => this.sendTerminalResize(entry, cols, rows));
 
@@ -3321,6 +3330,7 @@ class TerminalMultiplexer {
 
         socket.onopen = () => {
             if (entry.disposed || entry.socket !== socket) return;
+            entry.terminal.options.disableStdin = false;
             document.getElementById(`pane-${paneId}`)?.classList.remove('loading');
             this.fitTerminal(paneId);
             this.sendTerminalResize(entry, entry.terminal.cols, entry.terminal.rows);
@@ -3340,7 +3350,9 @@ class TerminalMultiplexer {
             if (entry.disposed || entry.socket !== socket) return;
             this.logDiagnostic('terminal', 'close', { paneId });
             entry.socket = null;
+            entry.terminal.options.disableStdin = true;
             if (entry.suspended) return;
+            document.getElementById(`pane-${paneId}`)?.classList.add('loading');
             entry.reconnectTimer = setTimeout(() => {
                 entry.reconnectTimer = null;
                 this.connectTerminal(paneId, entry);
@@ -3352,6 +3364,7 @@ class TerminalMultiplexer {
         const entry = this.terminals.get(paneId);
         if (!entry || entry.disposed || entry.suspended) return;
         entry.suspended = true;
+        entry.terminal.options.disableStdin = true;
         if (entry.reconnectTimer) {
             clearTimeout(entry.reconnectTimer);
             entry.reconnectTimer = null;
@@ -7206,7 +7219,7 @@ class TerminalMultiplexer {
 
     // Write to browser clipboard via pane iframes.
     // Broadcasts to all iframes; the focused one will succeed.
-    writeClipboardViaIframes(text) {
+    async writeClipboardViaIframes(text) {
         const iframes = this.getAllPaneIframes();
         for (const win of iframes) {
             win.postMessage({ type: 'clipboard-write', text: text }, '*');
@@ -7220,16 +7233,22 @@ class TerminalMultiplexer {
                 textarea.style.opacity = '0';
                 document.body.appendChild(textarea);
                 textarea.select();
-                document.execCommand('copy');
+                const copied = document.execCommand('copy');
                 textarea.remove();
                 this.terminals.get(this.focusedPaneId)?.terminal.focus();
+                return copied;
             };
             if (navigator.clipboard?.writeText) {
-                navigator.clipboard.writeText(text).catch(fallbackCopy);
-            } else {
-                fallbackCopy();
+                try {
+                    await navigator.clipboard.writeText(text);
+                    return true;
+                } catch (error) {
+                    return fallbackCopy();
+                }
             }
+            return fallbackCopy();
         }
+        return document.hasFocus() && iframes.length > 0;
     }
 
     connectClipboardEvents() {
@@ -7240,8 +7259,7 @@ class TerminalMultiplexer {
         const contentResp = await fetch(this.url('/api/clipboard'));
         if (!contentResp.ok) return false;
         const text = await contentResp.text();
-        this.writeClipboardViaIframes(text);
-        return true;
+        return this.writeClipboardViaIframes(text);
     }
 
     // Listen for clipboard version changes over WebSocket. The clipboard content
@@ -7249,8 +7267,25 @@ class TerminalMultiplexer {
     // when a version actually changes.
     startClipboardWebSocket() {
         let knownVersion = -1;
+        let pendingVersion = -1;
+        let syncing = false;
         let reconnectTimer = null;
         const reconnectDelay = 2000;
+        const syncClipboard = async version => {
+            pendingVersion = Math.max(pendingVersion, version);
+            if (syncing || !document.hasFocus()) return;
+            syncing = true;
+            try {
+                while (pendingVersion > knownVersion && document.hasFocus()) {
+                    const targetVersion = pendingVersion;
+                    if (!await this.fetchClipboardAndWrite()) return;
+                    knownVersion = Math.max(knownVersion, targetVersion);
+                    if (pendingVersion <= knownVersion) pendingVersion = -1;
+                }
+            } finally {
+                syncing = false;
+            }
+        };
 
         const connect = () => {
             const ws = new WebSocket(this.wsUrl('/api/clipboard/events'));
@@ -7268,10 +7303,7 @@ class TerminalMultiplexer {
                         return;
                     }
                     if (version === knownVersion) return;
-
-                    if (await this.fetchClipboardAndWrite()) {
-                        knownVersion = Math.max(knownVersion, version);
-                    }
+                    await syncClipboard(version);
                 } catch (err) {
                     // Ignore malformed messages; reconnect handling is in onclose.
                 }
@@ -7294,6 +7326,9 @@ class TerminalMultiplexer {
             };
         };
 
+        window.addEventListener('focus', () => {
+            if (pendingVersion > knownVersion) syncClipboard(pendingVersion);
+        });
         connect();
     }
 

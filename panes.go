@@ -147,6 +147,10 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 			backendID = paneType
 			startedBackend = true
 		}
+	} else if paneType == "terminal" {
+		// Terminal panes attach through the main Webmux server and do not need
+		// a dedicated TCP listener. Their ID still comes from nextPaneID.
+		startedBackend = true
 	} else {
 		var err error
 		port, err = sm.allocatePanePort()
@@ -196,6 +200,8 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 
 	if !startedBackend {
 		log.Printf("Created pane %s using shared %s backend %s on port %d", id, paneType, backendID, port)
+	} else if port == 0 {
+		log.Printf("Created pane %s", id)
 	} else {
 		log.Printf("Created pane %s on port %d", id, port)
 	}

@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -45,6 +46,7 @@ type TerminalRuntime struct {
 	mu             sync.RWMutex
 	tmuxConfigPath string
 	wmBinDir       string // Directory containing wm binary (added to PATH)
+	sixelSupported bool
 }
 
 // Display-related environment variables that can be forwarded to panes.
@@ -58,6 +60,21 @@ func (tr *TerminalRuntime) SetupResources() {
 	tr.extractTmuxConfig()
 	tr.extractWMBinary()
 	tr.installShellScripts()
+	tr.sixelSupported = detectTmuxSixelSupport()
+}
+
+func detectTmuxSixelSupport() bool {
+	socketName := fmt.Sprintf("webmux-capability-%d", os.Getpid())
+	defer exec.Command("tmux", "-L", socketName, "kill-server").Run()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "-L", socketName, "-f", "/dev/null",
+		"start-server", ";", "display-message", "-p", "#{sixel_support}", ";", "kill-server").Output()
+	if err != nil || strings.TrimSpace(string(out)) != "1" {
+		log.Printf("tmux SIXEL support unavailable; terminal images are disabled")
+		return false
+	}
+	return true
 }
 
 func (tr *TerminalRuntime) extractTmuxConfig() {
@@ -145,7 +162,9 @@ func (tr *TerminalRuntime) paneEnvArgs() []string {
 
 	// Add WEBMUX_PORT so wm CLI knows which server to talk to
 	args = append(args, "-e", "WEBMUX_PORT="+tr.manager.serverPort)
-	args = append(args, "-e", "WEBMUX_IMAGE_PROTOCOL=sixel")
+	if tr.sixelSupported {
+		args = append(args, "-e", "WEBMUX_IMAGE_PROTOCOL=sixel")
+	}
 
 	// Set _wm_bin env var to the path of the wm binary (used by shell wrapper)
 	if tr.wmBinDir != "" {

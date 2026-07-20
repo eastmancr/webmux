@@ -15,7 +15,9 @@ import (
 	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,15 +28,18 @@ import (
 )
 
 const (
-	defaultTerminalCols = 80
-	defaultTerminalRows = 24
-	maxTerminalCols     = 1000
-	maxTerminalRows     = 500
-	maxTerminalPixels   = 65535
+	maxTerminalCols    = 1000
+	maxTerminalRows    = 500
+	maxTerminalPixels  = 65535
+	maxTerminalMessage = 64 * 1024
+	terminalWriteWait  = 10 * time.Second
+	terminalPongWait   = 60 * time.Second
+	terminalPingPeriod = 50 * time.Second
+	terminalHandshake  = 5 * time.Second
 )
 
 var terminalUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: terminalOriginAllowed,
 }
 
 type terminalControlMessage struct {
@@ -54,6 +59,65 @@ func validTerminalPixels(width, height int) bool {
 		return width == 0 && height == 0
 	}
 	return width > 0 && width <= maxTerminalPixels && height > 0 && height <= maxTerminalPixels
+}
+
+func firstForwardedValue(value string) string {
+	if idx := strings.IndexByte(value, ','); idx != -1 {
+		value = value[:idx]
+	}
+	return strings.TrimSpace(value)
+}
+
+func canonicalOriginHost(host, scheme string) string {
+	u := &url.URL{Scheme: scheme, Host: host}
+	hostname := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if (scheme == "http" && port == "80") || (scheme == "https" && port == "443") {
+		port = ""
+	}
+	if port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	return hostname
+}
+
+func terminalOriginAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	originURL, err := url.Parse(origin)
+	if err != nil || originURL.Host == "" || (originURL.Scheme != "http" && originURL.Scheme != "https") {
+		return false
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Proto")); forwarded != "" {
+		scheme = strings.ToLower(forwarded)
+	}
+	host := r.Host
+	if forwarded := firstForwardedValue(r.Header.Get("X-Forwarded-Host")); forwarded != "" {
+		host = forwarded
+	}
+	return strings.EqualFold(originURL.Scheme, scheme) &&
+		canonicalOriginHost(originURL.Host, originURL.Scheme) == canonicalOriginHost(host, scheme)
+}
+
+func terminalWinsize(data []byte) (*pty.Winsize, bool) {
+	var control terminalControlMessage
+	if json.Unmarshal(data, &control) != nil || control.Type != "resize" {
+		return nil, false
+	}
+	if !validTerminalSize(control.Cols, control.Rows) || !validTerminalPixels(control.PixelWidth, control.PixelHeight) {
+		return nil, false
+	}
+	return &pty.Winsize{
+		Cols: uint16(control.Cols), Rows: uint16(control.Rows),
+		X: uint16(control.PixelWidth), Y: uint16(control.PixelHeight),
+	}, true
 }
 
 func writeTerminalInput(w io.Writer, data []byte) error {
@@ -85,12 +149,15 @@ func terminalClientEnvironment(base []string) []string {
 	)
 }
 
-func terminalAttachArgs(socketPath, configPath, session string) []string {
+func terminalAttachArgs(socketPath, configPath, session string, sixelSupported bool) []string {
 	args := []string{"-S", socketPath}
 	if configPath != "" {
 		args = append(args, "-f", configPath)
 	}
-	return append(args, "-T", "sixel", "attach-session", "-t", session)
+	if sixelSupported {
+		args = append(args, "-T", "sixel")
+	}
+	return append(args, "attach-session", "-t", session)
 }
 
 // handleTerminalWebSocket attaches one browser client to the pane's durable
@@ -110,27 +177,49 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "terminal session not found", http.StatusNotFound)
 		return
 	}
-
-	args := terminalAttachArgs(s.manager.terminal.tmuxSocketPath(), s.manager.terminal.tmuxConfigPath, state.tmuxSession)
-	cmd := exec.Command("tmux", args...)
-	cmd.Env = terminalClientEnvironment(os.Environ())
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
-	if err != nil {
-		http.Error(w, "failed to attach terminal", http.StatusBadGateway)
+	if !websocket.IsWebSocketUpgrade(r) {
+		http.Error(w, "WebSocket upgrade required", http.StatusBadRequest)
 		return
 	}
 
 	conn, err := terminalUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		_ = ptmx.Close()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		return
+	}
+	conn.SetReadLimit(maxTerminalMessage)
+	_ = conn.SetReadDeadline(time.Now().Add(terminalHandshake))
+	messageType, data, err := conn.ReadMessage()
+	initialSize, validInitialSize := terminalWinsize(data)
+	if err != nil || messageType != websocket.TextMessage || !validInitialSize {
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "initial terminal size required"),
+			time.Now().Add(terminalWriteWait))
+		_ = conn.Close()
+		return
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(terminalPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(terminalPongWait))
+	})
+
+	args := terminalAttachArgs(s.manager.terminal.tmuxSocketPath(), s.manager.terminal.tmuxConfigPath, state.tmuxSession, s.manager.terminal.sixelSupported)
+	cmd := exec.Command("tmux", args...)
+	cmd.Env = terminalClientEnvironment(os.Environ())
+	ptmx, err := pty.StartWithSize(cmd, initialSize)
+	if err != nil {
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "failed to attach terminal"),
+			time.Now().Add(terminalWriteWait))
+		_ = conn.Close()
 		return
 	}
 
 	started := time.Now()
 	s.diagnosticf("terminal", "event=open pane=%s remote=%s", diagSanitize(paneID, 48), diagSanitize(r.RemoteAddr, 80))
 	defer func() {
+		_ = conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, "terminal attachment closed"),
+			time.Now().Add(terminalWriteWait))
 		_ = conn.Close()
 		_ = ptmx.Close()
 		if cmd.Process != nil {
@@ -141,6 +230,24 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 	}()
 
 	outputDone := make(chan error, 1)
+	heartbeatDone := make(chan error, 1)
+	stopHeartbeat := make(chan struct{})
+	defer close(stopHeartbeat)
+	go func() {
+		ticker := time.NewTicker(terminalPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(terminalWriteWait)); err != nil {
+					heartbeatDone <- err
+					return
+				}
+			case <-stopHeartbeat:
+				return
+			}
+		}
+	}()
 	go func() {
 		scanner := newOSC52Scanner(s)
 		buf := make([]byte, 32*1024)
@@ -149,6 +256,7 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 			if n > 0 {
 				chunk := append([]byte(nil), buf[:n]...)
 				scanner.ObserveBackendToClient(chunk)
+				_ = conn.SetWriteDeadline(time.Now().Add(terminalWriteWait))
 				if writeErr := conn.WriteMessage(websocket.BinaryMessage, chunk); writeErr != nil {
 					outputDone <- writeErr
 					return
@@ -178,17 +286,11 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 					}
 				}
 			case websocket.TextMessage:
-				var control terminalControlMessage
-				if json.Unmarshal(data, &control) != nil || control.Type != "resize" {
+				size, ok := terminalWinsize(data)
+				if !ok {
 					continue
 				}
-				if !validTerminalSize(control.Cols, control.Rows) || !validTerminalPixels(control.PixelWidth, control.PixelHeight) {
-					continue
-				}
-				if resizeErr := pty.Setsize(ptmx, &pty.Winsize{
-					Cols: uint16(control.Cols), Rows: uint16(control.Rows),
-					X: uint16(control.PixelWidth), Y: uint16(control.PixelHeight),
-				}); resizeErr != nil {
+				if resizeErr := pty.Setsize(ptmx, size); resizeErr != nil {
 					inputDone <- resizeErr
 					return
 				}
@@ -204,6 +306,10 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 	case err := <-outputDone:
 		if err != nil && !strings.Contains(err.Error(), "input/output error") {
 			log.Printf("Pane %s: terminal output closed: %v", paneID, err)
+		}
+	case err := <-heartbeatDone:
+		if err != nil {
+			log.Printf("Pane %s: terminal heartbeat closed: %v", paneID, err)
 		}
 	case <-r.Context().Done():
 	}
