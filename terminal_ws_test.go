@@ -1,12 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
+	"io"
 	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 )
+
+type shortWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (w *shortWriter) Write(data []byte) (int, error) {
+	if len(data) > w.max {
+		data = data[:w.max]
+	}
+	return w.Buffer.Write(data)
+}
 
 func TestValidTerminalSize(t *testing.T) {
 	tests := []struct {
@@ -32,6 +46,26 @@ func TestValidTerminalSize(t *testing.T) {
 	}
 }
 
+func TestValidTerminalPixels(t *testing.T) {
+	tests := []struct {
+		width, height int
+		want          bool
+	}{
+		{width: 1280, height: 720, want: true},
+		{width: 0, height: 0, want: true},
+		{width: 0, height: 720, want: false},
+		{width: 1280, height: 0, want: false},
+		{width: -1, height: 720, want: false},
+		{width: maxTerminalPixels + 1, height: 720, want: false},
+	}
+
+	for _, tt := range tests {
+		if got := validTerminalPixels(tt.width, tt.height); got != tt.want {
+			t.Errorf("validTerminalPixels(%d, %d) = %v, want %v", tt.width, tt.height, got, tt.want)
+		}
+	}
+}
+
 func TestTerminalClientEnvironment(t *testing.T) {
 	env := terminalClientEnvironment([]string{
 		"PATH=/usr/bin",
@@ -54,6 +88,46 @@ func TestTerminalClientEnvironment(t *testing.T) {
 		if slices.Contains(env, stale) {
 			t.Errorf("terminal environment retained stale value %q: %v", stale, env)
 		}
+	}
+}
+
+func TestTerminalAttachArgsAdvertiseSixel(t *testing.T) {
+	got := terminalAttachArgs("/tmp/tmux.sock", "/tmp/tmux.conf", "mux-7701")
+	want := []string{
+		"-S", "/tmp/tmux.sock",
+		"-f", "/tmp/tmux.conf",
+		"-T", "sixel",
+		"attach-session", "-t", "mux-7701",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("terminalAttachArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestWriteTerminalInputHandlesShortWrites(t *testing.T) {
+	writer := &shortWriter{max: 3}
+	input := []byte("\x1b[<0;12;7M")
+	if err := writeTerminalInput(writer, input); err != nil {
+		t.Fatalf("writeTerminalInput() error = %v", err)
+	}
+	if !bytes.Equal(writer.Bytes(), input) {
+		t.Fatalf("written input = %q, want %q", writer.Bytes(), input)
+	}
+
+	if err := writeTerminalInput(zeroWriter{}, input); err != io.ErrShortWrite {
+		t.Fatalf("zero-byte write error = %v, want %v", err, io.ErrShortWrite)
+	}
+}
+
+type zeroWriter struct{}
+
+func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
+
+func TestPaneEnvironmentAdvertisesSixel(t *testing.T) {
+	runtime := &TerminalRuntime{manager: &PaneManager{serverPort: "7788"}}
+	args := runtime.paneEnvArgs()
+	if !slices.Contains(args, "WEBMUX_IMAGE_PROTOCOL=sixel") {
+		t.Fatalf("pane environment missing SIXEL indicator: %v", args)
 	}
 }
 
@@ -100,6 +174,7 @@ func TestTerminalPopoutPage(t *testing.T) {
 		"Terminal one &lt; two",
 		"../../vendor/xterm/xterm.js",
 		"../../vendor/xterm/addon-webgl.js",
+		"../../vendor/xterm/addon-image.js",
 		"../../terminal-popout.js",
 		"webmux-popouts",
 	} {

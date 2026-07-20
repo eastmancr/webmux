@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -29,6 +30,7 @@ const (
 	defaultTerminalRows = 24
 	maxTerminalCols     = 1000
 	maxTerminalRows     = 500
+	maxTerminalPixels   = 65535
 )
 
 var terminalUpgrader = websocket.Upgrader{
@@ -36,13 +38,36 @@ var terminalUpgrader = websocket.Upgrader{
 }
 
 type terminalControlMessage struct {
-	Type string `json:"type"`
-	Cols int    `json:"cols"`
-	Rows int    `json:"rows"`
+	Type        string `json:"type"`
+	Cols        int    `json:"cols"`
+	Rows        int    `json:"rows"`
+	PixelWidth  int    `json:"pixelWidth"`
+	PixelHeight int    `json:"pixelHeight"`
 }
 
 func validTerminalSize(cols, rows int) bool {
 	return cols >= 2 && cols <= maxTerminalCols && rows >= 1 && rows <= maxTerminalRows
+}
+
+func validTerminalPixels(width, height int) bool {
+	if width == 0 || height == 0 {
+		return width == 0 && height == 0
+	}
+	return width > 0 && width <= maxTerminalPixels && height > 0 && height <= maxTerminalPixels
+}
+
+func writeTerminalInput(w io.Writer, data []byte) error {
+	for len(data) > 0 {
+		n, err := w.Write(data)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	return nil
 }
 
 func terminalClientEnvironment(base []string) []string {
@@ -58,6 +83,14 @@ func terminalClientEnvironment(base []string) []string {
 		"COLORTERM=truecolor",
 		"TERM_PROGRAM=webmux",
 	)
+}
+
+func terminalAttachArgs(socketPath, configPath, session string) []string {
+	args := []string{"-S", socketPath}
+	if configPath != "" {
+		args = append(args, "-f", configPath)
+	}
+	return append(args, "-T", "sixel", "attach-session", "-t", session)
 }
 
 // handleTerminalWebSocket attaches one browser client to the pane's durable
@@ -78,11 +111,7 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	args := []string{"-S", s.manager.terminal.tmuxSocketPath()}
-	if s.manager.terminal.tmuxConfigPath != "" {
-		args = append(args, "-f", s.manager.terminal.tmuxConfigPath)
-	}
-	args = append(args, "attach-session", "-t", state.tmuxSession)
+	args := terminalAttachArgs(s.manager.terminal.tmuxSocketPath(), s.manager.terminal.tmuxConfigPath, state.tmuxSession)
 	cmd := exec.Command("tmux", args...)
 	cmd.Env = terminalClientEnvironment(os.Environ())
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: defaultTerminalCols, Rows: defaultTerminalRows})
@@ -143,7 +172,7 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 			switch messageType {
 			case websocket.BinaryMessage:
 				if len(data) > 0 {
-					if _, writeErr := ptmx.Write(data); writeErr != nil {
+					if writeErr := writeTerminalInput(ptmx, data); writeErr != nil {
 						inputDone <- writeErr
 						return
 					}
@@ -153,10 +182,13 @@ func (s *Server) handleTerminalWebSocket(w http.ResponseWriter, r *http.Request,
 				if json.Unmarshal(data, &control) != nil || control.Type != "resize" {
 					continue
 				}
-				if !validTerminalSize(control.Cols, control.Rows) {
+				if !validTerminalSize(control.Cols, control.Rows) || !validTerminalPixels(control.PixelWidth, control.PixelHeight) {
 					continue
 				}
-				if resizeErr := pty.Setsize(ptmx, &pty.Winsize{Cols: uint16(control.Cols), Rows: uint16(control.Rows)}); resizeErr != nil {
+				if resizeErr := pty.Setsize(ptmx, &pty.Winsize{
+					Cols: uint16(control.Cols), Rows: uint16(control.Rows),
+					X: uint16(control.PixelWidth), Y: uint16(control.PixelHeight),
+				}); resizeErr != nil {
 					inputDone <- resizeErr
 					return
 				}
@@ -199,6 +231,7 @@ func (s *Server) serveTerminalPopout(w http.ResponseWriter, r *http.Request, pan
   <script src="../../vendor/xterm/xterm.js"></script>
   <script src="../../vendor/xterm/addon-fit.js"></script>
   <script src="../../vendor/xterm/addon-webgl.js"></script>
+  <script src="../../vendor/xterm/addon-image.js"></script>
 </head>
 <body><div id="terminal"></div><script src="../../terminal-popout.js"></script></body>
 </html>`, html.EscapeString(pane.Name))

@@ -27,7 +27,7 @@
         fontSize: 14,
         fontFamily: 'JetBrains Mono, Fira Code, SF Mono, Menlo, Monaco, Courier New, monospace',
         scrollback: 50000,
-        rightClickSelectsWord: true,
+        rightClickSelectsWord: false,
         scrollOnUserInput: true,
         allowProposedApi: true,
         theme: {
@@ -44,18 +44,69 @@
     });
     const fitAddon = new FitAddon.FitAddon();
     terminal.loadAddon(fitAddon);
-    terminal.open(document.getElementById('terminal'));
+    const host = document.getElementById('terminal');
+    terminal.open(host);
+    const copyTerminalSelection = () => {
+        const selection = terminal.getSelection();
+        if (!selection) return false;
+        const fallbackCopy = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = selection;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            textarea.remove();
+            terminal.focus();
+        };
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(selection).catch(fallbackCopy);
+        else fallbackCopy();
+        return true;
+    };
+    let shiftSelecting = false;
+    host.addEventListener('mousedown', event => {
+        shiftSelecting = event.button === 0 && event.shiftKey;
+    }, true);
+    host.addEventListener('mouseup', event => {
+        if (shiftSelecting && event.button === 0) copyTerminalSelection();
+        shiftSelecting = false;
+    }, true);
+    terminal.attachCustomKeyEventHandler(event => {
+        if (event.type !== 'keydown' || !event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== 'c') {
+            return true;
+        }
+        return !copyTerminalSelection();
+    });
     try {
         const webglAddon = new WebglAddon.WebglAddon();
         webglAddon.onContextLoss(() => webglAddon.dispose());
         terminal.loadAddon(webglAddon);
     } catch (error) {}
+    terminal.loadAddon(new ImageAddon.ImageAddon({
+        enableSizeReports: true,
+        pixelLimit: 4 * 1024 * 1024,
+        sixelSupport: true,
+        sixelScrolling: true,
+        sixelPaletteLimit: 256,
+        sixelSizeLimit: 8 * 1024 * 1024,
+        storageLimit: 32,
+        showPlaceholder: true,
+        iipSupport: false,
+    }));
 
     let socket = null;
     let reconnectTimer = null;
     const sendResize = () => {
         if (socket?.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'resize', cols: terminal.cols, rows: terminal.rows }));
+            const rect = terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect();
+            socket.send(JSON.stringify({
+                type: 'resize',
+                cols: terminal.cols,
+                rows: terminal.rows,
+                pixelWidth: Math.round(rect?.width || 0),
+                pixelHeight: Math.round(rect?.height || 0),
+            }));
         }
     };
     const fit = () => {
@@ -65,18 +116,23 @@
         } catch (error) {}
     };
     const connect = () => {
-        socket = new WebSocket(wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
-        socket.binaryType = 'arraybuffer';
-        socket.onopen = () => {
+        const connection = new WebSocket(wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
+        socket = connection;
+        connection.binaryType = 'arraybuffer';
+        connection.onopen = () => {
+            if (socket !== connection) return;
             fit();
             terminal.focus();
         };
-        socket.onmessage = event => {
+        connection.onmessage = event => {
+            if (socket !== connection) return;
             if (event.data instanceof ArrayBuffer) terminal.write(new Uint8Array(event.data));
             else if (event.data instanceof Blob) event.data.arrayBuffer().then(data => terminal.write(new Uint8Array(data)));
         };
-        socket.onerror = () => socket.close();
-        socket.onclose = () => {
+        connection.onerror = () => connection.close();
+        connection.onclose = () => {
+            if (socket !== connection) return;
+            socket = null;
             if (!reconnectTimer) {
                 reconnectTimer = setTimeout(() => {
                     reconnectTimer = null;

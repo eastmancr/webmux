@@ -2806,6 +2806,7 @@ class TerminalMultiplexer {
         for (const pane of this.panes.values()) {
             if (this.getPopoutKey(pane) === popoutKey) {
                 document.getElementById(`pane-${pane.id}`)?.classList.add('popped-out');
+                if (pane.type === 'terminal') this.suspendTerminal(pane.id);
             }
         }
     }
@@ -2814,6 +2815,7 @@ class TerminalMultiplexer {
         for (const pane of this.panes.values()) {
             if (this.getPopoutKey(pane) === popoutKey) {
                 document.getElementById(`pane-${pane.id}`)?.classList.remove('popped-out');
+                if (pane.type === 'terminal') this.resumeTerminal(pane.id);
             }
         }
     }
@@ -2876,7 +2878,7 @@ class TerminalMultiplexer {
                 lastSeen: Date.now(),
             });
             this.savePopoutStates();
-            container.classList.add('popped-out');
+            this.setPoppedOutContainers(popoutKey);
             if (this.isSharedPane(pane)) {
                 this.updatePaneLayout();
             }
@@ -2922,7 +2924,12 @@ class TerminalMultiplexer {
             return;
         }
 
-        if (container) this.rebuildDedicatedPaneIframe(pane, container);
+        if (pane.type === 'terminal') {
+            this.updatePaneLayout();
+            requestAnimationFrame(() => this.fitTerminal(pane.id));
+        } else if (container) {
+            this.rebuildDedicatedPaneIframe(pane, container);
+        }
     }
 
     refreshPane(paneId) {
@@ -3176,6 +3183,25 @@ class TerminalMultiplexer {
         };
     }
 
+    copyTerminalSelection(terminal) {
+        const selection = terminal.getSelection();
+        if (!selection) return false;
+        const fallbackCopy = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = selection;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            document.execCommand('copy');
+            textarea.remove();
+            terminal.focus();
+        };
+        if (navigator.clipboard?.writeText) navigator.clipboard.writeText(selection).catch(fallbackCopy);
+        else fallbackCopy();
+        return true;
+    }
+
     ensureTerminal(pane, container) {
         if (this.terminals.has(pane.id)) {
             requestAnimationFrame(() => this.fitTerminal(pane.id));
@@ -3207,13 +3233,27 @@ class TerminalMultiplexer {
             fontFamily: 'JetBrains Mono, Fira Code, SF Mono, Menlo, Monaco, Courier New, monospace',
             theme,
             scrollback: 50000,
-            rightClickSelectsWord: true,
+            rightClickSelectsWord: false,
             scrollOnUserInput: true,
             allowProposedApi: true,
         });
         const fitAddon = new FitAddon.FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(host);
+        let shiftSelecting = false;
+        host.addEventListener('mousedown', event => {
+            shiftSelecting = event.button === 0 && event.shiftKey;
+        }, true);
+        host.addEventListener('mouseup', event => {
+            if (shiftSelecting && event.button === 0) this.copyTerminalSelection(terminal);
+            shiftSelecting = false;
+        }, true);
+        terminal.attachCustomKeyEventHandler(event => {
+            if (event.type !== 'keydown' || !event.ctrlKey || !event.shiftKey || event.key.toLowerCase() !== 'c') {
+                return true;
+            }
+            return !this.copyTerminalSelection(terminal);
+        });
 
         let webglAddon = null;
         try {
@@ -3230,13 +3270,28 @@ class TerminalMultiplexer {
             this.logDiagnostic('terminal', 'webgl-unavailable', { paneId: pane.id, data: { error: error.message } });
         }
 
+        const imageAddon = new ImageAddon.ImageAddon({
+            enableSizeReports: true,
+            pixelLimit: 4 * 1024 * 1024,
+            sixelSupport: true,
+            sixelScrolling: true,
+            sixelPaletteLimit: 256,
+            sixelSizeLimit: 8 * 1024 * 1024,
+            storageLimit: 32,
+            showPlaceholder: true,
+            iipSupport: false,
+        });
+        terminal.loadAddon(imageAddon);
+
         const entry = {
             terminal,
             fitAddon,
             webglAddon,
+            imageAddon,
             socket: null,
             reconnectTimer: null,
             disposed: false,
+            suspended: false,
             resizeObserver: null,
         };
         this.terminals.set(pane.id, entry);
@@ -3259,7 +3314,7 @@ class TerminalMultiplexer {
     }
 
     connectTerminal(paneId, entry) {
-        if (entry.disposed || !this.panes.has(paneId)) return;
+        if (entry.disposed || entry.suspended || !this.panes.has(paneId)) return;
         const socket = new WebSocket(this.wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
         socket.binaryType = 'arraybuffer';
         entry.socket = socket;
@@ -3285,6 +3340,7 @@ class TerminalMultiplexer {
             if (entry.disposed || entry.socket !== socket) return;
             this.logDiagnostic('terminal', 'close', { paneId });
             entry.socket = null;
+            if (entry.suspended) return;
             entry.reconnectTimer = setTimeout(() => {
                 entry.reconnectTimer = null;
                 this.connectTerminal(paneId, entry);
@@ -3292,9 +3348,37 @@ class TerminalMultiplexer {
         };
     }
 
+    suspendTerminal(paneId) {
+        const entry = this.terminals.get(paneId);
+        if (!entry || entry.disposed || entry.suspended) return;
+        entry.suspended = true;
+        if (entry.reconnectTimer) {
+            clearTimeout(entry.reconnectTimer);
+            entry.reconnectTimer = null;
+        }
+        const socket = entry.socket;
+        entry.socket = null;
+        socket?.close(1000, 'terminal popped out');
+    }
+
+    resumeTerminal(paneId) {
+        const entry = this.terminals.get(paneId);
+        if (!entry || entry.disposed || !entry.suspended) return;
+        entry.suspended = false;
+        this.connectTerminal(paneId, entry);
+        requestAnimationFrame(() => this.fitTerminal(paneId));
+    }
+
     sendTerminalResize(entry, cols, rows) {
         if (entry.socket?.readyState !== WebSocket.OPEN) return;
-        entry.socket.send(JSON.stringify({ type: 'resize', cols, rows }));
+        const rect = entry.terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect();
+        entry.socket.send(JSON.stringify({
+            type: 'resize',
+            cols,
+            rows,
+            pixelWidth: Math.round(rect?.width || 0),
+            pixelHeight: Math.round(rect?.height || 0),
+        }));
     }
 
     fitTerminal(paneId) {

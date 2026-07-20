@@ -5,7 +5,7 @@ Browser-based pane multiplexer. The Go backend manages local pane backends and p
 ## Requirements
 
 - Go 1.25+
-- [tmux](https://github.com/tmux/tmux)
+- [tmux](https://github.com/tmux/tmux) (3.4+ built with SIXEL support for inline images)
 
 ## Build
 
@@ -85,11 +85,14 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 - Scratch pad for CLI-browser text exchange
 - Customizable UI and terminal colors (Base24 theme support)
 - Clipboard sync with OSC 52 support plus `wm copy`/`wm paste`
+- Mouse-aware TUI input and inline SIXEL images in terminal panes
 - Keyboard shortcuts (Ctrl+Shift+T for new terminal pane, etc.)
 
 ## Pane Types
 
 - Terminal panes are dedicated: each pane owns a tmux session, while xterm.js runs directly in the webmux page and connects through a webmux WebSocket. Keybar input is sent server-side through tmux.
+- Terminal images use SIXEL through tmux. Images are limited to 4 megapixels and 8 MB of encoded data, with 32 MB of retained image storage per browser terminal. iTerm2 and Kitty image protocols are not supported.
+- Hold Shift while dragging to select and automatically copy terminal text. Ctrl+Shift+C also copies the current selection.
 - HTTP-backed pane types may be dedicated or shared depending on the backend. OpenCode is currently supported as a shared managed backend when `opencode` is available in `PATH`.
 - Pane creation options are advertised by the server; unavailable optional backends are disabled in the UI.
 - Popouts preserve the same dedicated/shared semantics. A popped-out shared backend suppresses duplicate in-page clients until it is popped back in or closed.

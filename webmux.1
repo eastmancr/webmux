@@ -84,6 +84,9 @@ Group up to 4 panes in resizable split layouts.
 .B Managed Pane Types
 Terminal panes use main-document xterm.js renderers backed by dedicated tmux sessions. OpenCode panes share one managed OpenCode backend and mirror the same state.
 .TP
+.B Terminal Graphics
+Terminal panes support inline SIXEL images and mouse-aware TUI input. SIXEL images are limited to 4 megapixels and 8 MB of encoded data, with 32 MB of retained image storage per browser terminal. iTerm2 and Kitty image protocols are not supported.
+.TP
 .B File Transfer
 Upload files via drag-and-drop or file picker. Download files by browsing the server filesystem.
 .TP
@@ -128,6 +131,9 @@ Set automatically in webmux terminals. Path to the shell init script.
 .TP
 .B WEBMUX_CLIPBOARD
 Clipboard mode indicator. Set to \fBosc52\fR in webmux terminals.
+.TP
+.B WEBMUX_IMAGE_PROTOCOL
+Terminal image protocol indicator. Set to \fBsixel\fR in webmux terminals.
 
 .SH REQUIREMENTS
 .B webmux
@@ -135,7 +141,7 @@ requires
 .B tmux
 to be installed and available in PATH for terminal panes. OpenCode panes require
 .B opencode
-in PATH.
+in PATH. Inline terminal images require tmux 3.4 or newer built with SIXEL support.
 
 .SH SEE ALSO
 .BR tmux (1)

@@ -145,6 +145,7 @@ func (tr *TerminalRuntime) paneEnvArgs() []string {
 
 	// Add WEBMUX_PORT so wm CLI knows which server to talk to
 	args = append(args, "-e", "WEBMUX_PORT="+tr.manager.serverPort)
+	args = append(args, "-e", "WEBMUX_IMAGE_PROTOCOL=sixel")
 
 	// Set _wm_bin env var to the path of the wm binary (used by shell wrapper)
 	if tr.wmBinDir != "" {
