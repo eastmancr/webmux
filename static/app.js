@@ -3266,6 +3266,27 @@ class TerminalMultiplexer {
             }
             return !this.copyTerminalSelection(terminal);
         });
+        terminal.registerLinkProvider({
+            provideLinks: (lineNumber, callback) => {
+                const text = terminal.buffer.active.getLine(lineNumber - 1)?.translateToString(true) || '';
+                const links = [];
+                for (const match of text.matchAll(/https?:\/\/[^\s<>"'`\\]+/g)) {
+                    const url = match[0].replace(/[.,;:!?)}\]]+$/, '');
+                    if (!url) continue;
+                    links.push({
+                        text: url,
+                        range: {
+                            start: { x: match.index + 1, y: lineNumber },
+                            end: { x: match.index + url.length, y: lineNumber },
+                        },
+                        activate: (event, link) => {
+                            if (event.ctrlKey) window.open(link, '_blank', 'noopener,noreferrer');
+                        },
+                    });
+                }
+                callback(links.length ? links : undefined);
+            },
+        });
 
         let webglAddon = null;
         try {
