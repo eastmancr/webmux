@@ -2935,7 +2935,7 @@ class TerminalMultiplexer {
         }
     }
 
-    refreshPane(paneId) {
+    async refreshPane(paneId) {
         const pane = this.panes.get(paneId);
         if (!pane) return;
 
@@ -2943,6 +2943,7 @@ class TerminalMultiplexer {
             this.logDiagnostic('iframe', 'refresh-shared', { paneId, backendId: pane.backendId, paneType: pane.type });
             const popoutKey = this.getPopoutKey(pane);
             const popoutWindow = this.popoutWindows.get(popoutKey);
+            await this.flushOpenCodePaneStorage(pane, popoutWindow);
             if (popoutWindow && !popoutWindow.closed) {
                 popoutWindow.location.href = this.url(`/p/${pane.id}/`);
             }
@@ -2957,6 +2958,30 @@ class TerminalMultiplexer {
         container.classList.add('loading');
         this.logDiagnostic('iframe', 'refresh', { paneId, backendId: pane.backendId, paneType: pane.type });
         this.rebuildDedicatedPaneIframe(pane, container);
+    }
+
+    async flushOpenCodePaneStorage(pane, popoutWindow = null) {
+        if (pane.type !== 'opencode') return;
+
+        const backendKey = this.getPaneBackendKey(pane);
+        const iframe = backendKey ? this.sharedIframes.get(backendKey) : null;
+        const windows = [iframe?.contentWindow, popoutWindow].filter(Boolean);
+        const flushes = [];
+        for (const target of windows) {
+            try {
+                if (typeof target.__webmuxFlushOpenCodeStorage === 'function') {
+                    flushes.push(Promise.resolve(target.__webmuxFlushOpenCodeStorage()));
+                }
+            } catch (error) {
+                this.logDiagnostic('iframe', 'storage-flush-access-error', { paneId: pane.id, backendId: pane.backendId, paneType: pane.type });
+            }
+        }
+        if (flushes.length === 0) return;
+
+        await Promise.race([
+            Promise.allSettled(flushes),
+            new Promise(resolve => setTimeout(resolve, 3000)),
+        ]);
     }
 
     // Pane Rendering

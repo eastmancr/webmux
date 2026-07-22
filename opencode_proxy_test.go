@@ -259,6 +259,34 @@ func TestModifyOpenCodeIndexResponseMaterializesWindowTabs(t *testing.T) {
 	}
 }
 
+func TestModifyOpenCodeIndexResponseUsesRegularStorageFlushes(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", PaneStorageState{}, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"keepalive: keepalive === true",
+		"storageSyncKeepaliveLimit = 60 * 1024",
+		"window.__webmuxFlushOpenCodeStorage = flushAllStorageUpdates",
+		"flushStorageUpdates(pendingStorageUpdateSize() <= storageSyncKeepaliveLimit)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing storage flush behavior %q", want)
+		}
+	}
+}
+
 func TestRewriteOpenCodeJSInitialLocation(t *testing.T) {
 	input := `const t=()=>{const r=window.location.pathname.replace(/^\/+/,"/")+window.location.search;return r}`
 	output := rewriteOpenCodeJSInitialLocation(input)

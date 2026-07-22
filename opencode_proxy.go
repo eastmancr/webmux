@@ -318,6 +318,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var OriginalWebSocketForStorage = window.WebSocket;
   var storageSyncIdleDelay = 1000;
   var storageSyncMaxDelay = 5000;
+  var storageSyncKeepaliveLimit = 60 * 1024;
   var pendingStorageClear = false;
   var pendingStorageSets = {};
   var pendingStorageRemoves = {};
@@ -325,6 +326,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var storageSyncIdleTimer = null;
   var storageSyncMaxTimer = null;
   var storageFlushInFlight = false;
+  var storageFlushPromise = Promise.resolve(true);
   var pendingSnapshotFetch = false;
   var opencodeServerStorageKey = 'opencode.global.dat:server';
   var opencodeDefaultServerStorageKey = 'opencode.settings.dat:defaultServerUrl';
@@ -400,13 +402,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       }
     });
   }
-  function postStorageUpdate(payload) {
+  function postStorageUpdate(payload, keepalive) {
     payload.clientId = clientID;
     return originalFetch(storageBase, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      keepalive: true
+      keepalive: keepalive === true
     }).then(function(response) {
       if (!response.ok) throw new Error('storage update failed: HTTP ' + response.status);
       return response.json();
@@ -457,6 +459,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       if (!pendingStorageClear) pendingStorageRemoves[payload.key] = true;
     }
     scheduleStorageFlush();
+  }
+  function pendingStorageUpdateSize() {
+    var operations = [];
+    if (pendingStorageClear) operations.push({ operation: 'clear' });
+    Object.keys(pendingStorageSets).forEach(function(key) {
+      operations.push({ operation: 'set', key: key, value: pendingStorageSets[key] });
+    });
+    Object.keys(pendingStorageRemoves).forEach(function(key) {
+      operations.push({ operation: 'remove', key: key });
+    });
+    return new Blob([JSON.stringify({ operation: 'batch', operations: operations, clientId: clientID })]).size;
   }
   function takePendingStorageOperations() {
     var operations = [];
@@ -841,17 +854,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       && serverStorage['opencode.global.dat:layout'] !== originalOpenCodeLayoutStorageValue) {
     queueStorageUpdate({ operation: 'set', key: 'opencode.global.dat:layout', value: serverStorage['opencode.global.dat:layout'] });
   }
-  function flushStorageUpdates() {
-    if (storageFlushInFlight) return;
+  function flushStorageUpdates(keepalive) {
+    if (storageFlushInFlight) return storageFlushPromise;
     if (!hasPendingStorageUpdates()) {
       resetStorageSyncTimers();
       pendingStorageStartedAt = 0;
-      return;
+      return Promise.resolve(true);
     }
     var operations = takePendingStorageOperations();
-    if (operations.length === 0) return;
+    if (operations.length === 0) return Promise.resolve(true);
     storageFlushInFlight = true;
-    postStorageUpdate({ operation: 'batch', operations: operations }).then(function() {
+    storageFlushPromise = postStorageUpdate({ operation: 'batch', operations: operations }, keepalive === true).then(function() {
       storageFlushInFlight = false;
       if (hasPendingStorageUpdates()) {
         scheduleStorageFlush();
@@ -859,9 +872,22 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         pendingSnapshotFetch = false;
         fetchStorageSnapshot();
       }
+      return true;
     }).catch(function() {
       storageFlushInFlight = false;
       operations.forEach(queueStorageUpdate);
+      postDiagnostic('opencode-storage', 'flush-error', {
+        data: { keepalive: keepalive === true, operations: operations.length }
+      });
+      return false;
+    });
+    return storageFlushPromise;
+  }
+  function flushAllStorageUpdates() {
+    return Promise.resolve(flushStorageUpdates()).then(function(success) {
+      if (!success) return false;
+      if (storageFlushInFlight || hasPendingStorageUpdates()) return flushAllStorageUpdates();
+      return true;
     });
   }
   function fetchStorageSnapshot() {
@@ -1008,8 +1034,11 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   } catch (e) {
     try { window.localStorage = storageShim; } catch (ignored) {}
   }
+  window.__webmuxFlushOpenCodeStorage = flushAllStorageUpdates;
   connectStorageEvents();
-  window.addEventListener('pagehide', flushStorageUpdates);
+  window.addEventListener('pagehide', function() {
+    flushStorageUpdates(pendingStorageUpdateSize() <= storageSyncKeepaliveLimit);
+  });
 
   function prefixURL(input) {
     if (input instanceof URL) input = input.toString();
