@@ -287,6 +287,64 @@ func TestModifyOpenCodeIndexResponseUsesRegularStorageFlushes(t *testing.T) {
 	}
 }
 
+func TestModifyOpenCodeIndexResponseTracksActivePath(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+	storage := PaneStorageState{Items: map[string]string{
+		"webmux.internal.opencode.activePath": "/server/d2VibXV4/session/ses_1",
+	}}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", storage, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"webmux.internal.opencode.activePath",
+		"delete serverStorage[activePathStorageKey]",
+		"requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin)",
+		"persistActiveOpenCodePath(arguments[2])",
+		"window.addEventListener('popstate'",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing active-path behavior %q", want)
+		}
+	}
+}
+
+func TestModifyOpenCodeIndexResponseMaterializesRouteContext(t *testing.T) {
+	runtime := &OpenCodeRuntime{states: make(map[string]*OpenCodePaneState)}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><script type="module" src="/assets/index.js"></script></head><body></body></html>`)),
+	}
+
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", PaneStorageState{}, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatalf("modifyOpenCodeIndexResponse returned error: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	content := string(body)
+	for _, want := range []string{
+		"translateOpenCodeRouteContextStorageValue(value, window.location.origin)",
+		"translateOpenCodeRouteContextStorageValue(value, canonicalServerID)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("modified content missing route-context behavior %q", want)
+		}
+	}
+}
+
 func TestRewriteOpenCodeJSInitialLocation(t *testing.T) {
 	input := `const t=()=>{const r=window.location.pathname.replace(/^\/+/,"/")+window.location.search;return r}`
 	output := rewriteOpenCodeJSInitialLocation(input)

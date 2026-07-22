@@ -310,7 +310,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var marker = '/p/' + paneID;
   var markerIndex = window.location.pathname.indexOf(marker);
   var base = markerIndex === -1 ? fallbackBase : window.location.pathname.slice(0, markerIndex + marker.length);
-  window.__webmuxOpenCodePathname = markerIndex === -1 ? '/' : (window.location.pathname.slice(markerIndex + marker.length) || '/');
+  var requestedOpenCodePath = markerIndex === -1 ? '/' : (window.location.pathname.slice(markerIndex + marker.length) || '/');
+  var activePathStorageKey = 'webmux.internal.opencode.activePath';
+  var activeOpenCodePath = Object.prototype.hasOwnProperty.call(serverStorage, activePathStorageKey) ? serverStorage[activePathStorageKey] : '';
+  delete serverStorage[activePathStorageKey];
+  if (requestedOpenCodePath === '/' && typeof activeOpenCodePath === 'string' && activeOpenCodePath.startsWith('/')) {
+    requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin);
+    if (requestedOpenCodePath !== '/') {
+      try { window.history.replaceState(window.history.state, '', base + requestedOpenCodePath); } catch (e) {}
+    }
+  }
+  window.__webmuxOpenCodePathname = requestedOpenCodePath;
   var storageBase = base.replace(marker, '/api/pane-storage/' + encodeURIComponent(backendID));
   var storageEventsBase = base.replace(marker, '/api/pane-storage-events/' + encodeURIComponent(backendID));
   var diagnosticsBase = base.replace(marker, '/api/diagnostics/client');
@@ -386,8 +396,13 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     }
   }
   function replaceStorage(nextItems, nextVersion) {
+    nextItems = nextItems || {};
+    if (Object.prototype.hasOwnProperty.call(nextItems, activePathStorageKey)) {
+      activeOpenCodePath = nextItems[activePathStorageKey];
+      delete nextItems[activePathStorageKey];
+    }
     var oldStorage = serverStorage;
-    serverStorage = normalizeOpenCodeStorageItems(nextItems || {});
+    serverStorage = normalizeOpenCodeStorageItems(nextItems);
     storageVersion = nextVersion || 0;
     var seen = {};
     Object.keys(oldStorage).forEach(function(key) {
@@ -570,6 +585,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (key === opencodeWindowTabsClosedKey) return translateOpenCodeClosedTabsStorageValue(value, window.location.origin);
     if (key === opencodeWindowTabsInfoKey) return translateOpenCodeTabInfoStorageValue(value, window.location.origin);
     if (key === opencodeWindowTabsRecentKey) return translateOpenCodeRecentTabStorageValue(value, window.location.origin);
+    if (key === 'opencode.global.dat:route.context') return translateOpenCodeRouteContextStorageValue(value, window.location.origin);
     if (key === 'opencode.global.dat:layout') return materializeOpenCodeLayoutStorageValue(value);
     if (key === 'opencode.global.dat:layout.page') return materializeOpenCodeLayoutPageStorageValue(value);
     return value;
@@ -660,6 +676,15 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         if (isCollapsed) homeServers.collapsed[serverID] = true;
       }
       return JSON.stringify(homeServers);
+    } catch (e) { return value; }
+  }
+  function translateOpenCodeRouteContextStorageValue(value, serverID) {
+    if (typeof value !== 'string') return value;
+    try {
+      var context = JSON.parse(value);
+      if (!context || typeof context !== 'object' || Array.isArray(context)) return value;
+      if (typeof context.server === 'string' && context.server !== '') context.server = serverID;
+      return JSON.stringify(context);
     } catch (e) { return value; }
   }
   function translateOpenCodeScopedObjectKeys(object, targetScope) {
@@ -774,6 +799,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (key === opencodeWindowTabsClosedKey) return translateOpenCodeClosedTabsStorageValue(value, canonicalServerID);
     if (key === opencodeWindowTabsInfoKey) return translateOpenCodeTabInfoStorageValue(value, canonicalServerID);
     if (key === opencodeWindowTabsRecentKey) return translateOpenCodeRecentTabStorageValue(value, canonicalServerID);
+    if (key === 'opencode.global.dat:route.context') return translateOpenCodeRouteContextStorageValue(value, canonicalServerID);
     if (key === 'opencode.global.dat:layout') return normalizeOpenCodeLayoutStorageValue(value);
     if (key === 'opencode.global.dat:layout.page') return normalizeOpenCodeLayoutPageStorageValue(value);
     return value;
@@ -1245,6 +1271,22 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     var info = currentOpenCodeRouteInfo(url);
     if (info) postDiagnostic('opencode-route', event, { path: info.path, data: info });
   }
+  function openCodePathFromURL(url) {
+    try {
+      var path = new URL(url || window.location.href, window.location.href).pathname;
+      if (path === base) return '/';
+      if (path.startsWith(base + '/')) return path.slice(base.length);
+    } catch (e) {}
+    return null;
+  }
+  function persistActiveOpenCodePath(url) {
+    var path = openCodePathFromURL(url);
+    if (!path) return;
+    path = translateOpenCodeRoute(path, canonicalServerID);
+    if (path === activeOpenCodePath) return;
+    activeOpenCodePath = path;
+    queueStorageUpdate({ operation: 'set', key: activePathStorageKey, value: path });
+  }
   document.addEventListener('click', function(event) {
     var anchor = event.target && event.target.closest ? event.target.closest('a[href]') : null;
     if (!anchor) return;
@@ -1279,12 +1321,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     window.history[method] = function(state, title, url) {
       if (arguments.length > 2) arguments[2] = prefixHistoryURL(url);
       var result = original.apply(this, arguments);
-      if (arguments.length > 2) postRouteDiagnostic(method, arguments[2]);
+      if (arguments.length > 2) {
+        postRouteDiagnostic(method, arguments[2]);
+        persistActiveOpenCodePath(arguments[2]);
+      }
       return result;
     };
   }
   patchHistoryMethod('pushState');
   patchHistoryMethod('replaceState');
+  window.addEventListener('popstate', function() { persistActiveOpenCodePath(window.location.href); });
+  persistActiveOpenCodePath(window.location.href);
 
   var OriginalEventSource = window.EventSource;
   window.EventSource = function(url, config) {

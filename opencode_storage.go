@@ -38,6 +38,7 @@ const (
 	openCodeWindowTabsClosedKey    = "opencode.window.browser.dat:tabs.closed"
 	openCodeWindowTabsInfoKey      = "opencode.window.browser.dat:tabs.info"
 	openCodeWindowTabsRecentKey    = "opencode.window.browser.dat:tabs.recent"
+	openCodeActivePathStorageKey   = "webmux.internal.opencode.activePath"
 )
 
 // canonicalizePaneStorageItems keeps the authoritative OpenCode snapshot free
@@ -106,6 +107,8 @@ func canonicalizeOpenCodeStorageValue(key, value string) string {
 		return translateOpenCodeTabInfoStorageValue(value, openCodeCanonicalServerID)
 	case openCodeWindowTabsRecentKey:
 		return translateOpenCodeRecentTabStorageValue(value, openCodeCanonicalServerID)
+	case openCodeActivePathStorageKey:
+		return translateOpenCodeRoute(value, openCodeCanonicalServerID)
 	}
 	return value
 }

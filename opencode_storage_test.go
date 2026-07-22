@@ -16,6 +16,7 @@ func TestCanonicalizeOpenCodeStorageItems(t *testing.T) {
 		"opencode.global.dat:route.context":                             `{"server":"https://vpn.example.com"}`,
 		"opencode.global.dat:layout":                                    `{"sessionTabs":{"https://vpn.example.com\u0000project/session":{"active":"context"}},"sessionView":{},"handoff":{},"home":{"selection":{"server":"https://vpn.example.com"}}}`,
 		"opencode.global.dat:server":                                    `{"list":[{"type":"http","http":{"url":"https://vpn.example.com"}}],"projects":{"webmux":[{"worktree":"/canonical","expanded":true}],"local":[{"worktree":"/local","expanded":true}],"https://vpn.example.com":[{"worktree":"/vpn","expanded":true},{"worktree":"/canonical","expanded":false}]},"lastProject":{"https://vpn.example.com":"/vpn","webmux":"/canonical"},"recentlyClosed":{"local":["/local"],"https://vpn.example.com":["/vpn","/local"]}}`,
+		openCodeActivePathStorageKey:                                    `/server/aHR0cHM6Ly92cG4uZXhhbXBsZS5jb20/session/ses_1`,
 	}
 
 	got := canonicalizeOpenCodeStorageItems(items)
@@ -61,6 +62,9 @@ func TestCanonicalizeOpenCodeStorageItems(t *testing.T) {
 	route := decodeStorageObject(t, got[openCodeRouteContextStorageKey])
 	if route["server"] != openCodeCanonicalServerID {
 		t.Fatalf("route server = %#v, want canonical identity", route["server"])
+	}
+	if got[openCodeActivePathStorageKey] != "/server/d2VibXV4/session/ses_1" {
+		t.Fatalf("active path = %q, want canonical server route", got[openCodeActivePathStorageKey])
 	}
 }
 
