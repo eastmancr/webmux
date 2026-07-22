@@ -91,7 +91,9 @@
         shiftSelecting = event.button === 0 && event.shiftKey;
     }, true);
     host.addEventListener('mouseup', event => {
-        if (shiftSelecting && event.button === 0) copyTerminalSelection();
+        if (shiftSelecting && event.button === 0 && copyTerminalSelection()) {
+            terminal.clearSelection();
+        }
         shiftSelecting = false;
     }, true);
     terminal.attachCustomKeyEventHandler(event => {
