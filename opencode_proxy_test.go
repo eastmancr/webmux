@@ -288,6 +288,9 @@ func TestModifyOpenCodeIndexResponseUsesRegularStorageFlushes(t *testing.T) {
 		"storageSyncKeepaliveLimit = 60 * 1024",
 		"window.__webmuxFlushOpenCodeStorage = flushAllStorageUpdates",
 		"flushStorageUpdates(pendingStorageUpdateSize() <= storageSyncKeepaliveLimit)",
+		"requeueFailedStorageOperations(operations)",
+		"Object.prototype.hasOwnProperty.call(pendingStorageSets, operation.key)",
+		"if (hasPendingStorageUpdates() || storageFlushInFlight)",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("modified content missing storage flush behavior %q", want)
@@ -317,7 +320,11 @@ func TestModifyOpenCodeIndexResponseTracksActivePath(t *testing.T) {
 	for _, want := range []string{
 		"webmux.internal.opencode.activePath",
 		"delete serverStorage[activePathStorageKey]",
+		"activeOpenCodePathReferencesOpenTab(activeOpenCodePath, serverStorage)",
+		"tab.type === 'session' && tab.sessionId === match[1]",
+		"activeOpenCodePath = recentOpenCodePathForOpenTab(serverStorage) || '/'",
 		"requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin)",
+		"if (activePathNeedsReset) queueStorageUpdate",
 		"persistActiveOpenCodePath(arguments[2])",
 		"window.addEventListener('popstate'",
 	} {

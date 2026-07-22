@@ -313,11 +313,21 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var requestedOpenCodePath = markerIndex === -1 ? '/' : (window.location.pathname.slice(markerIndex + marker.length) || '/');
   var activePathStorageKey = 'webmux.internal.opencode.activePath';
   var activeOpenCodePath = Object.prototype.hasOwnProperty.call(serverStorage, activePathStorageKey) ? serverStorage[activePathStorageKey] : '';
+  var activePathNeedsReset = false;
   delete serverStorage[activePathStorageKey];
   if (requestedOpenCodePath === '/' && typeof activeOpenCodePath === 'string' && activeOpenCodePath.startsWith('/')) {
-    requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin);
-    if (requestedOpenCodePath !== '/') {
-      try { window.history.replaceState(window.history.state, '', base + requestedOpenCodePath); } catch (e) {}
+    if (activeOpenCodePathReferencesOpenTab(activeOpenCodePath, serverStorage)) {
+      requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin);
+      if (requestedOpenCodePath !== '/') {
+        try { window.history.replaceState(window.history.state, '', base + requestedOpenCodePath); } catch (e) {}
+      }
+    } else {
+      activeOpenCodePath = recentOpenCodePathForOpenTab(serverStorage) || '/';
+      activePathNeedsReset = true;
+      requestedOpenCodePath = translateOpenCodeRoute(activeOpenCodePath, window.location.origin);
+      if (requestedOpenCodePath !== '/') {
+        try { window.history.replaceState(window.history.state, '', base + requestedOpenCodePath); } catch (e) {}
+      }
     }
   }
   window.__webmuxOpenCodePathname = requestedOpenCodePath;
@@ -619,6 +629,30 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     }
     return route;
   }
+  function activeOpenCodePathReferencesOpenTab(path, items) {
+    if (typeof path !== 'string') return false;
+    var match = path.match(/\/session\/([^\/?#]+)/);
+    if (!match || match[1] === 'new') return true;
+    try {
+      var tabs = JSON.parse(items['opencode.window.browser.dat:tabs'] || '[]');
+      return Array.isArray(tabs) && tabs.some(function(tab) {
+        return tab && tab.type === 'session' && tab.sessionId === match[1];
+      });
+    } catch (e) {
+      return false;
+    }
+  }
+  function recentOpenCodePathForOpenTab(items) {
+    try {
+      var recent = JSON.parse(items['opencode.window.browser.dat:tabs.recent'] || '{}');
+      var separator = typeof recent.key === 'string' ? recent.key.indexOf('\n') : -1;
+      if (separator === -1) return null;
+      var path = recent.key.slice(separator + 1);
+      return activeOpenCodePathReferencesOpenTab(path, items) ? path : null;
+    } catch (e) {
+      return null;
+    }
+  }
   function encodeOpenCodeServerID(serverID) {
     var bytes = new TextEncoder().encode(serverID);
     var binary = '';
@@ -901,13 +935,27 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       return true;
     }).catch(function() {
       storageFlushInFlight = false;
-      operations.forEach(queueStorageUpdate);
+      requeueFailedStorageOperations(operations);
       postDiagnostic('opencode-storage', 'flush-error', {
         data: { keepalive: keepalive === true, operations: operations.length }
       });
       return false;
     });
     return storageFlushPromise;
+  }
+  function requeueFailedStorageOperations(operations) {
+    var newerClear = pendingStorageClear;
+    if (!newerClear && operations.some(function(operation) { return operation.operation === 'clear'; })) {
+      pendingStorageClear = true;
+    }
+    operations.forEach(function(operation) {
+      if (operation.operation === 'clear' || !operation.key || newerClear
+          || Object.prototype.hasOwnProperty.call(pendingStorageSets, operation.key)
+          || Object.prototype.hasOwnProperty.call(pendingStorageRemoves, operation.key)) return;
+      if (operation.operation === 'set') pendingStorageSets[operation.key] = operation.value;
+      if (operation.operation === 'remove' && !pendingStorageClear) pendingStorageRemoves[operation.key] = true;
+    });
+    scheduleStorageFlush();
   }
   function flushAllStorageUpdates() {
     return Promise.resolve(flushStorageUpdates()).then(function(success) {
@@ -930,6 +978,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       return response.json();
     }).then(function(snapshot) {
       if (snapshot && snapshot.version > storageVersion) {
+        if (hasPendingStorageUpdates() || storageFlushInFlight) {
+          pendingSnapshotFetch = true;
+          return;
+        }
         postDiagnostic('opencode-storage', 'snapshot-apply', { data: { from: storageVersion, to: snapshot.version } });
         replaceStorage(snapshot.items || {}, snapshot.version || 0);
       }
@@ -1331,6 +1383,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   patchHistoryMethod('pushState');
   patchHistoryMethod('replaceState');
   window.addEventListener('popstate', function() { persistActiveOpenCodePath(window.location.href); });
+  if (activePathNeedsReset) queueStorageUpdate({ operation: 'set', key: activePathStorageKey, value: activeOpenCodePath });
   persistActiveOpenCodePath(window.location.href);
 
   var OriginalEventSource = window.EventSource;
