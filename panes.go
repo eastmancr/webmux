@@ -59,27 +59,31 @@ type PaneTypeInfo struct {
 const (
 	PaneBackendDedicated = "dedicated"
 	PaneBackendShared    = "shared"
+	paneTypeVersionTTL   = 30 * time.Second
 )
 
 // SECTION: SESSIONS
 
 // PaneManager handles generic pane lifecycle and dispatches type-specific work.
 type PaneManager struct {
-	panes         map[string]*Pane
-	mu            sync.RWMutex
-	createMu      sync.Mutex
-	nextPort      int32
-	nextPaneID    int32
-	startPort     int32 // Initial port to reset to when all panes close
-	shell         string
-	workDir       string // Starting directory for new panes
-	getSettings   func() *Settings
-	serverPort    string // HTTP server port for WEBMUX_PORT env var
-	instanceID    string // Runtime namespace derived from the HTTP server port
-	onPaneClosed  func(string)
-	onPaneChanged func(*Pane)
-	terminal      *TerminalRuntime
-	opencode      *OpenCodeRuntime
+	panes                    map[string]*Pane
+	mu                       sync.RWMutex
+	createMu                 sync.Mutex
+	nextPort                 int32
+	nextPaneID               int32
+	startPort                int32 // Initial port to reset to when all panes close
+	shell                    string
+	workDir                  string // Starting directory for new panes
+	getSettings              func() *Settings
+	serverPort               string // HTTP server port for WEBMUX_PORT env var
+	instanceID               string // Runtime namespace derived from the HTTP server port
+	onPaneClosed             func(string)
+	onPaneChanged            func(*Pane)
+	terminal                 *TerminalRuntime
+	opencode                 *OpenCodeRuntime
+	versionMu                sync.Mutex
+	opencodeVersion          string
+	opencodeVersionCheckedAt time.Time
 }
 
 // NewPaneManager creates a new pane manager
@@ -244,7 +248,7 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 	opencodeAvailable, opencodeReason := sm.paneTypeAvailability("opencode")
 	opencodeVersion := ""
 	if opencodeAvailable {
-		opencodeVersion = paneTypeCommandVersion("opencode")
+		opencodeVersion = sm.cachedOpenCodeVersion()
 	}
 	opencodeWarning := ""
 	if sm.opencode != nil {
@@ -269,6 +273,18 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 			Version:           opencodeVersion,
 		},
 	}
+}
+
+func (sm *PaneManager) cachedOpenCodeVersion() string {
+	sm.versionMu.Lock()
+	defer sm.versionMu.Unlock()
+
+	if time.Since(sm.opencodeVersionCheckedAt) < paneTypeVersionTTL {
+		return sm.opencodeVersion
+	}
+	sm.opencodeVersion = paneTypeCommandVersion("opencode")
+	sm.opencodeVersionCheckedAt = time.Now()
+	return sm.opencodeVersion
 }
 
 func paneTypeCommandVersion(command string) string {

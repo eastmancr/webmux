@@ -387,11 +387,10 @@ func (s *Server) applyPaneStorageRequest(backendID string, req paneStorageReques
 		Version:   state.Version,
 		UpdatedBy: state.UpdatedBy,
 	}
-	s.paneStorageMu.Unlock()
-
 	if err := SavePaneStorage(backendID, snapshot); err != nil {
 		log.Printf("Failed to save pane storage %s: %v", backendID, err)
 	}
+	s.paneStorageMu.Unlock()
 	if changed {
 		s.diagnosticf("storage-events", "event=updated backend=%s version=%d updatedBy=%s operations=%d", diagSanitize(backendID, 48), snapshot.Version, diagSanitize(snapshot.UpdatedBy, 80), len(operations))
 		if s.diagnosticsEnabled("storage-events") {
@@ -470,11 +469,10 @@ func (s *Server) replacePaneStorage(namespace string, items map[string]string, u
 		Version:   state.Version,
 		UpdatedBy: state.UpdatedBy,
 	}
-	s.paneStorageMu.Unlock()
-
 	if err := SavePaneStorage(namespace, snapshot); err != nil {
 		log.Printf("Failed to save pane storage %s: %v", namespace, err)
 	}
+	s.paneStorageMu.Unlock()
 	s.notifyPaneStorageSubscribers(namespace, paneStorageEvent{Type: "storage", Version: snapshot.Version, UpdatedBy: snapshot.UpdatedBy})
 	return snapshot
 }

@@ -189,7 +189,8 @@
         sendInput(Uint8Array.from(data, char => char.charCodeAt(0)));
     });
     terminal.onResize(sendResize);
-    new ResizeObserver(fit).observe(document.body);
+    if ('ResizeObserver' in window) new ResizeObserver(fit).observe(document.body);
+    else window.addEventListener('resize', fit);
     connect();
     requestAnimationFrame(fit);
 

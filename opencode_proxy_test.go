@@ -159,6 +159,14 @@ func TestModifyOpenCodeIndexResponseInjectsAndWarns(t *testing.T) {
 			t.Fatalf("modified content missing %q", want)
 		}
 	}
+	bridgeIndex := strings.Index(content, "var trackedSockets = []")
+	storageIndex := strings.Index(content, "var OriginalWebSocketForStorage")
+	if bridgeIndex == -1 || storageIndex == -1 || bridgeIndex > storageIndex {
+		t.Fatal("popout bridge must wrap WebSocket before storage captures it")
+	}
+	if !strings.Contains(content, "window.location.origin);") {
+		t.Fatal("clipboard postMessage must target the Webmux origin")
+	}
 	warning := runtime.WarningReason()
 	if warning == "" {
 		t.Fatal("expected warning to be recorded")

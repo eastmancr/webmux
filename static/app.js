@@ -1316,6 +1316,9 @@ class TerminalMultiplexer {
         window.addEventListener('message', (e) => {
             const msg = e.data;
             if (!msg || msg.type !== 'webmux-clipboard-write') return;
+            if (e.origin !== window.location.origin) return;
+            const managedSource = Array.from(this.sharedIframes.values()).some(iframe => iframe.contentWindow === e.source);
+            if (!managedSource) return;
             const text = String(msg.text || '');
             fetch(this.url('/api/clipboard'), { method: 'POST', body: text }).catch(() => {});
             navigator.clipboard?.writeText(text).catch(() => {});
@@ -3239,6 +3242,7 @@ class TerminalMultiplexer {
     }
 
     ensureTerminal(pane, container) {
+        if (this.isPanePoppedOut(pane)) return;
         if (this.terminals.has(pane.id)) {
             requestAnimationFrame(() => this.fitTerminal(pane.id));
             return;
@@ -3351,6 +3355,7 @@ class TerminalMultiplexer {
             disposed: false,
             suspended: false,
             resizeObserver: null,
+            resizeFallbackTimer: null,
         };
         this.terminals.set(pane.id, entry);
 
@@ -3362,8 +3367,22 @@ class TerminalMultiplexer {
         });
         terminal.onResize(({ cols, rows }) => this.sendTerminalResize(entry, cols, rows));
 
-        entry.resizeObserver = new ResizeObserver(() => this.fitTerminal(pane.id));
-        entry.resizeObserver.observe(container);
+        if ('ResizeObserver' in window) {
+            entry.resizeObserver = new ResizeObserver(() => this.fitTerminal(pane.id));
+            entry.resizeObserver.observe(container);
+        } else {
+            let lastWidth = 0;
+            let lastHeight = 0;
+            entry.resizeFallbackTimer = setInterval(() => {
+                const rect = container.getBoundingClientRect();
+                const width = Math.round(rect.width);
+                const height = Math.round(rect.height);
+                if (width === lastWidth && height === lastHeight) return;
+                lastWidth = width;
+                lastHeight = height;
+                this.fitTerminal(pane.id);
+            }, 250);
+        }
         this.connectTerminal(pane.id, entry);
         requestAnimationFrame(() => this.fitTerminal(pane.id));
     }
@@ -3460,12 +3479,13 @@ class TerminalMultiplexer {
         entry.disposed = true;
         if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
         entry.resizeObserver?.disconnect();
+        if (entry.resizeFallbackTimer) clearInterval(entry.resizeFallbackTimer);
         entry.socket?.close(1000, 'terminal disposed');
         entry.terminal.dispose();
     }
 
     ensureDedicatedPaneIframe(pane, container) {
-        if (!pane || this.isSharedPane(pane) || !container) return;
+        if (!pane || this.isSharedPane(pane) || !container || this.isPanePoppedOut(pane)) return;
         if (pane.type === 'terminal') {
             this.ensureTerminal(pane, container);
             return;

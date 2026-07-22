@@ -177,8 +177,8 @@ func (or *OpenCodeRuntime) modifyOpenCodeIndexResponse(s *Server, paneID, backen
 	}
 	content = rewriteRootRelativeHTML(content)
 	content = injectOpenCodeBaseElement(content, paneID)
-	content = injectPanePopoutBridge(content)
 	content = injectOpenCodeProxyScript(content, paneID, backendID, storage, diagnostics)
+	content = injectPanePopoutBridge(content)
 
 	writeProxyResponseBody(resp, content)
 	resp.Header.Del("Content-Encoding")
@@ -1233,7 +1233,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     var originalWriteText = navigator.clipboard.writeText.bind(navigator.clipboard);
     navigator.clipboard.writeText = function(text) {
       try {
-        window.parent.postMessage({ type: 'webmux-clipboard-write', text: String(text || '') }, '*');
+        window.parent.postMessage({ type: 'webmux-clipboard-write', text: String(text || '') }, window.location.origin);
       } catch (e) {}
       return originalWriteText(text).catch(function() { return undefined; });
     };

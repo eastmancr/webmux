@@ -234,6 +234,13 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, proxyCon
 	var clientToBackendBytes int64
 	backendToClientErr := ""
 	clientToBackendErr := ""
+	var closeOnce sync.Once
+	closeConnections := func() {
+		closeOnce.Do(func() {
+			clientConn.Close()
+			targetConn.Close()
+		})
+	}
 	setCloseDirection := func(direction string) {
 		closeMu.Lock()
 		if closeDirection == "" {
@@ -245,6 +252,7 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, proxyCon
 	// Backend -> Client, optionally observed by the pane runtime.
 	go func() {
 		defer wg.Done()
+		defer closeConnections()
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := targetConn.Read(buf)
@@ -265,19 +273,12 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, proxyCon
 				}
 			}
 		}
-		if tc, ok := clientConn.(*net.TCPConn); ok {
-			tc.CloseWrite()
-		}
 	}()
 
 	// Client -> Backend - pass through unchanged.
 	go func() {
 		defer wg.Done()
-		defer func() {
-			if tc, ok := targetConn.(*net.TCPConn); ok {
-				tc.CloseWrite()
-			}
-		}()
+		defer closeConnections()
 		// First flush any buffered data from the hijacked connection
 		if clientBuf.Reader.Buffered() > 0 {
 			if n, err := io.CopyN(targetConn, clientBuf, int64(clientBuf.Reader.Buffered())); err != nil {
@@ -304,6 +305,5 @@ func (s *Server) proxyWebSocket(w http.ResponseWriter, r *http.Request, proxyCon
 		closeDirection = "unknown"
 	}
 	s.diagnosticf("proxy", "event=close pane=%s backend=%s path=%s direction=%s durationMs=%d b2c=%d c2b=%d b2cErr=%q c2bErr=%q", diagSanitize(paneID, 48), diagSanitize(proxyConfig.BackendName, 48), diagSanitize(r.URL.Path, 160), closeDirection, time.Since(started).Milliseconds(), backendToClientBytes, clientToBackendBytes, backendToClientErr, clientToBackendErr)
-	clientConn.Close()
-	targetConn.Close()
+	closeConnections()
 }
