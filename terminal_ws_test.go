@@ -307,6 +307,7 @@ func TestTerminalPopoutPage(t *testing.T) {
 		"../../vendor/xterm/addon-webgl.js",
 		"../../vendor/xterm/addon-image.js",
 		"../../terminal-popout.js",
+		"id=\"keybar\"",
 		"webmux-popouts",
 	} {
 		if !strings.Contains(body, expected) {

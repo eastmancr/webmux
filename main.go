@@ -220,6 +220,7 @@ type DiagnosticsSettings struct {
 // KeybarSettings represents keybar button configuration
 type KeybarSettings struct {
 	Buttons []string `json:"buttons"`
+	Anchor  string   `json:"anchor"`
 }
 
 // UIColors represents the multiplexer UI color scheme
@@ -310,6 +311,7 @@ func DefaultSettings() *Settings {
 		},
 		Keybar: KeybarSettings{
 			Buttons: []string{"C-c", "C-d", "C-z", "C-\\", "C-l", "C-r", "C-u", "C-w"},
+			Anchor:  "bottom",
 		},
 		Diagnostics: DiagnosticsSettings{
 			PingIntervalSeconds: 30,
@@ -523,6 +525,9 @@ func mergeWithDefaults(s *Settings) {
 	// Keybar settings - use defaults if empty
 	if len(s.Keybar.Buttons) == 0 {
 		s.Keybar.Buttons = d.Keybar.Buttons
+	}
+	if s.Keybar.Anchor != "pane" && s.Keybar.Anchor != "bottom" {
+		s.Keybar.Anchor = d.Keybar.Anchor
 	}
 	if s.Diagnostics.PingIntervalSeconds <= 0 {
 		s.Diagnostics.PingIntervalSeconds = d.Diagnostics.PingIntervalSeconds

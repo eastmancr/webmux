@@ -1011,6 +1011,7 @@ class TerminalMultiplexer {
         this.paneList = document.getElementById('pane-list');
         this.newPaneSplits = Array.from(document.querySelectorAll('.new-pane-split'));
         this.paneDisplay = document.getElementById('panes');
+        this.paneDisplayContainer = document.getElementById('pane-display-container');
         this.noPaneEl = document.getElementById('no-pane');
 
         this.sharedIframeLayer = document.createElement('div');
@@ -1486,6 +1487,7 @@ class TerminalMultiplexer {
             if (this.groups.size > 0) {
                 this.keybarUserHidden = !this.keybarUserHidden;
                 this.updateKeybarVisibility();
+                this.broadcastKeybarVisibility();
                 this.scheduleSharedIframePosition();
             }
         });
@@ -2636,7 +2638,22 @@ class TerminalMultiplexer {
             this.registerPopoutAlive(msg);
         } else if (msg.type === 'webmux-popout-closed') {
             this.registerPopoutClosed(msg);
+        } else if (msg.type === 'webmux-keybar-state-request') {
+            this.popoutChannel?.postMessage({
+                type: 'webmux-keybar-visibility',
+                paneId: msg.paneId,
+                hidden: this.keybarUserHidden,
+            });
         }
+    }
+
+    broadcastKeybarVisibility() {
+        this.popoutChannel?.postMessage({
+            type: 'webmux-keybar-visibility',
+            paneId: this.focusedPaneId || '*',
+            hidden: this.keybarUserHidden,
+            applyToAll: true,
+        });
     }
 
     registerPopoutAlive(msg) {
@@ -2815,6 +2832,7 @@ class TerminalMultiplexer {
                 if (pane.type === 'terminal') this.suspendTerminal(pane.id);
             }
         }
+        this.updateKeybarVisibility();
     }
 
     clearPoppedOutContainers(popoutKey) {
@@ -2824,6 +2842,7 @@ class TerminalMultiplexer {
                 if (pane.type === 'terminal') this.resumeTerminal(pane.id);
             }
         }
+        this.updateKeybarVisibility();
     }
 
     handlePopoutClosed(popoutKey) {
@@ -3089,7 +3108,8 @@ class TerminalMultiplexer {
     }
 
     paneSupportsKeybarInput(pane) {
-        return pane?.type === 'terminal';
+        if (!pane) return false;
+        return this.paneTypes.find(type => type.type === pane.type)?.supportsKeybar === true;
     }
 
     isKeybarVisibleForCurrentPane() {
@@ -3098,10 +3118,72 @@ class TerminalMultiplexer {
     }
 
     updateKeybarVisibility() {
-        const visible = this.isKeybarVisibleForCurrentPane();
-        this.keybar.classList.toggle('hidden', !visible);
-        this.keybarToggle.classList.toggle('active', visible);
+        const pane = this.panes.get(this.focusedPaneId);
+        const enabled = this.isKeybarVisibleForCurrentPane();
+        const poppedOut = this.isPanePoppedOut(pane);
+        const visible = enabled && !poppedOut;
+        const paneAnchored = this.settings?.keybar?.anchor === 'pane';
+        const previouslyAnchoredPaneId = document.querySelector('.pane-container.pane-keybar-active')?.dataset.paneId;
+        if (!this.keybar.classList.contains('hidden') && !this.keybar.classList.contains('reserved')) {
+            const currentHeight = this.keybar.getBoundingClientRect().height;
+            if (currentHeight > 0) {
+                this.paneDisplayContainer.style.setProperty('--keybar-reserved-height', `${currentHeight}px`);
+            }
+        }
+
+        document.querySelectorAll('.pane-container.pane-keybar-active').forEach(container => {
+            container.classList.remove('pane-keybar-active');
+            container.style.removeProperty('--pane-keybar-height');
+        });
+
+        const paneContainer = visible && paneAnchored
+            ? document.getElementById(`pane-${this.focusedPaneId}`)
+            : null;
+        if (paneContainer) {
+            paneContainer.appendChild(this.keybar);
+            paneContainer.classList.add('pane-keybar-active');
+        } else if (this.keybar.parentElement !== this.paneDisplayContainer) {
+            this.paneDisplayContainer.appendChild(this.keybar);
+        }
+
+        const reserved = !visible
+            && !paneAnchored
+            && !this.keybarUserHidden
+            && !poppedOut
+            && this.hasMixedKeybarSupportAtBottom();
+        this.keybar.classList.toggle('reserved', reserved);
+        this.keybar.classList.toggle('hidden', !visible && !reserved);
+        this.keybar.setAttribute('aria-hidden', String(!visible));
+        this.keybarToggle.classList.toggle('active', enabled);
+
+        if (paneContainer || previouslyAnchoredPaneId) {
+            requestAnimationFrame(() => {
+                if (paneContainer?.classList.contains('pane-keybar-active')) {
+                    paneContainer.style.setProperty('--pane-keybar-height', `${this.keybar.offsetHeight}px`);
+                    this.fitTerminal(pane.id);
+                }
+                if (previouslyAnchoredPaneId && (!paneContainer || previouslyAnchoredPaneId !== pane?.id)) {
+                    this.fitTerminal(previouslyAnchoredPaneId);
+                }
+            });
+        }
+        this.scheduleSharedIframePosition();
         this.updateMobileKeybarVisibility();
+    }
+
+    hasMixedKeybarSupportAtBottom() {
+        const activeGroup = this.groups.get(this.activeGroupId);
+        if (!activeGroup || activeGroup.paneIds.length < 2) return false;
+
+        const paneRect = this.paneDisplay.getBoundingClientRect();
+        const bottomPanes = activeGroup.paneIds
+            .map(paneId => ({ pane: this.panes.get(paneId), container: document.getElementById(`pane-${paneId}`) }))
+            .filter(({ container }) => container?.classList.contains('visible'))
+            .filter(({ container }) => Math.abs(container.getBoundingClientRect().bottom - paneRect.bottom) < 2);
+        if (bottomPanes.length < 2) return false;
+
+        const support = bottomPanes.map(({ pane }) => this.paneSupportsKeybarInput(pane));
+        return support.some(Boolean) && support.some(value => !value);
     }
 
     updateMobileKeybarVisibility() {
@@ -3732,6 +3814,9 @@ class TerminalMultiplexer {
         }
         const container = document.getElementById(`pane-${paneId}`);
         if (container) {
+            if (container.contains(this.keybar)) {
+                this.paneDisplayContainer.appendChild(this.keybar);
+            }
             const iframe = container.querySelector('iframe');
             const backendId = iframe?.dataset.backendId;
             if (backendId && this.sharedIframes.get(backendId) === iframe) {
@@ -3858,6 +3943,7 @@ class TerminalMultiplexer {
         });
 
         this.createDividers(layout, paneCount, expandDir, keepControlVisible);
+        this.updateKeybarVisibility();
     }
 
     ensureResizeOverlay() {
@@ -5400,7 +5486,8 @@ class TerminalMultiplexer {
                 base17: '#cba6f7'  // Bright Magenta
             },
             keybar: {
-                buttons: ['C-c', 'C-d', 'C-z', 'C-\\', 'C-l', 'C-r', 'C-u', 'C-w']
+                buttons: ['C-c', 'C-d', 'C-z', 'C-\\', 'C-l', 'C-r', 'C-u', 'C-w'],
+                anchor: 'bottom'
             },
             diagnostics: {
                 enabled: false,
@@ -5720,6 +5807,9 @@ class TerminalMultiplexer {
         }
         // Populate keybar buttons
         this.populateKeybarButtons();
+        const keybarAnchor = this.settings.keybar?.anchor || this.getDefaultSettings().keybar.anchor;
+        const keybarAnchorInput = this.settingsModal.querySelector(`input[name="keybar-anchor"][value="${keybarAnchor}"]`);
+        if (keybarAnchorInput) keybarAnchorInput.checked = true;
 
         const diagnostics = this.settings.diagnostics || this.getDefaultSettings().diagnostics;
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
@@ -5752,7 +5842,9 @@ class TerminalMultiplexer {
 
         // Include keybar settings from current state
         settings.keybar = {
-            buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons
+            buttons: this.settings.keybar?.buttons || this.getDefaultSettings().keybar.buttons,
+            anchor: this.settingsModal.querySelector('input[name="keybar-anchor"]:checked')?.value
+                || this.getDefaultSettings().keybar.anchor
         };
 
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
@@ -5792,6 +5884,7 @@ class TerminalMultiplexer {
             this.settings = settings;
             this.renderKeybar();
             this.renderMobileKeybar();
+            this.updateKeybarVisibility();
             this.closeModal(this.settingsModal);
             this.toastSuccess('Settings saved');
         } catch (error) {
@@ -5820,6 +5913,8 @@ class TerminalMultiplexer {
         // Reset keybar settings
         this.settings.keybar = { ...defaults.keybar };
         this.populateKeybarButtons();
+        const keybarAnchorInput = this.settingsModal.querySelector(`input[name="keybar-anchor"][value="${defaults.keybar.anchor}"]`);
+        if (keybarAnchorInput) keybarAnchorInput.checked = true;
 
         this.settings.diagnostics = { ...defaults.diagnostics };
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
@@ -6282,13 +6377,13 @@ class TerminalMultiplexer {
         const buttons = [...this.getKeybarButtonsFromSettings()];
         const [moved] = buttons.splice(fromIndex, 1);
         buttons.splice(toIndex, 0, moved);
-        this.settings.keybar = { buttons };
+        this.settings.keybar = { ...this.settings.keybar, buttons };
         this.populateKeybarButtons();
     }
 
     removeKeybarButton(index) {
         if (!this.settings.keybar) {
-            this.settings.keybar = { buttons: [...this.getDefaultSettings().keybar.buttons] };
+            this.settings.keybar = { ...this.getDefaultSettings().keybar, buttons: [...this.getDefaultSettings().keybar.buttons] };
         }
 
         this.settings.keybar.buttons.splice(index, 1);
@@ -6313,7 +6408,7 @@ class TerminalMultiplexer {
         const keys = this.normalizeKeyCombo(rawKeys);
 
         if (!this.settings.keybar) {
-            this.settings.keybar = { buttons: [...this.getDefaultSettings().keybar.buttons] };
+            this.settings.keybar = { ...this.getDefaultSettings().keybar, buttons: [...this.getDefaultSettings().keybar.buttons] };
         }
 
         // Check for duplicates (compare normalized)

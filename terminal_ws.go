@@ -356,7 +356,7 @@ func (s *Server) serveTerminalPopout(w http.ResponseWriter, r *http.Request, pan
   <script src="../../vendor/xterm/addon-webgl.js"></script>
   <script src="../../vendor/xterm/addon-image.js"></script>
 </head>
-<body><div id="terminal"></div><script src="../../terminal-popout.js"></script></body>
+<body><div id="terminal"></div><div id="keybar" class="keybar user-hidden" role="toolbar" aria-label="Special keys" aria-hidden="true"></div><script src="../../terminal-popout.js"></script></body>
 </html>`, html.EscapeString(pane.Name))
 	document = injectPanePopoutBridge(document)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

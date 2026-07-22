@@ -1,6 +1,5 @@
 html,
-body,
-#terminal {
+body {
     width: 100%;
     height: 100%;
     margin: 0;
@@ -8,7 +7,15 @@ body,
     background: #1e1e2e;
 }
 
+body {
+    display: flex;
+    flex-direction: column;
+}
+
 #terminal {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
     box-sizing: border-box;
     overflow: hidden;
     padding: 4px 6px;
@@ -27,4 +34,49 @@ body,
 #terminal .xterm-scrollable-element > .scrollbar,
 #terminal .xterm-decoration-overview-ruler {
     display: none !important;
+}
+
+.keybar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    background: var(--bg-secondary, #181825);
+    border-top: 1px solid var(--border, #45475a);
+    flex-shrink: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.keybar::-webkit-scrollbar {
+    display: none;
+}
+
+.keybar.user-hidden {
+    display: none;
+}
+
+.keybar-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 10px;
+    background: var(--bg-tertiary, #313244);
+    border: 1px solid var(--border, #45475a);
+    border-radius: 6px;
+    color: var(--text-primary, #cdd6f4);
+    font: 500 12px 'SF Mono', Monaco, 'Cascadia Code', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.keybar-btn:hover {
+    border-color: var(--accent, #89b4fa);
+    color: var(--accent, #89b4fa);
+}
+
+.keybar-btn:active {
+    background: var(--accent, #89b4fa);
+    color: var(--bg-primary, #1e1e2e);
 }

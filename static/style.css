@@ -772,6 +772,20 @@ body.mobile-mode .sidebar-panel {
     background: var(--terminal-background, #1e1e2e);
 }
 
+.pane-container.pane-keybar-active .terminal-host {
+    bottom: var(--pane-keybar-height, 41px);
+    height: auto;
+}
+
+.pane-container > .keybar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    box-sizing: border-box;
+}
+
 .terminal-host .xterm {
     width: 100%;
     height: 100%;
@@ -3149,6 +3163,16 @@ body.server-disconnected .sidebar-actions .btn {
     display: none;
 }
 
+.keybar.reserved {
+    display: flex;
+    pointer-events: none;
+    min-height: var(--keybar-reserved-height, 41px);
+}
+
+.keybar.reserved > * {
+    display: none;
+}
+
 .keybar-divider {
     width: 1px;
     height: 20px;
@@ -4092,6 +4116,76 @@ body.mobile-mode .sidebar-panel {
 }
 
 /* Keybar Settings */
+.keybar-position-setting {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.keybar-position-copy {
+    padding-bottom: 8px;
+}
+
+.keybar-position-copy h4 {
+    margin-bottom: 3px;
+}
+
+.keybar-position-copy p {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.keybar-anchor-options {
+    display: inline-flex;
+    flex-shrink: 0;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-secondary);
+}
+
+.keybar-anchor-option {
+    position: relative;
+    cursor: pointer;
+}
+
+.keybar-anchor-option input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.keybar-anchor-option span {
+    display: block;
+    padding: 6px 10px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    white-space: nowrap;
+}
+
+.keybar-anchor-option input:checked + span {
+    background: var(--accent);
+    color: var(--bg-primary);
+}
+
+.keybar-anchor-option input:focus-visible + span {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+}
+
+@media (max-width: 600px) {
+    .keybar-position-setting {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 16px;
+    }
+}
+
 .keybar-settings-container {
     display: flex;
     flex-direction: column;

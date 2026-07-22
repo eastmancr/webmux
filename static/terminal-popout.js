@@ -16,9 +16,21 @@
         base15: '#94e2d5', base16: '#89b4fa', base17: '#cba6f7',
     };
     let colors = defaults;
+    let keybarButtons = ['C-c', 'C-d', 'C-z', 'C-\\', 'C-l', 'C-r', 'C-u', 'C-w'];
     try {
         const response = await fetch(url('/api/settings'));
-        if (response.ok) colors = { ...defaults, ...(await response.json()).terminal };
+        if (response.ok) {
+            const settings = await response.json();
+            colors = { ...defaults, ...settings.terminal };
+            if (Array.isArray(settings.keybar?.buttons)) keybarButtons = settings.keybar.buttons;
+            const uiVariables = {
+                bgPrimary: '--bg-primary', bgSecondary: '--bg-secondary', bgTertiary: '--bg-tertiary',
+                textPrimary: '--text-primary', accent: '--accent', border: '--border',
+            };
+            for (const [key, variable] of Object.entries(uiVariables)) {
+                if (settings.ui?.[key]) document.documentElement.style.setProperty(variable, settings.ui[key]);
+            }
+        }
     } catch (error) {}
 
     document.getElementById('terminal').style.setProperty('--terminal-background', colors.base00);
@@ -135,6 +147,42 @@
             socket.send(bytes.subarray(offset, offset + 32 * 1024));
         }
     };
+    const formatKeyLabel = keys => keys
+        .replace(/^C-/, 'Ctrl-')
+        .replace(/^M-/, 'Alt-')
+        .replace(/^S-/, 'Shift-')
+        .replace(/Ctrl-M-/, 'Ctrl-Alt-')
+        .replace(/Ctrl-S-/, 'Ctrl-Shift-')
+        .replace(/Alt-S-/, 'Alt-Shift-')
+        .replace(/Ctrl-Alt-S-/, 'Ctrl-Alt-Shift-');
+    const sendKeybarInput = async keys => {
+        let payload = { keys: [keys] };
+        if (keys === 'Paste') {
+            const clipboardResponse = await fetch(url('/api/clipboard'));
+            if (!clipboardResponse.ok) return;
+            payload = { sequence: [{ type: 'text', value: await clipboardResponse.text() }] };
+        }
+        try {
+            await fetch(url(`/api/panes/${encodeURIComponent(paneId)}/input`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+        } finally {
+            terminal.focus();
+        }
+    };
+    const keybar = document.getElementById('keybar');
+    for (const keys of keybarButtons.filter(key => typeof key === 'string' && key)) {
+        const button = document.createElement('button');
+        button.className = 'keybar-btn';
+        button.type = 'button';
+        button.textContent = formatKeyLabel(keys);
+        button.title = formatKeyLabel(keys);
+        button.addEventListener('pointerdown', event => event.preventDefault());
+        button.addEventListener('click', () => sendKeybarInput(keys));
+        keybar.appendChild(button);
+    }
     const sendResize = () => {
         if (socket?.readyState === WebSocket.OPEN) {
             const rect = terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect();
@@ -153,6 +201,26 @@
             sendResize();
         } catch (error) {}
     };
+    if ('BroadcastChannel' in window) {
+        const keybarChannel = new BroadcastChannel('webmux-popouts');
+        const requestKeybarState = () => keybarChannel.postMessage({
+            type: 'webmux-keybar-state-request',
+            paneId,
+        });
+        keybarChannel.onmessage = event => {
+            const message = event.data;
+            if (message?.type !== 'webmux-keybar-visibility') return;
+            if (!message.applyToAll && message.paneId !== paneId) return;
+            keybar.classList.toggle('user-hidden', message.hidden === true);
+            keybar.setAttribute('aria-hidden', String(message.hidden === true));
+            requestAnimationFrame(fit);
+        };
+        requestKeybarState();
+        window.addEventListener('focus', requestKeybarState);
+    } else {
+        keybar.classList.remove('user-hidden');
+        keybar.setAttribute('aria-hidden', 'false');
+    }
     const connect = () => {
         const connection = new WebSocket(wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
         socket = connection;
