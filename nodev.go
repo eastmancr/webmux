@@ -23,6 +23,8 @@ package main
 import (
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 )
 
 // InitDevMode is a no-op in production builds
@@ -30,6 +32,12 @@ func InitDevMode(mux *http.ServeMux, server *Server) http.Handler {
 	// In production, serve from embedded files
 	staticFS, _ := fs.Sub(staticFiles, "static")
 	return noCacheStaticHandler(http.FileServer(http.FS(staticFS)))
+}
+
+func staticAssetExists(assetPath string) bool {
+	assetPath = strings.TrimPrefix(path.Clean("/"+assetPath), "/")
+	info, err := fs.Stat(staticFiles, "static/"+assetPath)
+	return err == nil && !info.IsDir()
 }
 
 func noCacheStaticHandler(h http.Handler) http.Handler {

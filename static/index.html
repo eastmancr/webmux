@@ -10,9 +10,7 @@
     <script>
         (function() {
             var path = window.location.pathname;
-            var lastSegment = path.slice(path.lastIndexOf('/') + 1);
-            var looksLikeAppMount = lastSegment.endsWith('.http') || lastSegment.indexOf('.') === -1;
-            if (path !== '/' && !path.endsWith('/') && looksLikeAppMount) {
+            if (path !== '/' && !path.endsWith('/') && !path.endsWith('/index.html')) {
                 window.location.replace(path + '/' + window.location.search + window.location.hash);
             }
         })();

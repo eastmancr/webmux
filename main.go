@@ -2330,30 +2330,23 @@ func main() {
 
 func mountPathHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		if strings.HasPrefix(path, "/api/") || strings.HasPrefix(path, "/p/") || strings.HasPrefix(path, "/vendor/") {
+		requestPath := r.URL.Path
+		if strings.HasPrefix(requestPath, "/api/") || strings.HasPrefix(requestPath, "/p/") || strings.HasPrefix(requestPath, "/vendor/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		for _, marker := range []string{"/api/", "/p/", "/vendor/"} {
-			if idx := strings.Index(path, marker); idx > 0 {
+			if idx := strings.Index(requestPath, marker); idx > 0 {
 				r2 := r.Clone(r.Context())
-				r2.URL.Path = path[idx:]
+				r2.URL.Path = requestPath[idx:]
 				r2.URL.RawPath = ""
 				next.ServeHTTP(w, r2)
 				return
 			}
 		}
 
-		if path != "/" && !strings.HasSuffix(path, "/") && (filepath.Ext(path) == "" || strings.HasSuffix(filepath.Base(path), ".http")) {
-			target := *r.URL
-			target.Path = path + "/"
-			http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
-			return
-		}
-
-		if path != "/" && strings.HasSuffix(path, "/") {
+		if requestPath != "/" && strings.HasSuffix(requestPath, "/") {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/"
 			r2.URL.RawPath = ""
@@ -2361,7 +2354,13 @@ func mountPathHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		if base := filepath.Base(path); base != "." && base != "/" && filepath.Ext(base) != "" && path != "/"+base {
+		assetPath := strings.TrimPrefix(requestPath, "/")
+		if staticAssetExists(assetPath) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if base := filepath.Base(requestPath); base != "." && base != "/" && requestPath != "/"+base && staticAssetExists(base) {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = "/" + base
 			r2.URL.RawPath = ""
@@ -2369,11 +2368,10 @@ func mountPathHandler(next http.Handler) http.Handler {
 			return
 		}
 
-		if path != "/" && filepath.Ext(path) == "" {
-			r2 := r.Clone(r.Context())
-			r2.URL.Path = "/"
-			r2.URL.RawPath = ""
-			next.ServeHTTP(w, r2)
+		if requestPath != "/" {
+			target := *r.URL
+			target.Path = requestPath + "/"
+			http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
 			return
 		}
 

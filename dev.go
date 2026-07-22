@@ -24,7 +24,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +72,16 @@ func InitDevMode(mux *http.ServeMux, server *Server) http.Handler {
 
 	// Return filesystem handler with no-cache headers
 	return noCacheHandler(http.FileServer(http.Dir(devMode.staticDir)))
+}
+
+func staticAssetExists(assetPath string) bool {
+	assetPath = strings.TrimPrefix(path.Clean("/"+assetPath), "/")
+	staticDir := devMode.staticDir
+	if staticDir == "" {
+		staticDir = "static"
+	}
+	info, err := os.Stat(filepath.Join(staticDir, filepath.FromSlash(assetPath)))
+	return err == nil && !info.IsDir()
 }
 
 // handleDevReload handles WebSocket connections for live reload
