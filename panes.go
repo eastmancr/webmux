@@ -56,6 +56,7 @@ type PaneTypeInfo struct {
 	UnavailableReason string `json:"unavailableReason,omitempty"`
 	WarningReason     string `json:"warningReason,omitempty"`
 	Version           string `json:"version,omitempty"`
+	BackendRunning    bool   `json:"backendRunning,omitempty"`
 }
 
 type paneTypeDefinition struct {
@@ -296,8 +297,10 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 		opencodeVersion = sm.cachedOpenCodeVersion()
 	}
 	opencodeWarning := ""
+	opencodeRunning := false
 	if sm.opencode != nil {
 		opencodeWarning = sm.opencode.WarningReason()
+		opencodeRunning = sm.opencode.IsRunning(opencode.Type)
 	}
 	return []PaneTypeInfo{
 		{
@@ -318,6 +321,7 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 			UnavailableReason: opencodeReason,
 			WarningReason:     opencodeWarning,
 			Version:           opencodeVersion,
+			BackendRunning:    opencodeRunning,
 		},
 	}
 }
@@ -637,6 +641,55 @@ func (sm *PaneManager) ClosePane(id string) error {
 	sm.stateChanged()
 
 	return nil
+}
+
+// RestartBackend restarts a shared backend in place, preserving the panes
+// bound to it. The new process reuses the old backend port so existing pane
+// records stay valid; clients only need to reload their pane iframes.
+func (sm *PaneManager) RestartBackend(backendID string) error {
+	sm.createMu.Lock()
+	defer sm.createMu.Unlock()
+
+	definition, ok := definitionForPaneType(backendID)
+	if !ok || definition.BackendScope != PaneBackendShared {
+		return fmt.Errorf("unknown shared backend: %s", backendID)
+	}
+
+	switch definition.Type {
+	case "opencode":
+		port, running := sm.opencode.RunningBackend(backendID)
+		if !running {
+			return fmt.Errorf("backend %s is not running", backendID)
+		}
+		pane := &Pane{ID: backendID, Type: definition.Type, BackendID: backendID, Port: port}
+		if err := sm.opencode.Restart(pane); err != nil {
+			if !sm.opencode.IsRunning(backendID) {
+				// The old process is gone and no replacement came up; drop
+				// panes bound to the dead backend like Monitor would have.
+				sm.mu.Lock()
+				closedPaneIDs := sm.deletePanesForBackend(backendID)
+				if len(sm.panes) == 0 {
+					sm.resetCounters()
+				}
+				sm.mu.Unlock()
+				for _, paneID := range closedPaneIDs {
+					sm.notifyPaneClosed(paneID)
+				}
+			}
+			sm.stateChanged()
+			return err
+		}
+		// Refresh the cached CLI version; a restart often follows an update.
+		sm.versionMu.Lock()
+		sm.opencodeVersionCheckedAt = time.Time{}
+		sm.versionMu.Unlock()
+		go sm.opencode.Monitor(pane)
+		log.Printf("Restarted %s backend %s on port %d", definition.Type, backendID, port)
+		sm.stateChanged()
+		return nil
+	default:
+		return fmt.Errorf("restart unsupported for backend: %s", backendID)
+	}
 }
 
 func (sm *PaneManager) resetCounters() {

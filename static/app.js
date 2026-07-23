@@ -81,6 +81,9 @@ class TerminalMultiplexer {
             { type: 'terminal', label: 'Terminal', backendScope: 'dedicated', backendLifetime: 'pane', supportsKeybar: true, available: true },
             { type: 'opencode', label: 'OpenCode', backendScope: 'shared', backendLifetime: 'instance', supportsKeybar: false, available: true },
         ];
+        // Debounce guard so a locally initiated backend restart and its
+        // WebSocket broadcast do not reload iframes twice.
+        this.lastBackendRestart = new Map();
 
         // Base path for proxy support (detected from current URL)
         this.basePath = this.detectBasePath();
@@ -926,6 +929,13 @@ class TerminalMultiplexer {
             if (event.paneId) {
                 this.closingPaneIds.delete(event.paneId);
                 this.handlePaneDied(event.paneId, { save: false });
+            }
+            return;
+        }
+
+        if (event.type === 'backend-restarted') {
+            if (event.backendId) {
+                this.handleBackendRestarted(event.backendId);
             }
             return;
         }
@@ -1796,6 +1806,13 @@ class TerminalMultiplexer {
             });
 
             menu?.addEventListener('click', (e) => {
+                const action = e.target.closest('.new-pane-action');
+                if (action) {
+                    e.stopPropagation();
+                    this.closePaneMenu(menu, toggleButton);
+                    this.restartBackend(action.dataset.backendId);
+                    return;
+                }
                 const option = e.target.closest('.new-pane-option');
                 if (!option || option.disabled || option.getAttribute('aria-disabled') === 'true') return;
                 e.stopPropagation();
@@ -1814,12 +1831,28 @@ class TerminalMultiplexer {
             const titleMessage = [statusMessage, versionMessage].filter(Boolean).join(' ');
             const title = titleMessage ? ` title="${this.escapeHtml(titleMessage)}"` : '';
             const statusIcon = this.getPaneTypeStatusIconSvg(disabled ? 'error' : (paneType.warningReason ? 'warning' : ''), statusMessage);
-            return `
+            const option = `
                 <button class="new-pane-option" data-pane-type="${this.escapeHtml(paneType.type)}" role="menuitem" ${disabled ? 'aria-disabled="true"' : ''}${title}>
                     ${this.getPaneTypeIconSvg(paneType.type, 18)}
                     <span class="new-pane-option-label">${this.escapeHtml(paneType.label || paneType.type)}</span>
                     ${statusIcon}
                 </button>
+            `;
+            const canRestart = !disabled && paneType.backendScope === 'shared' && paneType.backendRunning === true;
+            if (!canRestart) {
+                return `<div class="new-pane-row">${option}</div>`;
+            }
+            const restartLabel = `Restart ${this.escapeHtml(paneType.label || paneType.type)} server`;
+            return `
+                <div class="new-pane-row">
+                    ${option}
+                    <button class="new-pane-action" data-backend-id="${this.escapeHtml(paneType.type)}" role="menuitem" title="${restartLabel}" aria-label="${restartLabel}">
+                        <svg class="icon" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                            <path d="M20 12a8 8 0 1 1-2.34-5.66" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            <path d="M20 3v4h-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </button>
+                </div>
             `;
         }).join('');
 
@@ -1931,6 +1964,60 @@ class TerminalMultiplexer {
             this.toastError(`Failed to create pane: ${error.message}`);
             return null;
         }
+    }
+
+    async restartBackend(backendId) {
+        if (!backendId) return;
+        if (!this.serverConnected) {
+            this.toastError('Cannot restart backend: server disconnected');
+            return;
+        }
+        const label = this.paneTypes.find(type => type.type === backendId)?.label || backendId;
+        if (!confirm(`Restart the ${label} server? Open ${label} panes will reload and any in-flight work in the backend will be interrupted.`)) {
+            return;
+        }
+
+        // Flush pane storage first so UI state survives the iframe reload.
+        const backendPane = Array.from(this.panes.values()).find(pane => pane.backendId === backendId);
+        if (backendPane) {
+            const popoutWindow = this.popoutWindows.get(this.getPopoutKey(backendPane));
+            await this.flushOpenCodePaneStorage(backendPane, popoutWindow);
+        }
+
+        try {
+            const response = await fetch(this.url(`/api/backends/${encodeURIComponent(backendId)}/restart`), { method: 'POST' });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(errorText || 'Failed to restart backend');
+            }
+            this.handleBackendRestarted(backendId);
+        } catch (error) {
+            console.error('Failed to restart backend:', error);
+            this.toastError(`Failed to restart ${label} server: ${error.message}`);
+            this.loadServerInfo().catch(() => {});
+        }
+    }
+
+    handleBackendRestarted(backendId) {
+        if (!backendId) return;
+        const now = Date.now();
+        if (now - (this.lastBackendRestart.get(backendId) || 0) < 2000) return;
+        this.lastBackendRestart.set(backendId, now);
+
+        let reloaded = false;
+        for (const pane of this.panes.values()) {
+            if (pane.backendId !== backendId || !this.isSharedPane(pane)) continue;
+            const popoutWindow = this.popoutWindows.get(this.getPopoutKey(pane));
+            if (popoutWindow && !popoutWindow.closed) {
+                popoutWindow.location.href = this.url(`/p/${pane.id}/`);
+            }
+            if (!reloaded) {
+                this.reloadSharedPaneIframe(pane);
+                reloaded = true;
+            }
+        }
+        if (reloaded) this.updatePaneLayout();
+        this.loadServerInfo().catch(() => {});
     }
 
     async closePane(paneId) {

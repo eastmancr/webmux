@@ -498,6 +498,30 @@ func (or *OpenCodeRuntime) Monitor(pane *Pane) {
 	})
 }
 
+// Restart stops the backend process and starts a fresh one on the same port
+// without closing the panes bound to it. The state is detached from the map
+// before the process is signaled so Monitor's exit handling (which deletes
+// all panes for the backend) sees a stale state and returns early.
+func (or *OpenCodeRuntime) Restart(pane *Pane) error {
+	backendID := pane.BackendID
+	state, ok := or.getState(backendID)
+	if !ok {
+		return fmt.Errorf("backend %s is not running", backendID)
+	}
+	or.removeState(backendID, state)
+	if !or.stopState(backendID, state, 3*time.Second) {
+		// The old process is still alive; reattach its state so it stays
+		// managed and Monitor semantics are restored.
+		or.mu.Lock()
+		if _, exists := or.states[backendID]; !exists {
+			or.states[backendID] = state
+		}
+		or.mu.Unlock()
+		return fmt.Errorf("failed to stop backend %s for restart", backendID)
+	}
+	return or.Start(pane)
+}
+
 func (or *OpenCodeRuntime) Stop(pane *Pane) {
 	backendID := pane.BackendID
 	if backendID == "" {

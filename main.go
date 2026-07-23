@@ -678,9 +678,10 @@ func (s *Server) forceCloseAllBackends(timeout time.Duration) bool {
 // SECTION: API
 
 type paneEvent struct {
-	Type   string `json:"type"`
-	PaneID string `json:"paneId,omitempty"`
-	Pane   *Pane  `json:"pane,omitempty"`
+	Type      string `json:"type"`
+	PaneID    string `json:"paneId,omitempty"`
+	BackendID string `json:"backendId,omitempty"`
+	Pane      *Pane  `json:"pane,omitempty"`
 }
 
 var paneEventsUpgrader = websocket.Upgrader{
@@ -1585,6 +1586,41 @@ func (s *Server) handlePane(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleBackend dispatches backend-level actions on shared pane backends.
+// POST /api/backends/{id}/restart
+func (s *Server) handleBackend(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/backends/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" {
+		http.Error(w, "Invalid path", http.StatusBadRequest)
+		return
+	}
+	backendID, action := parts[0], parts[1]
+	if action != "restart" {
+		http.Error(w, "Unknown backend action", http.StatusNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	remoteAddr := r.RemoteAddr
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		remoteAddr = fwd
+	}
+	log.Printf("Backend restart request for %s from %s", backendID, remoteAddr)
+
+	if err := s.manager.RestartBackend(backendID); err != nil {
+		log.Printf("Backend restart failed for %s: %v", backendID, err)
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.notifyPaneSubscribers(paneEvent{Type: "backend-restarted", BackendID: backendID})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "restarted", "backendId": backendID})
+}
+
 // Maximum request body size for input endpoint (32KB should be plenty).
 const maxInputRequestSize = 32 * 1024
 
@@ -2404,6 +2440,7 @@ func main() {
 	mux.HandleFunc("/api/panes", server.handlePanes)
 	mux.HandleFunc("/api/panes/events", server.handlePaneEvents)
 	mux.HandleFunc("/api/panes/", server.handlePane)
+	mux.HandleFunc("/api/backends/", server.handleBackend)
 	mux.HandleFunc("/api/upload", server.handleUpload)
 	mux.HandleFunc("/api/download", server.handleDownload)
 	mux.HandleFunc("/api/browse", server.handleBrowse)

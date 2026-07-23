@@ -228,6 +228,12 @@ body.mobile-mode .sidebar-panel {
     display: none;
 }
 
+.new-pane-row {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+}
+
 .new-pane-option {
     display: flex;
     align-items: center;
@@ -241,6 +247,32 @@ body.mobile-mode .sidebar-panel {
     font: inherit;
     text-align: left;
     cursor: pointer;
+}
+
+.new-pane-row .new-pane-option {
+    flex: 1;
+    min-width: 0;
+    width: auto;
+}
+
+.new-pane-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.new-pane-action:hover,
+.new-pane-action:focus-visible {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    outline: none;
 }
 
 .new-pane-option:hover,
