@@ -8,6 +8,7 @@ import (
 )
 
 func TestPaneTypesIncludesOpenCodeWarning(t *testing.T) {
+	isolateWebmuxTest(t)
 	manager := NewPaneManager(10000, "/bin/sh", "", "8080")
 	defer os.Remove(manager.terminal.tmuxConfigPath)
 	defer os.RemoveAll(manager.terminal.wmBinDir)
@@ -29,6 +30,7 @@ func TestPaneTypesIncludesOpenCodeWarning(t *testing.T) {
 }
 
 func TestCachedOpenCodeVersionRefreshesAfterTTL(t *testing.T) {
+	isolateWebmuxTest(t)
 	dir := t.TempDir()
 	command := filepath.Join(dir, "opencode")
 	writeVersionCommand := func(version string) {

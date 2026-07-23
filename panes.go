@@ -34,14 +34,15 @@ import (
 
 // Pane represents a managed endpoint shown in the web UI.
 type Pane struct {
-	ID             string    `json:"id"`
-	Type           string    `json:"type"`
-	BackendID      string    `json:"backendId"`
-	BackendScope   string    `json:"backendScope"`
-	Name           string    `json:"name"`
-	Port           int       `json:"port"`
-	CreatedAt      time.Time `json:"createdAt"`
-	CurrentProcess string    `json:"currentProcess,omitempty"`
+	ID              string    `json:"id"`
+	Type            string    `json:"type"`
+	BackendID       string    `json:"backendId"`
+	BackendScope    string    `json:"backendScope"`
+	BackendLifetime string    `json:"backendLifetime"`
+	Name            string    `json:"name"`
+	Port            int       `json:"port"`
+	CreatedAt       time.Time `json:"createdAt"`
+	CurrentProcess  string    `json:"currentProcess,omitempty"`
 }
 
 // PaneTypeInfo describes a pane type that can be shown in the UI.
@@ -49,6 +50,7 @@ type PaneTypeInfo struct {
 	Type              string `json:"type"`
 	Label             string `json:"label"`
 	BackendScope      string `json:"backendScope"`
+	BackendLifetime   string `json:"backendLifetime"`
 	SupportsKeybar    bool   `json:"supportsKeybar"`
 	Available         bool   `json:"available"`
 	UnavailableReason string `json:"unavailableReason,omitempty"`
@@ -56,10 +58,46 @@ type PaneTypeInfo struct {
 	Version           string `json:"version,omitempty"`
 }
 
+type paneTypeDefinition struct {
+	Type            string
+	Label           string
+	BackendScope    string
+	BackendLifetime string
+	SupportsKeybar  bool
+}
+
+type RestoreSummary struct {
+	BackendCandidates  int
+	BackendsAdopted    int
+	TerminalCandidates int
+	TerminalsAdopted   int
+	OpenCodeCandidates int
+	OpenCodeRestored   int
+}
+
+func definitionForPaneType(paneType string) (paneTypeDefinition, bool) {
+	switch paneType {
+	case "terminal":
+		return paneTypeDefinition{
+			Type: "terminal", Label: "Terminal", BackendScope: PaneBackendDedicated,
+			BackendLifetime: PaneBackendLifetimePane, SupportsKeybar: true,
+		}, true
+	case "opencode":
+		return paneTypeDefinition{
+			Type: "opencode", Label: "OpenCode", BackendScope: PaneBackendShared,
+			BackendLifetime: PaneBackendLifetimeInstance,
+		}, true
+	default:
+		return paneTypeDefinition{}, false
+	}
+}
+
 const (
-	PaneBackendDedicated = "dedicated"
-	PaneBackendShared    = "shared"
-	paneTypeVersionTTL   = 30 * time.Second
+	PaneBackendDedicated        = "dedicated"
+	PaneBackendShared           = "shared"
+	PaneBackendLifetimePane     = "pane"
+	PaneBackendLifetimeInstance = "instance"
+	paneTypeVersionTTL          = 30 * time.Second
 )
 
 // SECTION: SESSIONS
@@ -69,9 +107,8 @@ type PaneManager struct {
 	panes                    map[string]*Pane
 	mu                       sync.RWMutex
 	createMu                 sync.Mutex
-	nextPort                 int32
 	nextPaneID               int32
-	startPort                int32 // Initial port to reset to when all panes close
+	startPort                int32
 	shell                    string
 	workDir                  string // Starting directory for new panes
 	getSettings              func() *Settings
@@ -79,6 +116,7 @@ type PaneManager struct {
 	instanceID               string // Runtime namespace derived from the HTTP server port
 	onPaneClosed             func(string)
 	onPaneChanged            func(*Pane)
+	onStateChanged           func()
 	terminal                 *TerminalRuntime
 	opencode                 *OpenCodeRuntime
 	versionMu                sync.Mutex
@@ -90,7 +128,6 @@ type PaneManager struct {
 func NewPaneManager(startPort int, shell, workDir, serverPort string) *PaneManager {
 	sm := &PaneManager{
 		panes:      make(map[string]*Pane),
-		nextPort:   int32(startPort),
 		nextPaneID: int32(startPort),
 		startPort:  int32(startPort),
 		shell:      shell,
@@ -142,7 +179,15 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 		if existing := sm.findSharedBackendPane(paneType); existing != nil {
 			port = existing.Port
 			backendID = existing.BackendID
+		} else if paneType == "opencode" {
+			if existingPort, ok := sm.opencode.RunningBackend(paneType); ok {
+				port = existingPort
+				backendID = paneType
+			}
 		} else {
+			startedBackend = true
+		}
+		if backendID == "" {
 			var err error
 			port, err = sm.allocatePanePort()
 			if err != nil {
@@ -183,13 +228,14 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 	}
 
 	pane := &Pane{
-		ID:           id,
-		Type:         paneType,
-		BackendID:    backendID,
-		BackendScope: scope,
-		Name:         name,
-		Port:         port,
-		CreatedAt:    time.Now(),
+		ID:              id,
+		Type:            paneType,
+		BackendID:       backendID,
+		BackendScope:    scope,
+		BackendLifetime: sm.backendLifetime(paneType),
+		Name:            name,
+		Port:            port,
+		CreatedAt:       time.Now(),
 	}
 
 	if startedBackend {
@@ -213,6 +259,7 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 	sm.mu.Lock()
 	sm.panes[id] = pane
 	sm.mu.Unlock()
+	sm.stateChanged()
 
 	if startedBackend {
 		sm.monitorPaneRuntime(pane)
@@ -222,12 +269,8 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 }
 
 func (sm *PaneManager) isSupportedPaneType(paneType string) bool {
-	switch paneType {
-	case "terminal", "opencode":
-		return true
-	default:
-		return false
-	}
+	_, ok := definitionForPaneType(paneType)
+	return ok
 }
 
 func (sm *PaneManager) paneTypeAvailability(paneType string) (bool, string) {
@@ -245,6 +288,8 @@ func (sm *PaneManager) paneTypeAvailability(paneType string) (bool, string) {
 }
 
 func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
+	terminal, _ := definitionForPaneType("terminal")
+	opencode, _ := definitionForPaneType("opencode")
 	opencodeAvailable, opencodeReason := sm.paneTypeAvailability("opencode")
 	opencodeVersion := ""
 	if opencodeAvailable {
@@ -256,17 +301,19 @@ func (sm *PaneManager) PaneTypes() []PaneTypeInfo {
 	}
 	return []PaneTypeInfo{
 		{
-			Type:           "terminal",
-			Label:          "Terminal",
-			BackendScope:   PaneBackendDedicated,
-			SupportsKeybar: true,
-			Available:      true,
+			Type:            terminal.Type,
+			Label:           terminal.Label,
+			BackendScope:    terminal.BackendScope,
+			BackendLifetime: terminal.BackendLifetime,
+			SupportsKeybar:  terminal.SupportsKeybar,
+			Available:       true,
 		},
 		{
-			Type:              "opencode",
-			Label:             "OpenCode",
-			BackendScope:      PaneBackendShared,
-			SupportsKeybar:    false,
+			Type:              opencode.Type,
+			Label:             opencode.Label,
+			BackendScope:      opencode.BackendScope,
+			BackendLifetime:   opencode.BackendLifetime,
+			SupportsKeybar:    opencode.SupportsKeybar,
 			Available:         opencodeAvailable,
 			UnavailableReason: opencodeReason,
 			WarningReason:     opencodeWarning,
@@ -298,12 +345,19 @@ func paneTypeCommandVersion(command string) string {
 }
 
 func (sm *PaneManager) backendScope(paneType string) string {
-	switch paneType {
-	case "opencode":
-		return PaneBackendShared
-	default:
-		return PaneBackendDedicated
+	definition, ok := definitionForPaneType(paneType)
+	if !ok {
+		return ""
 	}
+	return definition.BackendScope
+}
+
+func (sm *PaneManager) backendLifetime(paneType string) string {
+	definition, ok := definitionForPaneType(paneType)
+	if !ok {
+		return ""
+	}
+	return definition.BackendLifetime
 }
 
 func (sm *PaneManager) findSharedBackendPane(paneType string) *Pane {
@@ -349,12 +403,15 @@ func (sm *PaneManager) paneExists(id string) bool {
 	return ok
 }
 
-func (sm *PaneManager) deletePanesForBackend(backendID string) {
+func (sm *PaneManager) deletePanesForBackend(backendID string) []string {
+	deleted := []string{}
 	for id, pane := range sm.panes {
 		if pane.BackendID == backendID {
 			sm.deletePane(id)
+			deleted = append(deleted, id)
 		}
 	}
+	return deleted
 }
 
 func (sm *PaneManager) hasPaneForBackend(backendID string) bool {
@@ -393,8 +450,8 @@ func (sm *PaneManager) monitorPaneRuntime(pane *Pane) {
 }
 
 func (sm *PaneManager) allocatePanePort() (int, error) {
-	for range 100 {
-		port := int(atomic.AddInt32(&sm.nextPort, 1))
+	for offset := int32(1); offset <= 100; offset++ {
+		port := int(sm.startPort + offset)
 		if isTCPPortAvailable(port) {
 			return port, nil
 		}
@@ -437,11 +494,170 @@ func (sm *PaneManager) ListPanes() []*Pane {
 	return panes
 }
 
+func (sm *PaneManager) PersistedBackends() []PersistedBackend {
+	backends := make([]PersistedBackend, 0, 1)
+	if backend, ok := sm.opencode.PersistedBackend("opencode"); ok {
+		backends = append(backends, backend)
+	}
+	return backends
+}
+
+// Restore adopts only backends that survived the previous webmux process.
+// Missing runtimes are discarded rather than recreated after a machine reboot.
+func (sm *PaneManager) Restore(panes []PersistedPane, backends []PersistedBackend) RestoreSummary {
+	summary := RestoreSummary{BackendCandidates: len(backends)}
+	seenBackends := make(map[string]bool)
+	for _, backend := range backends {
+		if backend.Type != "opencode" || backend.ID != "opencode" || seenBackends[backend.ID] {
+			continue
+		}
+		seenBackends[backend.ID] = true
+		if err := sm.opencode.Adopt(backend); err != nil {
+			log.Printf("Could not restore OpenCode backend %s: %v", backend.ID, err)
+		} else {
+			summary.BackendsAdopted++
+		}
+	}
+
+	restoredOpenCode := false
+	seenPanes := make(map[string]bool)
+	for _, saved := range panes {
+		if !validPersistedPaneID(saved.ID) || !sm.isSupportedPaneType(saved.Type) || seenPanes[saved.ID] {
+			continue
+		}
+		seenPanes[saved.ID] = true
+		pane := Pane{
+			ID: saved.ID, Type: saved.Type, BackendID: saved.BackendID,
+			BackendScope: sm.backendScope(saved.Type), BackendLifetime: sm.backendLifetime(saved.Type),
+			Name: saved.Name, CreatedAt: saved.CreatedAt,
+		}
+		if pane.BackendID == "" {
+			pane.BackendID = pane.ID
+		}
+		switch pane.Type {
+		case "terminal":
+			summary.TerminalCandidates++
+			if !sm.terminal.Adopt(&pane) {
+				log.Printf("Discarding terminal pane %s: tmux session did not survive", pane.ID)
+				continue
+			}
+			summary.TerminalsAdopted++
+		case "opencode":
+			summary.OpenCodeCandidates++
+			if !sm.opencode.IsRunning(pane.BackendID) {
+				log.Printf("Discarding OpenCode pane %s: backend did not survive", pane.ID)
+				continue
+			}
+			if port, ok := sm.opencode.RunningBackend(pane.BackendID); ok {
+				pane.Port = port
+			}
+			restoredOpenCode = true
+			summary.OpenCodeRestored++
+		}
+
+		sm.mu.Lock()
+		if _, exists := sm.panes[pane.ID]; !exists {
+			copy := pane
+			sm.panes[pane.ID] = &copy
+			sm.advancePaneID(pane.ID)
+		}
+		sm.mu.Unlock()
+		if pane.Type == "terminal" {
+			sm.monitorPaneRuntime(&pane)
+		}
+	}
+	if restoredOpenCode {
+		if pane := sm.findSharedBackendPane("opencode"); pane != nil {
+			sm.monitorPaneRuntime(pane)
+		}
+	}
+	return summary
+}
+
+func validPersistedPaneID(id string) bool {
+	if !strings.HasPrefix(id, "pane-") {
+		return false
+	}
+	value, err := strconv.Atoi(strings.TrimPrefix(id, "pane-"))
+	return err == nil && value > 0
+}
+
+func (sm *PaneManager) advancePaneID(id string) {
+	value, err := strconv.Atoi(strings.TrimPrefix(id, "pane-"))
+	if err != nil {
+		return
+	}
+	for {
+		current := atomic.LoadInt32(&sm.nextPaneID)
+		if int32(value) <= current || atomic.CompareAndSwapInt32(&sm.nextPaneID, current, int32(value)) {
+			return
+		}
+	}
+}
+
 // ClosePane terminates a pane and its runtime backend.
 func (sm *PaneManager) ClosePane(id string) error {
 	sm.createMu.Lock()
 	defer sm.createMu.Unlock()
 
+	sm.mu.RLock()
+	pane, ok := sm.panes[id]
+	if !ok {
+		sm.mu.RUnlock()
+		return fmt.Errorf("pane not found: %s", id)
+	}
+	paneCopy := *pane
+	sm.mu.RUnlock()
+
+	if paneCopy.Type == "terminal" {
+		if err := sm.terminal.Stop(&paneCopy); err != nil {
+			return err
+		}
+	}
+
+	sm.mu.Lock()
+	if _, ok := sm.panes[id]; !ok {
+		sm.mu.Unlock()
+		return nil
+	}
+	sm.deletePane(id)
+	stopBackend := sm.backendLifetime(paneCopy.Type) == PaneBackendLifetimePane &&
+		!sm.hasPaneForBackend(paneCopy.BackendID)
+	sm.mu.Unlock()
+	sm.notifyPaneClosed(id)
+
+	switch paneCopy.Type {
+	case "opencode":
+		if stopBackend {
+			sm.opencode.Stop(&paneCopy)
+		}
+	}
+	log.Printf("Closed pane %s", id)
+
+	sm.stateChanged()
+
+	return nil
+}
+
+func (sm *PaneManager) resetCounters() {
+	atomic.StoreInt32(&sm.nextPaneID, sm.startPort)
+	log.Printf("All panes closed, reset pane ID counter to %d", sm.startPort)
+}
+
+// deletePane removes a pane from the map.
+// Must be called with sm.mu held
+func (sm *PaneManager) deletePane(id string) {
+	delete(sm.panes, id)
+}
+
+func (sm *PaneManager) notifyPaneClosed(id string) {
+	if sm.onPaneClosed != nil {
+		sm.onPaneClosed(id)
+	}
+}
+
+// RenamePane changes the display name of a pane
+func (sm *PaneManager) RenamePane(id, name string) error {
 	sm.mu.Lock()
 	pane, ok := sm.panes[id]
 	if !ok {
@@ -449,61 +665,16 @@ func (sm *PaneManager) ClosePane(id string) error {
 		return fmt.Errorf("pane not found: %s", id)
 	}
 
-	paneCopy := *pane
-	sm.deletePane(id)
-	stopOpenCode := paneCopy.Type == "opencode" && !sm.hasPaneForBackend(paneCopy.BackendID)
-	sm.mu.Unlock()
-
-	switch paneCopy.Type {
-	case "terminal":
-		sm.terminal.Stop(&paneCopy)
-	case "opencode":
-		if stopOpenCode {
-			sm.opencode.Stop(&paneCopy)
-		}
-	}
-	log.Printf("Closed pane %s", id)
-
-	// Reset counters when all panes are closed (ports are now free to reuse)
-	sm.mu.Lock()
-	if len(sm.panes) == 0 {
-		sm.resetCounters()
-	}
-	sm.mu.Unlock()
-
-	return nil
-}
-
-// resetCounters resets port counter to initial value
-// Called when all panes have been closed to allow port reuse
-func (sm *PaneManager) resetCounters() {
-	atomic.StoreInt32(&sm.nextPort, sm.startPort)
-	atomic.StoreInt32(&sm.nextPaneID, sm.startPort)
-	log.Printf("All panes closed, reset pane and port counters to %d", sm.startPort)
-}
-
-// deletePane removes a pane from the map and notifies the callback
-// Must be called with sm.mu held
-func (sm *PaneManager) deletePane(id string) {
-	delete(sm.panes, id)
-	if sm.onPaneClosed != nil {
-		// Call outside of lock to avoid deadlock
-		go sm.onPaneClosed(id)
-	}
-}
-
-// RenamePane changes the display name of a pane
-func (sm *PaneManager) RenamePane(id, name string) error {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	pane, ok := sm.panes[id]
-	if !ok {
-		return fmt.Errorf("pane not found: %s", id)
-	}
-
 	pane.Name = name
+	sm.mu.Unlock()
+	sm.stateChanged()
 	return nil
+}
+
+func (sm *PaneManager) stateChanged() {
+	if sm.onStateChanged != nil {
+		sm.onStateChanged()
+	}
 }
 
 // ProxyConfig returns proxy behavior for a pane backend.
@@ -560,21 +731,49 @@ func (sm *PaneManager) SendInput(id string, req *PaneInputRequest) error {
 	}
 }
 
-// Cleanup terminates all panes
-func (sm *PaneManager) Cleanup() {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
+// ForceCleanup asks all backends to exit and kills any that exceed timeout.
+func (sm *PaneManager) ForceCleanup(timeout time.Duration) bool {
+	var wg sync.WaitGroup
+	results := make(chan bool, 2)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		results <- sm.terminal.Shutdown(timeout)
+	}()
+	go func() {
+		defer wg.Done()
+		results <- sm.opencode.Shutdown(timeout)
+	}()
+	wg.Wait()
+	close(results)
+	allStopped := true
+	for stopped := range results {
+		allStopped = allStopped && stopped
+	}
+	if !allStopped {
+		sm.stateChanged()
+		return false
+	}
 
-	for id, pane := range sm.panes {
-		switch pane.Type {
-		case "terminal":
-			sm.terminal.Stop(pane)
-		}
-		log.Printf("Cleaned up pane %s", id)
+	sm.mu.Lock()
+	ids := make([]string, 0, len(sm.panes))
+	for id := range sm.panes {
+		ids = append(ids, id)
 	}
 	sm.panes = make(map[string]*Pane)
-	sm.terminal.Cleanup()
-	sm.opencode.Cleanup()
+	sm.resetCounters()
+	sm.mu.Unlock()
+	for _, id := range ids {
+		if sm.onPaneClosed != nil {
+			sm.onPaneClosed(id)
+		}
+	}
+	sm.stateChanged()
+	return true
+}
+
+func (sm *PaneManager) Cleanup() {
+	sm.ForceCleanup(3 * time.Second)
 }
 
 // UIGroup represents a visual grouping of panes in the sidebar
@@ -590,9 +789,11 @@ type UIGroup struct {
 
 // UIState represents the UI layout state (groups, order, etc.)
 type UIState struct {
+	Revision         uint64    `json:"revision"`
 	Groups           []UIGroup `json:"groups"`
 	GroupOrder       []string  `json:"groupOrder"`
 	ActiveGroupID    string    `json:"activeGroupId"`
+	FocusedPaneID    string    `json:"focusedPaneId"`
 	GroupCounter     int       `json:"groupCounter"`
 	SidebarCollapsed bool      `json:"sidebarCollapsed"`
 	CustomNames      []string  `json:"customNames"` // pane IDs with custom names

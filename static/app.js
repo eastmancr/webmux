@@ -38,6 +38,8 @@ class TerminalMultiplexer {
 
         // Track which pane is focused within a split group (for keybar targeting)
         this.focusedPaneId = null;
+        this.uiStateRevision = 0;
+        this.uiStateSavePromise = Promise.resolve();
 
         // Track custom names (to know whether to show process name)
         this.customNames = new Set();
@@ -76,8 +78,8 @@ class TerminalMultiplexer {
         this.diagnosticQueue = [];
         this.diagnosticFlushTimer = null;
         this.paneTypes = [
-            { type: 'terminal', label: 'Terminal', backendScope: 'dedicated', supportsKeybar: true, available: true },
-            { type: 'opencode', label: 'OpenCode', backendScope: 'shared', supportsKeybar: false, available: true },
+            { type: 'terminal', label: 'Terminal', backendScope: 'dedicated', backendLifetime: 'pane', supportsKeybar: true, available: true },
+            { type: 'opencode', label: 'OpenCode', backendScope: 'shared', backendLifetime: 'instance', supportsKeybar: false, available: true },
         ];
 
         // Base path for proxy support (detected from current URL)
@@ -174,8 +176,6 @@ class TerminalMultiplexer {
         // Subscribe to pane updates (also checks connection)
         this.connectPaneEvents();
 
-        // Save state on changes and page unload
-        this.startAutoSave();
         window.addEventListener('pagehide', () => this.flushDiagnostics());
 
         // Connect to scratch pad SSE
@@ -715,13 +715,9 @@ class TerminalMultiplexer {
     // Server Connection
     // =================
 
-    startAutoSave() {
-        // Save pending UI changes on page unload.
-        window.addEventListener('beforeunload', () => this.saveUIState({ keepalive: true }));
-    }
-
     getUIState() {
         return {
+            revision: this.uiStateRevision,
             groupOrder: this.groupOrder,
             groups: Array.from(this.groups.entries()).map(([id, g]) => ({
                 id: g.id,
@@ -733,6 +729,7 @@ class TerminalMultiplexer {
                 cellMapping: g.cellMapping
             })),
             activeGroupId: this.activeGroupId,
+            focusedPaneId: this.focusedPaneId,
             sidebarCollapsed: this.sidebar?.classList.contains('collapsed') || false,
             customNames: Array.from(this.customNames),
             groupCounter: this.groupCounter
@@ -743,23 +740,43 @@ class TerminalMultiplexer {
         this.lastSavedUIStateJSON = JSON.stringify(this.getUIState());
     }
 
-    async saveUIState(options = {}) {
-        const state = this.getUIState();
-        const stateJSON = JSON.stringify(state);
-        if (stateJSON === this.lastSavedUIStateJSON) return;
-
-        try {
-            // Save to server (authoritative source)
-            await fetch(this.url('/api/ui-state'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: stateJSON,
-                keepalive: !!options.keepalive
-            });
-            this.lastSavedUIStateJSON = stateJSON;
-        } catch (e) {
+    async saveUIState() {
+        this.uiStateSavePromise = this.uiStateSavePromise.then(async () => {
+            let stateJSON = JSON.stringify(this.getUIState());
+            if (stateJSON === this.lastSavedUIStateJSON) return;
+            let response;
+            let retriedRevision = false;
+            for (let attempt = 0; attempt < 2; attempt++) {
+                response = await fetch(this.url('/api/ui-state'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: stateJSON
+                });
+                if (response.status !== 409) break;
+                const conflict = await response.json();
+                if (!Number.isSafeInteger(conflict.revision) || conflict.revision < 1) break;
+                this.logDiagnostic('ui-state', 'revision-conflict', {
+                    data: { clientRevision: this.uiStateRevision, serverRevision: conflict.revision }
+                });
+                this.uiStateRevision = conflict.revision;
+                retriedRevision = true;
+                stateJSON = JSON.stringify(this.getUIState());
+            }
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const savedState = await response.json();
+            if (Number.isSafeInteger(savedState.revision) && savedState.revision > 0) {
+                this.uiStateRevision = savedState.revision;
+            }
+            if (retriedRevision) {
+                this.logDiagnostic('ui-state', 'revision-retry-success', {
+                    data: { revision: this.uiStateRevision }
+                });
+            }
+            this.lastSavedUIStateJSON = JSON.stringify(this.getUIState());
+        }).catch(e => {
             console.warn('Failed to save UI state to server:', e);
-        }
+        });
+        return this.uiStateSavePromise;
     }
 
     async loadUIState() {
@@ -815,9 +832,11 @@ class TerminalMultiplexer {
 
             // Restore state
             this.savedState = state;
+            this.uiStateRevision = Number.isSafeInteger(state.revision) && state.revision > 0 ? state.revision : 0;
             this.sidebarCollapsed = !!state.sidebarCollapsed;
             this.groupCounter = state.groupCounter;
             this.customNames = new Set(Array.isArray(state.customNames) ? state.customNames.filter(n => typeof n === 'string') : []);
+            if (typeof state.focusedPaneId !== 'string') state.focusedPaneId = '';
         } catch (e) {
             console.warn('Failed to load UI state from server:', e);
         }
@@ -972,7 +991,7 @@ class TerminalMultiplexer {
                     const nextGroupIndex = Math.min(groupIndex, this.groupOrder.length - 1);
                     const nextGroupId = this.groupOrder[nextGroupIndex];
             if (nextGroupId) {
-                this.activateGroup(nextGroupId);
+                this.activateGroup(nextGroupId, null, { save: shouldSave });
             } else {
                 this.focusedPaneId = null;
                 this.updatePaneLayout();
@@ -994,7 +1013,7 @@ class TerminalMultiplexer {
                     const nextPanePosition = Math.min(paneIndex, newCm.length - 1);
                     const nextPaneIndex = newCm[nextPanePosition];
                     if (nextPaneIndex !== undefined) {
-                        this.focusPane(group.paneIds[nextPaneIndex]);
+                        this.focusPane(group.paneIds[nextPaneIndex], { save: shouldSave });
                     }
                 }
             }
@@ -1559,10 +1578,10 @@ class TerminalMultiplexer {
             if (this.groups.size > 0) {
                 // Restore active group or pick first
                 if (this.savedState?.activeGroupId && this.groups.has(this.savedState.activeGroupId)) {
-                    this.activateGroup(this.savedState.activeGroupId);
+                    this.activateGroup(this.savedState.activeGroupId, this.savedState.focusedPaneId, { save: false });
                 } else {
                     const firstGroupId = this.groupOrder[0] || this.groups.keys().next().value;
-                    if (firstGroupId) this.activateGroup(firstGroupId);
+                    if (firstGroupId) this.activateGroup(firstGroupId, null, { save: false });
                 }
             } else {
                 this.updatePaneLayout();
@@ -3009,7 +3028,7 @@ class TerminalMultiplexer {
     // Pane Rendering
     // ==================
 
-    activateGroup(groupId, focusPaneId = null) {
+    activateGroup(groupId, focusPaneId = null, options = {}) {
         const group = this.groups.get(groupId);
         if (!group) return;
 
@@ -3035,7 +3054,8 @@ class TerminalMultiplexer {
         // Update mobile toolbar
         this.updateMobileToolbar();
 
-        this.focusPane(paneToFocus);
+        this.focusPane(paneToFocus, { save: false });
+        if (options.save !== false) this.saveUIState();
     }
 
     updateSidebarActiveStates() {
@@ -3053,14 +3073,16 @@ class TerminalMultiplexer {
         });
     }
 
-    focusPane(paneId) {
+    focusPane(paneId, options = {}) {
         const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
 
         // Track focused pane for keybar targeting in split groups
+        const focusChanged = this.focusedPaneId !== paneId;
         this.focusedPaneId = paneId;
         this.updateSidebarActiveStates();
         this.updateKeybarVisibility();
+        if (focusChanged && options.save !== false) this.saveUIState();
 
         const pane = this.panes.get(paneId);
         if (this.isSharedPane(pane)) {
@@ -3236,8 +3258,11 @@ class TerminalMultiplexer {
                 // so without this the keybar sends keys to the previously-focused pane.
                 try {
                     iframe.contentWindow.addEventListener('focus', () => {
-                        this.focusedPaneId = iframe.dataset.paneId;
+                        const paneId = iframe.dataset.paneId;
+                        const focusChanged = this.focusedPaneId !== paneId;
+                        this.focusedPaneId = paneId;
                         this.updateKeybarVisibility();
+                        if (focusChanged && document.hasFocus()) this.saveUIState();
                     });
                 } catch (e) {
                     // Cross-origin fallback - shouldn't happen since we proxy panes

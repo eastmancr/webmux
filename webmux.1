@@ -25,6 +25,9 @@ Starting port for managed pane backends and pane IDs. Default: \fB7700\fR
 .TP
 .BR \-upload-dir =\fIPATH\fR
 Directory for uploaded files. Default: \fB~/.local/share/webmux/uploads\fR
+.TP
+.B \-close-panes-on-exit
+On SIGINT or SIGTERM, ask all pane backends to exit, wait five seconds, and then force kill any that remain. Without this option, normal webmux exits preserve live backends. SIGQUIT always enables close-on-exit behavior.
 
 .SH CLI HELPER
 Inside webmux terminals, the \fBwm\fR command is available as a shell function:
@@ -72,6 +75,18 @@ Default upload directory. Defaults to \fB~/.local/share\fR.
 .TP
 .B $XDG_DATA_HOME/webmux/instances/port-<port>/tmux.sock
 Tmux socket for terminal pane management, scoped by webmux server port. Defaults to \fB~/.local/share\fR.
+.TP
+.B $XDG_DATA_HOME/webmux/instances/port-<port>/state.json
+Pane, backend, and workspace layout recovery state.
+.TP
+.B $XDG_DATA_HOME/webmux/instances/port-<port>/scratch.txt
+Persisted scratch-pad text.
+.TP
+.B $XDG_DATA_HOME/webmux/instances/port-<port>/opencode.log
+Output from the persistent managed OpenCode backend.
+.TP
+.B $XDG_DATA_HOME/webmux/instances/port-<port>/runtime
+Stable terminal helper binaries and shell initialization files.
 
 .SH FEATURES
 .TP
@@ -100,6 +115,9 @@ Customizable UI and terminal colors using Base24 color schemes. Settings are per
 Clipboard sync via OSC 52 and a server-side clipboard API. \fBwm copy\fR/\fBwm paste\fR and wrapper
 scripts for wl-copy, wl-paste, xclip, xsel, pbcopy, and pbpaste provide CLI/TUI integration.
 Browser tabs poll and sync it to the system clipboard; use Ctrl+Shift+V to paste from the system clipboard.
+.TP
+.B Backend Persistence
+Normal webmux exits preserve live tmux sessions and instance-lived shared backends. Restarting webmux on the same port adopts matching live processes and restores pane layout. A machine reboot does not recreate terminal panes, commands, or working directories. Systemd services must use \fBKillMode=process\fR to avoid killing preserved child processes.
 
 .SH EXAMPLES
 .TP

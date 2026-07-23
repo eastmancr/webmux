@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -84,18 +85,12 @@ func (tr *TerminalRuntime) extractTmuxConfig() {
 		return
 	}
 
-	tmpFile, err := os.CreateTemp("", "mux-tmux-*.conf")
-	if err != nil {
-		log.Printf("Warning: could not create temp file for tmux config: %v", err)
+	path := filepath.Join(webmuxInstanceDir(tr.manager.instanceID), "runtime", "tmux.conf")
+	if err := writeRuntimeFile(path, tmuxConf, 0600); err != nil {
+		log.Printf("Warning: could not write tmux config: %v", err)
 		return
 	}
-	defer tmpFile.Close()
-
-	if _, err := tmpFile.Write(tmuxConf); err != nil {
-		log.Printf("Warning: could not write tmux config temp file: %v", err)
-		return
-	}
-	tr.tmuxConfigPath = tmpFile.Name()
+	tr.tmuxConfigPath = path
 	log.Printf("Using custom tmux config: %s", tr.tmuxConfigPath)
 }
 
@@ -106,21 +101,43 @@ func (tr *TerminalRuntime) extractWMBinary() {
 		return
 	}
 
-	tmpDir, err := os.MkdirTemp("", "webmux-bin-*")
-	if err != nil {
-		log.Printf("Warning: could not create temp dir for wm: %v", err)
-		return
-	}
-
-	wmPath := filepath.Join(tmpDir, "wm")
-	if err := os.WriteFile(wmPath, wmBin, 0755); err != nil {
+	binDir := filepath.Join(webmuxInstanceDir(tr.manager.instanceID), "runtime", "bin")
+	wmPath := filepath.Join(binDir, "wm")
+	if err := writeRuntimeFile(wmPath, wmBin, 0755); err != nil {
 		log.Printf("Warning: could not write wm binary: %v", err)
-		os.RemoveAll(tmpDir)
 		return
 	}
 
-	tr.wmBinDir = tmpDir
+	tr.wmBinDir = binDir
 	log.Printf("Extracted wm binary to: %s", wmPath)
+}
+
+func writeRuntimeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".runtime-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func (tr *TerminalRuntime) installShellScripts() {
@@ -131,13 +148,13 @@ func (tr *TerminalRuntime) installShellScripts() {
 	wmPath := filepath.Join(tr.wmBinDir, "wm")
 	initPath := filepath.Join(tr.wmBinDir, "init.sh")
 	initContent := shellinit.InitScript(wmPath, tr.wmBinDir)
-	if err := os.WriteFile(initPath, []byte(initContent), 0644); err != nil {
+	if err := writeRuntimeFile(initPath, []byte(initContent), 0644); err != nil {
 		log.Printf("Warning: could not write init script: %v", err)
 	}
 
 	for _, script := range shellinit.ClipboardWrapperScripts(wmPath) {
 		scriptPath := filepath.Join(tr.wmBinDir, script.Name)
-		if err := os.WriteFile(scriptPath, []byte(script.Content), 0755); err != nil {
+		if err := writeRuntimeFile(scriptPath, []byte(script.Content), 0755); err != nil {
 			log.Printf("Warning: could not write %s wrapper: %v", script.Name, err)
 		}
 	}
@@ -223,7 +240,9 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 			rcContent := fmt.Sprintf(`[ -f ~/.bashrc ] && . ~/.bashrc
 . %s
 `, initPath)
-			os.WriteFile(rcPath, []byte(rcContent), 0644)
+			if err := writeRuntimeFile(rcPath, []byte(rcContent), 0644); err != nil {
+				return fmt.Errorf("failed to write bash runtime config: %w", err)
+			}
 			tmuxArgs = append(tmuxArgs, tr.manager.shell, "--rcfile", rcPath)
 		case "zsh":
 			// zsh: use ZDOTDIR with custom rc files that source user's config then our init
@@ -232,16 +251,22 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 			// Create .zshenv that sources user's .zshenv (but keeps our ZDOTDIR)
 			zshenvContent := `[ -f "$HOME/.zshenv" ] && . "$HOME/.zshenv"
 `
-			os.WriteFile(filepath.Join(zdotdir, ".zshenv"), []byte(zshenvContent), 0644)
+			if err := writeRuntimeFile(filepath.Join(zdotdir, ".zshenv"), []byte(zshenvContent), 0644); err != nil {
+				return fmt.Errorf("failed to write zsh environment config: %w", err)
+			}
 			// Create .zprofile that sources user's .zprofile
 			zprofileContent := `[ -f "$HOME/.zprofile" ] && . "$HOME/.zprofile"
 `
-			os.WriteFile(filepath.Join(zdotdir, ".zprofile"), []byte(zprofileContent), 0644)
+			if err := writeRuntimeFile(filepath.Join(zdotdir, ".zprofile"), []byte(zprofileContent), 0644); err != nil {
+				return fmt.Errorf("failed to write zsh profile config: %w", err)
+			}
 			// Create .zshrc that sources user's .zshrc then our init
 			zshrcContent := fmt.Sprintf(`[ -f "$HOME/.zshrc" ] && . "$HOME/.zshrc"
 . %s
 `, initPath)
-			os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrcContent), 0644)
+			if err := writeRuntimeFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrcContent), 0644); err != nil {
+				return fmt.Errorf("failed to write zsh runtime config: %w", err)
+			}
 			tmuxArgs = append(tmuxArgs, "-e", "ZDOTDIR="+zdotdir)
 			tmuxArgs = append(tmuxArgs, tr.manager.shell)
 		default:
@@ -284,6 +309,23 @@ func (tr *TerminalRuntime) getState(paneID string) (*TerminalPaneState, bool) {
 	return state, ok
 }
 
+func (tr *TerminalRuntime) Adopt(pane *Pane) bool {
+	tmuxSession := strings.Replace(pane.ID, "pane-", "mux-", 1)
+	if !strings.HasPrefix(tmuxSession, "mux-") {
+		return false
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		if exec.Command("tmux", "-S", tr.tmuxSocketPath(), "has-session", "-t", tmuxSession).Run() == nil {
+			tr.mu.Lock()
+			tr.states[pane.ID] = &TerminalPaneState{tmuxSession: tmuxSession}
+			tr.mu.Unlock()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 // monitorPane watches the tmux session to detect when the shell exits
 // and updates the current foreground process
 func (tr *TerminalRuntime) Monitor(pane *Pane) {
@@ -291,6 +333,7 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 	tmuxSocket := tr.tmuxSocketPath()
 	startTime := time.Now()
 	checkCount := 0
+	missingChecks := 0
 
 	for {
 		sm.mu.RLock()
@@ -314,20 +357,31 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 		// Check if tmux session still exists
 		checkCmd := exec.Command("tmux", "-S", tmuxSocket, "has-session", "-t", tmuxSession)
 		if err := checkCmd.Run(); err != nil {
+			missingChecks++
+			if missingChecks < 3 {
+				time.Sleep(200 * time.Millisecond)
+				continue
+			}
 			log.Printf("Pane %s: tmux session %s exited after %d checks (%v), cleaning up", pane.ID, tmuxSession, checkCount, time.Since(startTime))
 			sm.mu.Lock()
+			deleted := false
 			if _, ok := sm.panes[pane.ID]; ok {
 				tr.mu.Lock()
 				delete(tr.states, pane.ID)
 				tr.mu.Unlock()
 				sm.deletePane(pane.ID)
+				deleted = true
 			}
 			if len(sm.panes) == 0 {
 				sm.resetCounters()
 			}
 			sm.mu.Unlock()
+			if deleted {
+				sm.notifyPaneClosed(pane.ID)
+			}
 			return
 		}
+		missingChecks = 0
 
 		// Update current foreground process
 		proc := tr.getForegroundProcess(tmuxSession)
@@ -365,36 +419,66 @@ func (tr *TerminalRuntime) getForegroundProcess(tmuxSession string) string {
 }
 
 // Stop terminates a terminal pane backend.
-func (tr *TerminalRuntime) Stop(pane *Pane) {
+func (tr *TerminalRuntime) Stop(pane *Pane) error {
 	state, ok := tr.getState(pane.ID)
 	if !ok {
-		return
+		return fmt.Errorf("terminal state not found: %s", pane.ID)
 	}
 	if state.tmuxSession != "" {
-		exec.Command("tmux", "-S", tr.tmuxSocketPath(), "kill-session", "-t", state.tmuxSession).Run()
+		_ = exec.Command("tmux", "-S", tr.tmuxSocketPath(), "kill-session", "-t", state.tmuxSession).Run()
+		for attempt := 0; attempt < 5; attempt++ {
+			if exec.Command("tmux", "-S", tr.tmuxSocketPath(), "has-session", "-t", state.tmuxSession).Run() != nil {
+				tr.mu.Lock()
+				delete(tr.states, pane.ID)
+				tr.mu.Unlock()
+				return nil
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		return fmt.Errorf("terminal session %s did not close", state.tmuxSession)
 	}
 	tr.mu.Lock()
 	delete(tr.states, pane.ID)
 	tr.mu.Unlock()
+	return nil
 }
 
-// Cleanup releases terminal runtime resources.
-func (tr *TerminalRuntime) Cleanup() {
+// Shutdown asks tmux to close its sessions, then kills a stuck server.
+func (tr *TerminalRuntime) Shutdown(timeout time.Duration) bool {
 	tmuxSocket := tr.tmuxSocketPath()
-
-	// Kill the entire tmux server on our socket
-	exec.Command("tmux", "-S", tmuxSocket, "kill-server").Run()
+	pid := 0
+	if out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "#{pid}").Output(); err == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(out)))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	err := exec.CommandContext(ctx, "tmux", "-S", tmuxSocket, "kill-server").Run()
+	cancel()
+	if ctx.Err() != nil && pid > 0 {
+		log.Printf("Tmux server did not exit within %v; killing PID %d", timeout, pid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	} else if err != nil && !os.IsNotExist(err) {
+		if _, statErr := os.Stat(tmuxSocket); statErr == nil {
+			log.Printf("Tmux shutdown returned: %v", err)
+			return false
+		}
+	}
+	if pid > 0 {
+		deadline := time.Now().Add(time.Second)
+		for syscall.Kill(pid, 0) == nil && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if syscall.Kill(pid, 0) == nil {
+			log.Printf("Tmux server PID %d is still alive after forced shutdown", pid)
+			return false
+		}
+	}
 	os.Remove(tmuxSocket)
-	cleanupEmptyInstanceDirs()
-
-	// Clean up temp files
-	if tr.tmuxConfigPath != "" {
-		os.Remove(tr.tmuxConfigPath)
-	}
-	if tr.wmBinDir != "" {
-		os.RemoveAll(tr.wmBinDir)
-	}
 	tr.mu.Lock()
 	tr.states = make(map[string]*TerminalPaneState)
 	tr.mu.Unlock()
+	return true
+}
+
+func (tr *TerminalRuntime) Cleanup() {
+	tr.Shutdown(3 * time.Second)
 }

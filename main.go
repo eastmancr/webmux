@@ -19,6 +19,7 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
@@ -572,6 +573,9 @@ type Server struct {
 	paneSubMu        sync.Mutex
 	uiState          *UIState // UI layout state (groups, order, etc.)
 	uiStateMu        sync.RWMutex
+	stateSaveMu      sync.Mutex
+	stateLoadErr     error
+	workspaceMu      sync.Mutex
 	paneStorage      map[string]*PaneStorageState // Browser storage mirrored by shared pane backend
 	paneStorageMu    sync.RWMutex
 	paneStorageSubs  map[string]map[chan paneStorageEvent]struct{}
@@ -585,10 +589,26 @@ type Server struct {
 
 // NewServer creates a new server instance
 func NewServer(manager *PaneManager, uploadDir string) *Server {
+	persisted, err := LoadInstanceState(manager.instanceID)
+	if err != nil {
+		log.Printf("Invalid instance state: %v", err)
+	}
+	initialUIState := &UIState{
+		Groups:     make([]UIGroup, 0),
+		GroupOrder: make([]string, 0),
+	}
+	if persisted != nil && persisted.UIState != nil {
+		initialUIState = cloneUIState(persisted.UIState)
+	}
+	scratchText, scratchErr := LoadScratch(manager.instanceID)
+	if scratchErr != nil {
+		log.Printf("Could not load scratch pad: %v", scratchErr)
+	}
 	s := &Server{
 		manager:         manager,
 		uploadDir:       uploadDir,
 		settings:        LoadSettings(),
+		scratchText:     scratchText,
 		scratchSubs:     make(map[chan string]struct{}),
 		markedFiles:     make([]MarkedFile, 0),
 		markedSubs:      make(map[chan string]struct{}),
@@ -596,10 +616,8 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 		paneStorage:     LoadPaneStorage(),
 		paneStorageSubs: make(map[string]map[chan paneStorageEvent]struct{}),
 		clipboardSubs:   make(map[chan uint64]struct{}),
-		uiState: &UIState{
-			Groups:     make([]UIGroup, 0),
-			GroupOrder: make([]string, 0),
-		},
+		uiState:         initialUIState,
+		stateLoadErr:    err,
 	}
 	// Wire up settings getter for pane manager
 	manager.getSettings = func() *Settings {
@@ -609,13 +627,52 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 	}
 	// Wire up pane cleanup callback
 	manager.onPaneClosed = func(paneID string) {
+		s.workspaceMu.Lock()
+		defer s.workspaceMu.Unlock()
 		s.removePaneFromUIState(paneID)
 		s.notifyPaneSubscribers(paneEvent{Type: "deleted", PaneID: paneID})
+		s.saveInstanceState()
 	}
 	manager.onPaneChanged = func(pane *Pane) {
 		s.notifyPaneSubscribers(paneEvent{Type: "updated", Pane: pane})
 	}
+	restoreSummary := RestoreSummary{}
+	if persisted != nil {
+		restoreSummary = manager.Restore(persisted.Panes, persisted.Backends)
+	}
+	s.uiState = s.validateUIState(s.uiState)
+	if s.uiState.Revision == 0 {
+		s.uiState.Revision = 1
+	}
+	if persisted != nil {
+		log.Printf("Restore summary: stateVersion=%d terminals=%d/%d opencodePanes=%d/%d backends=%d/%d panes=%d groups=%d revision=%d",
+			persisted.Version,
+			restoreSummary.TerminalsAdopted, restoreSummary.TerminalCandidates,
+			restoreSummary.OpenCodeRestored, restoreSummary.OpenCodeCandidates,
+			restoreSummary.BackendsAdopted, restoreSummary.BackendCandidates,
+			len(manager.ListPanes()), len(s.uiState.Groups), s.uiState.Revision)
+	}
+	if s.stateLoadErr == nil {
+		manager.onStateChanged = s.saveInstanceState
+		s.saveInstanceState()
+	}
 	return s
+}
+
+func (s *Server) forceCloseAllBackends(timeout time.Duration) bool {
+	if !s.manager.ForceCleanup(timeout) {
+		log.Printf("Some pane backends could not be confirmed stopped; retaining recovery state")
+		s.saveInstanceState()
+		return false
+	}
+	s.workspaceMu.Lock()
+	defer s.workspaceMu.Unlock()
+	s.uiStateMu.Lock()
+	revision := s.uiState.Revision + 1
+	s.uiState = &UIState{Revision: revision, Groups: []UIGroup{}, GroupOrder: []string{}}
+	s.uiStateMu.Unlock()
+	s.saveInstanceState()
+	return true
 }
 
 // SECTION: API
@@ -841,8 +898,15 @@ func (s *Server) handleScratch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		s.scratchMu.Lock()
+		if err := SaveScratch(s.manager.instanceID, req.Text); err != nil {
+			s.scratchMu.Unlock()
+			log.Printf("Failed to save scratch pad: %v", err)
+			http.Error(w, "Failed to save scratch pad", http.StatusInternalServerError)
+			return
+		}
 		s.scratchText = req.Text
 		s.scratchMu.Unlock()
+		s.diagnosticf("persistence", "event=scratch-save bytes=%d remote=%s", len(req.Text), diagSanitize(r.RemoteAddr, 80))
 
 		// Notify SSE subscribers
 		s.notifyScratchSubscribers("text:" + req.Text)
@@ -852,8 +916,15 @@ func (s *Server) handleScratch(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodDelete:
 		s.scratchMu.Lock()
+		if err := SaveScratch(s.manager.instanceID, ""); err != nil {
+			s.scratchMu.Unlock()
+			log.Printf("Failed to clear scratch pad: %v", err)
+			http.Error(w, "Failed to clear scratch pad", http.StatusInternalServerError)
+			return
+		}
 		s.scratchText = ""
 		s.scratchMu.Unlock()
+		s.diagnosticf("persistence", "event=scratch-clear remote=%s", diagSanitize(r.RemoteAddr, 80))
 
 		// Notify SSE subscribers to close
 		s.notifyScratchSubscribers("clear:")
@@ -1132,18 +1203,35 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(validState)
 
 	case http.MethodPost:
+		s.workspaceMu.Lock()
+		defer s.workspaceMu.Unlock()
 		var state UIState
 		if err := json.NewDecoder(r.Body).Decode(&state); err != nil {
 			http.Error(w, "Invalid state: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		s.uiStateMu.RLock()
+		currentRevision := s.uiState.Revision
+		s.uiStateMu.RUnlock()
+		if state.Revision != currentRevision {
+			s.diagnosticf("persistence", "event=ui-conflict clientRevision=%d serverRevision=%d remote=%s",
+				state.Revision, currentRevision, diagSanitize(r.RemoteAddr, 80))
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]uint64{"revision": currentRevision})
+			return
+		}
 
 		// Validate against current panes
 		validState := s.validateUIState(&state)
+		validState.Revision = currentRevision + 1
 
 		s.uiStateMu.Lock()
 		s.uiState = validState
 		s.uiStateMu.Unlock()
+		s.diagnosticf("persistence", "event=ui-save oldRevision=%d newRevision=%d groups=%d activeGroup=%s focusedPane=%s remote=%s",
+			currentRevision, validState.Revision, len(validState.Groups),
+			diagSanitize(validState.ActiveGroupID, 48), diagSanitize(validState.FocusedPaneID, 48), diagSanitize(r.RemoteAddr, 80))
+		s.saveInstanceState()
 
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(validState)
@@ -1236,6 +1324,21 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 	} else if len(validOrder) == 0 {
 		activeGroupID = ""
 	}
+	focusedPaneID := state.FocusedPaneID
+	if activeGroupID == "" || !validPaneIDs[focusedPaneID] {
+		focusedPaneID = ""
+	}
+	if activeGroupID != "" {
+		for _, group := range validGroups {
+			if group.ID != activeGroupID {
+				continue
+			}
+			if !slices.Contains(group.PaneIDs, focusedPaneID) {
+				focusedPaneID = group.PaneIDs[0]
+			}
+			break
+		}
+	}
 
 	// Reset counter if no groups remain
 	groupCounter := state.GroupCounter
@@ -1244,9 +1347,11 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 	}
 
 	return &UIState{
+		Revision:         state.Revision,
 		Groups:           validGroups,
 		GroupOrder:       validOrder,
 		ActiveGroupID:    activeGroupID,
+		FocusedPaneID:    focusedPaneID,
 		GroupCounter:     groupCounter,
 		SidebarCollapsed: state.SidebarCollapsed,
 		CustomNames:      validCustomNames,
@@ -1305,6 +1410,15 @@ func (s *Server) removePaneFromUIState(paneID string) {
 			s.uiState.ActiveGroupID = ""
 		}
 	}
+	if s.uiState.FocusedPaneID == paneID {
+		s.uiState.FocusedPaneID = ""
+		for _, group := range newGroups {
+			if group.ID == s.uiState.ActiveGroupID && len(group.PaneIDs) > 0 {
+				s.uiState.FocusedPaneID = group.PaneIDs[0]
+				break
+			}
+		}
+	}
 
 	// Remove from custom names
 	newCustomNames := make([]string, 0)
@@ -1317,6 +1431,7 @@ func (s *Server) removePaneFromUIState(paneID string) {
 	s.uiState.Groups = newGroups
 	s.uiState.GroupOrder = newOrder
 	s.uiState.CustomNames = newCustomNames
+	s.uiState.Revision++
 
 	// Reset counter if no groups remain
 	if len(newGroups) == 0 {
@@ -2232,6 +2347,7 @@ func main() {
 	panePortStart := flag.Int("pane-port-start", 7700, "Starting port for managed pane backends")
 	shell := flag.String("shell", defaultShell, "Shell to spawn in terminals")
 	uploadDir := flag.String("upload-dir", defaultUploadDir, "Directory for uploaded files")
+	closePanesOnExit := flag.Bool("close-panes-on-exit", false, "gracefully close all pane backends on exit, then force kill after 5 seconds")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: webmux [options] [directory]\n\n")
@@ -2265,23 +2381,18 @@ func main() {
 
 	// Create upload directory
 	os.MkdirAll(*uploadDir, 0755)
+	instanceLock, err := AcquireInstanceLock(instanceIDForPort(*port))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer instanceLock.Close()
 
 	// Initialize pane manager
 	manager := NewPaneManager(*panePortStart, *shell, workDir, *port)
 	server := NewServer(manager, *uploadDir)
-
-	// Cleanup on exit
-	defer manager.Cleanup()
-
-	// Handle signals for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		log.Println("Shutting down...")
-		manager.Cleanup()
-		os.Exit(0)
-	}()
+	if server.stateLoadErr != nil {
+		log.Fatalf("Refusing to overwrite invalid instance state: %v", server.stateLoadErr)
+	}
 
 	// Set up routes
 	mux := http.NewServeMux()
@@ -2323,8 +2434,42 @@ func main() {
 	log.Printf("Upload directory: %s", *uploadDir)
 	log.Printf("Default shell: %s", *shell)
 
-	if err := http.ListenAndServe(":"+*port, mountPathHandler(mux)); err != nil {
+	httpServer := &http.Server{Addr: ":" + *port, Handler: mountPathHandler(mux)}
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	forceClose := make(chan bool, 1)
+	go func() {
+		sig := <-sigChan
+		force := *closePanesOnExit || sig == syscall.SIGQUIT
+		forceClose <- force
+		if force {
+			log.Printf("Shutting down and closing all pane backends after signal %s", sig)
+		} else {
+			log.Printf("Shutting down and preserving pane backends after signal %s", sig)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(ctx); err != nil {
+			log.Printf("HTTP shutdown failed: %v", err)
+			if closeErr := httpServer.Close(); closeErr != nil {
+				log.Printf("Forced HTTP close failed: %v", closeErr)
+			}
+		}
+	}()
+
+	err = httpServer.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		server.saveInstanceState()
 		log.Fatalf("Server failed: %v", err)
+	}
+	if <-forceClose {
+		stopped := server.forceCloseAllBackends(5 * time.Second)
+		log.Printf("Shutdown summary: mode=close stopped=%t panesRemaining=%d backendsRemaining=%d",
+			stopped, len(manager.ListPanes()), len(manager.PersistedBackends()))
+	} else {
+		server.saveInstanceState()
+		log.Printf("Shutdown summary: mode=preserve panes=%d backends=%d",
+			len(manager.ListPanes()), len(manager.PersistedBackends()))
 	}
 }
 

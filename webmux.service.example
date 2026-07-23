@@ -33,12 +33,13 @@ ExecStart=/usr/bin/webmux -port 8080
 Restart=on-failure
 RestartSec=5
 
-# Don't let systemd manage child process cgroups
-# This prevents systemd from killing tmux sessions unexpectedly
+# Allow terminal and instance-lived backends to survive webmux restarts.
+# This is required for pane restoration; the default control-group mode kills
+# tmux and OpenCode together with webmux.
 Delegate=yes
 
-# Only kill the main webmux process on stop, not child tmux sessions
-# This allows sessions to persist across webmux restarts
+# Only signal the main webmux process on stop. Use SIGQUIT or start webmux with
+# -close-panes-on-exit when an intentional stop should also close all backends.
 KillMode=process
 
 [Install]

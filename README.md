@@ -97,6 +97,14 @@ To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_P
 - Pane creation options are advertised by the server; unavailable optional backends are disabled in the UI.
 - Popouts preserve the same dedicated/shared semantics. A popped-out shared backend suppresses duplicate in-page clients until it is popped back in or closed.
 
+## Backend persistence
+
+Webmux preserves terminal tmux sessions and instance-lived backends such as OpenCode when the webmux process normally exits. On startup it adopts only backends whose persisted process identity still matches a live process. Closing the last OpenCode pane closes the view, but leaves the shared OpenCode backend available for a later pane.
+
+Machine reboots do not recreate terminal panes, shells, commands, or working directories. If a persisted backend is no longer alive, its panes are discarded during startup. Use `-close-panes-on-exit` to close all backends on `SIGINT` or `SIGTERM`; `SIGQUIT` always requests this behavior. Webmux first asks each backend to exit, waits five seconds, and then force kills it. Recovery metadata is retained if termination cannot be confirmed.
+
+For persistence under systemd, the service must use `KillMode=process`; otherwise systemd kills the tmux and OpenCode child processes along with webmux. State is scoped by webmux HTTP port, so changing `-port` selects a different workspace.
+
 ## Files
 
 Settings and data follow XDG conventions:
@@ -106,6 +114,10 @@ Settings and data follow XDG conventions:
 | `$XDG_CONFIG_HOME/webmux/settings.json` | UI and terminal color settings (defaults to `~/.config`) |
 | `$XDG_DATA_HOME/webmux/uploads` | Default upload directory (defaults to `~/.local/share`) |
 | `$XDG_DATA_HOME/webmux/instances/port-<port>/tmux.sock` | Tmux socket, scoped by webmux server port (defaults to `~/.local/share`) |
+| `$XDG_DATA_HOME/webmux/instances/port-<port>/state.json` | Pane, backend, and workspace layout recovery state |
+| `$XDG_DATA_HOME/webmux/instances/port-<port>/scratch.txt` | Persisted scratch-pad text |
+| `$XDG_DATA_HOME/webmux/instances/port-<port>/opencode.log` | Output from the persistent managed OpenCode backend |
+| `$XDG_DATA_HOME/webmux/instances/port-<port>/runtime` | Stable terminal helper binaries and shell initialization files |
 | `$XDG_DATA_HOME/webmux/pane-storage/*.json` | Mirrored browser storage for shared HTTP-backed panes, including OpenCode |
 
 ## License
