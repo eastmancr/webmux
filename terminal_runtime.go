@@ -284,6 +284,9 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 	if out, err := tmuxCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create tmux session: %w: %s", err, string(out))
 	}
+	if err := configureTmuxAttention(tmuxSocket); err != nil {
+		log.Printf("Warning: could not enable terminal bell forwarding: %v", err)
+	}
 
 	// Wait for tmux session to be ready
 	for range 50 {
@@ -316,6 +319,9 @@ func (tr *TerminalRuntime) Adopt(pane *Pane) bool {
 	}
 	for attempt := 0; attempt < 3; attempt++ {
 		if exec.Command("tmux", "-S", tr.tmuxSocketPath(), "has-session", "-t", tmuxSession).Run() == nil {
+			if err := configureTmuxAttention(tr.tmuxSocketPath()); err != nil {
+				log.Printf("Warning: could not enable terminal bell forwarding: %v", err)
+			}
 			tr.mu.Lock()
 			tr.states[pane.ID] = &TerminalPaneState{tmuxSession: tmuxSession}
 			tr.mu.Unlock()
@@ -324,6 +330,13 @@ func (tr *TerminalRuntime) Adopt(pane *Pane) bool {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+func configureTmuxAttention(tmuxSocket string) error {
+	if out, err := exec.Command("tmux", "-S", tmuxSocket, "set-option", "-g", "bell-action", "current").CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux set-option: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // monitorPane watches the tmux session to detect when the shell exits

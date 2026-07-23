@@ -25,6 +25,8 @@ class TerminalMultiplexer {
         // Panes: individual pane definitions from the backend
         this.panes = new Map();
         this.closingPaneIds = new Set();
+        this.attentionPaneIds = new Set();
+        this.baseDocumentTitle = document.title || 'Webmux';
 
         // Groups: visual groupings of panes (1-4 panes per group)
         // Structure: { id, name, paneIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
@@ -180,6 +182,10 @@ class TerminalMultiplexer {
         this.connectPaneEvents();
 
         window.addEventListener('pagehide', () => this.flushDiagnostics());
+        window.addEventListener('focus', () => this.clearFocusedPaneAttention());
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && document.hasFocus()) this.clearFocusedPaneAttention();
+        });
 
         // Connect to scratch pad SSE
         this.connectScratchEvents();
@@ -1273,6 +1279,9 @@ class TerminalMultiplexer {
                 if (tabName === 'storage') this.loadOpenCodeStorageSummary();
             });
         });
+        document.getElementById('panes-attention-indicators')?.addEventListener('change', () => {
+            this.syncAttentionSettingsDisabled();
+        });
 
         // Keybar settings event listeners
         const addKeybarBtn = document.getElementById('add-keybar-btn');
@@ -1345,13 +1354,17 @@ class TerminalMultiplexer {
 
         window.addEventListener('message', (e) => {
             const msg = e.data;
-            if (!msg || msg.type !== 'webmux-clipboard-write') return;
+            if (!msg) return;
             if (e.origin !== window.location.origin) return;
             const managedSource = Array.from(this.sharedIframes.values()).some(iframe => iframe.contentWindow === e.source);
             if (!managedSource) return;
-            const text = String(msg.text || '');
-            fetch(this.url('/api/clipboard'), { method: 'POST', body: text }).catch(() => {});
-            navigator.clipboard?.writeText(text).catch(() => {});
+            if (msg.type === 'webmux-clipboard-write') {
+                const text = String(msg.text || '');
+                fetch(this.url('/api/clipboard'), { method: 'POST', body: text }).catch(() => {});
+                navigator.clipboard?.writeText(text).catch(() => {});
+            } else if (msg.type === 'webmux-pane-attention') {
+                this.handlePaneAttentionMessage(msg, e.source);
+            }
         });
 
         // Upload modal
@@ -1559,6 +1572,8 @@ class TerminalMultiplexer {
 
             // Clear existing state before loading
             this.panes.clear();
+            this.attentionPaneIds.clear();
+            this.updateAttentionTitle();
             this.groups.clear();
             this.groupOrder = [];
             this.activeGroupId = null;
@@ -2160,6 +2175,8 @@ class TerminalMultiplexer {
         if (!pane) return null;
 
         const popoutKey = this.getPopoutKey(pane);
+        this.attentionPaneIds.delete(paneId);
+        this.updateAttentionTitle();
         this.panes.delete(paneId);
         this.customNames.delete(paneId);
 
@@ -2222,6 +2239,77 @@ class TerminalMultiplexer {
     // Sidebar UI
     // ==========
 
+    paneAttentionEnabled(pane) {
+        const panes = this.settings?.panes;
+        if (!pane || panes?.attentionIndicators !== true) return false;
+        return panes[pane.type]?.indicateAttention === true;
+    }
+
+    markPaneAttention(paneId) {
+        const pane = this.panes.get(paneId);
+        if (!this.paneAttentionEnabled(pane)) return;
+        if (this.focusedPaneId === paneId && !document.hidden && document.hasFocus()) return;
+        if (this.attentionPaneIds.has(paneId)) return;
+
+        this.attentionPaneIds.add(paneId);
+        this.updatePaneAttentionInSidebar(paneId);
+        this.updateAttentionTitle();
+    }
+
+    clearPaneAttention(paneId) {
+        if (!this.attentionPaneIds.delete(paneId)) return;
+        this.updatePaneAttentionInSidebar(paneId);
+        this.updateAttentionTitle();
+    }
+
+    clearFocusedPaneAttention() {
+        if (this.focusedPaneId && !document.hidden) this.clearPaneAttention(this.focusedPaneId);
+    }
+
+    updatePaneAttentionInSidebar(paneId) {
+        for (const group of this.groups.values()) {
+            if (group.paneIds.includes(paneId)) this.updateGroupInSidebar(group);
+        }
+    }
+
+    updateAttentionTitle() {
+        const showInTitle = this.settings?.panes?.attentionIndicators === true
+            && this.settings?.panes?.showAttentionInTitle === true;
+        document.title = showInTitle && this.attentionPaneIds.size > 0
+            ? `[${this.attentionPaneIds.size}] ${this.baseDocumentTitle}`
+            : this.baseDocumentTitle;
+    }
+
+    reconcileAttentionSettings() {
+        const changedPaneIds = [];
+        for (const paneId of this.attentionPaneIds) {
+            if (this.paneAttentionEnabled(this.panes.get(paneId))) continue;
+            this.attentionPaneIds.delete(paneId);
+            changedPaneIds.push(paneId);
+        }
+        changedPaneIds.forEach(paneId => this.updatePaneAttentionInSidebar(paneId));
+        this.updateAttentionTitle();
+    }
+
+    renderPaneAttention(pane) {
+        if (!this.attentionPaneIds.has(pane?.id)) return '<span class="pane-attention-slot" aria-hidden="true"></span>';
+        return `<span class="pane-attention-slot" title="Attention requested" aria-hidden="true">
+            <svg class="pane-attention-icon" viewBox="0 0 24 24" width="16" height="16">
+                <path fill="currentColor" d="M12 22a2.25 2.25 0 0 0 2.12-1.5H9.88A2.25 2.25 0 0 0 12 22Zm7-5.25-1.75-1.75v-4.5a5.26 5.26 0 0 0-4-5.1V4.5a1.25 1.25 0 0 0-2.5 0v.9a5.26 5.26 0 0 0-4 5.1V15L5 16.75V18h14v-1.25ZM7.41 16.5l.84-.84V10.5a3.75 3.75 0 0 1 7.5 0v5.16l.84.84H7.41Z"/>
+            </svg>
+        </span>`;
+    }
+
+    handlePaneAttentionMessage(msg, source = null) {
+        if (!msg || msg.type !== 'webmux-pane-attention') return;
+        let paneId = msg.paneId;
+        const iframe = source
+            ? Array.from(this.sharedIframes.values()).find(candidate => candidate.contentWindow === source)
+            : (msg.backendId ? this.sharedIframes.get(msg.backendId) : null);
+        if (iframe?.dataset.activePaneId) paneId = iframe.dataset.activePaneId;
+        this.markPaneAttention(paneId);
+    }
+
     addGroupToSidebar(group) {
         const container = document.createElement('div');
         container.id = `group-${group.id}`;
@@ -2271,17 +2359,19 @@ class TerminalMultiplexer {
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
             const isRenaming = this.renamingPaneId === pane?.id;
             const paneTypeLabel = this.getPaneTypeLabel(pane);
+            const hasAttention = this.attentionPaneIds.has(pane?.id);
 
             const nameHtml = isRenaming
                 ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-pane-id="${pane?.id}">`
                 : `<span class="name">${this.escapeHtml(displayName)}${processHtml}</span>`;
 
             return `
-                <div class="pane-item ${activePaneInGroup ? 'active' : ''}"
+                <div class="pane-item ${activePaneInGroup ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}"
                      data-group-id="${group.id}" data-pane-id="${pane?.id}" draggable="${!isRenaming}"
-                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}">
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 18)}
                     ${nameHtml}
+                    ${this.renderPaneAttention(pane)}
                     ${this.renderPaneActions(pane, group.id, { closeGroup: true, active: activePaneInGroup })}
                 </div>
             `;
@@ -2294,11 +2384,13 @@ class TerminalMultiplexer {
             const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
             const paneTypeLabel = this.getPaneTypeLabel(pane);
             const isActivePane = activePaneInGroup && this.focusedPaneId === sid;
+            const hasAttention = this.attentionPaneIds.has(sid);
             return `
-                <div class="pane-item sub-item ${isActivePane ? 'active' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
-                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}">
+                <div class="pane-item sub-item ${isActivePane ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 16)}
                     <span class="name">${this.escapeHtml(displayName)}${processHtml}</span>
+                    ${this.renderPaneAttention(pane)}
                     ${this.renderPaneActions(pane, group.id, { breakout: true, active: isActivePane })}
                 </div>
             `;
@@ -2740,7 +2832,9 @@ class TerminalMultiplexer {
     handlePopoutMessage(msg) {
         if (!msg || !msg.type || !msg.paneId) return;
 
-        if (msg.type === 'webmux-popout-alive') {
+        if (msg.type === 'webmux-pane-attention') {
+            this.handlePaneAttentionMessage(msg);
+        } else if (msg.type === 'webmux-popout-alive') {
             this.registerPopoutAlive(msg);
         } else if (msg.type === 'webmux-popout-closed') {
             this.registerPopoutClosed(msg);
@@ -3125,6 +3219,7 @@ class TerminalMultiplexer {
             : visualPaneIds[0];
 
         const pane = this.panes.get(paneToFocus);
+        if (!document.hidden) this.clearPaneAttention(paneToFocus);
         if (this.activeGroupId === groupId && this.focusedPaneId === paneToFocus && this.isSharedPane(pane)) {
             return;
         }
@@ -3163,6 +3258,7 @@ class TerminalMultiplexer {
     focusPane(paneId, options = {}) {
         const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
+        if (!document.hidden) this.clearPaneAttention(paneId);
 
         // Track focused pane for keybar targeting in split groups
         const focusChanged = this.focusedPaneId !== paneId;
@@ -3348,6 +3444,7 @@ class TerminalMultiplexer {
                         const paneId = iframe.dataset.paneId;
                         const focusChanged = this.focusedPaneId !== paneId;
                         this.focusedPaneId = paneId;
+                        if (!document.hidden) this.clearPaneAttention(paneId);
                         this.updateKeybarVisibility();
                         if (focusChanged && document.hasFocus()) this.saveUIState();
                     });
@@ -3562,6 +3659,7 @@ class TerminalMultiplexer {
             this.sendTerminalInput(entry.socket, Uint8Array.from(data, char => char.charCodeAt(0)));
         });
         terminal.onResize(({ cols, rows }) => this.sendTerminalResize(entry, cols, rows));
+        terminal.onBell(() => this.markPaneAttention(pane.id));
 
         if ('ResizeObserver' in window) {
             entry.resizeObserver = new ResizeObserver(() => this.fitTerminal(pane.id));
@@ -5562,6 +5660,12 @@ class TerminalMultiplexer {
 
     getDefaultSettings() {
         return {
+            panes: {
+                attentionIndicators: true,
+                showAttentionInTitle: true,
+                terminal: { indicateAttention: true },
+                opencode: { indicateAttention: true }
+            },
             ui: {
                 bgPrimary: '#1e1e2e',
                 bgSecondary: '#181825',
@@ -5814,7 +5918,7 @@ class TerminalMultiplexer {
     updateThemeActionsVisibility(tabName) {
         const themeActions = document.getElementById('settings-theme-actions');
         if (themeActions) {
-            themeActions.style.display = (tabName === 'keybar' || tabName === 'storage') ? 'none' : '';
+            themeActions.style.display = (tabName === 'ui' || tabName === 'terminal') ? '' : 'none';
         }
         if (this.settingsConfigActions) {
             this.settingsConfigActions.style.display = tabName === 'storage' ? 'none' : '';
@@ -5828,8 +5932,7 @@ class TerminalMultiplexer {
         this.settingsDiscardPending = false;
         this.updateSettingsCloseButton();
 
-        // Set initial theme actions visibility (UI tab is active by default)
-        const activeTab = this.settingsModal.querySelector('.settings-tab.active')?.dataset.tab || 'ui';
+        const activeTab = this.settingsModal.querySelector('.settings-tab.active')?.dataset.tab || 'panes';
         this.updateThemeActionsVisibility(activeTab);
         if (activeTab === 'storage') this.loadOpenCodeStorageSummary();
 
@@ -5925,19 +6028,37 @@ class TerminalMultiplexer {
         const keybarAnchorInput = this.settingsModal.querySelector(`input[name="keybar-anchor"][value="${keybarAnchor}"]`);
         if (keybarAnchorInput) keybarAnchorInput.checked = true;
 
-        const diagnostics = this.settings.diagnostics || this.getDefaultSettings().diagnostics;
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
-            const [, key] = input.dataset.settingBool.split('.');
-            input.checked = diagnostics[key] === true;
+            input.checked = this.getSettingValue(this.settings, input.dataset.settingBool)
+                ?? this.getSettingValue(this.getDefaultSettings(), input.dataset.settingBool)
+                ?? false;
         });
         this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
-            const [, key] = input.dataset.settingNumber.split('.');
-            input.value = diagnostics[key] ?? this.getDefaultSettings().diagnostics[key];
+            input.value = this.getSettingValue(this.settings, input.dataset.settingNumber)
+                ?? this.getSettingValue(this.getDefaultSettings(), input.dataset.settingNumber);
         });
+        this.syncAttentionSettingsDisabled();
+    }
+
+    getSettingValue(settings, path) {
+        return path.split('.').reduce((value, key) => value?.[key], settings);
+    }
+
+    setSettingValue(settings, path, value) {
+        const keys = path.split('.');
+        const finalKey = keys.pop();
+        const target = keys.reduce((object, key) => object[key] ||= {}, settings);
+        target[finalKey] = value;
+    }
+
+    syncAttentionSettingsDisabled() {
+        const enabled = document.getElementById('panes-attention-indicators')?.checked === true;
+        const options = document.getElementById('attention-indicator-options');
+        if (options) options.disabled = !enabled;
     }
 
     getSettingsFromInputs() {
-        const settings = { ui: {}, terminal: {}, keybar: {}, diagnostics: {} };
+        const settings = { panes: {}, ui: {}, terminal: {}, keybar: {}, diagnostics: {} };
         const hexPattern = /^#[0-9A-Fa-f]{6}$/;
 
         this.settingsModal.querySelectorAll('[data-setting]').forEach(input => {
@@ -5962,17 +6083,15 @@ class TerminalMultiplexer {
         };
 
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
-            const [category, key] = input.dataset.settingBool.split('.');
-            if (!settings[category]) settings[category] = {};
-            settings[category][key] = input.checked;
+            this.setSettingValue(settings, input.dataset.settingBool, input.checked);
         });
         this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
-            const [category, key] = input.dataset.settingNumber.split('.');
-            if (!settings[category]) settings[category] = {};
+            const path = input.dataset.settingNumber;
             const min = Number(input.min || 0);
             const max = Number(input.max || Number.MAX_SAFE_INTEGER);
-            const value = Math.min(max, Math.max(min, Number.parseInt(input.value, 10) || this.getDefaultSettings()[category]?.[key] || 0));
-            settings[category][key] = value;
+            const fallback = this.getSettingValue(this.getDefaultSettings(), path) || 0;
+            const value = Math.min(max, Math.max(min, Number.parseInt(input.value, 10) || fallback));
+            this.setSettingValue(settings, path, value);
         });
 
         return settings;
@@ -5996,6 +6115,7 @@ class TerminalMultiplexer {
             if (!response.ok) throw new Error('Failed to save settings');
 
             this.settings = settings;
+            this.reconcileAttentionSettings();
             this.renderKeybar();
             this.renderMobileKeybar();
             this.updateKeybarVisibility();
@@ -6030,15 +6150,13 @@ class TerminalMultiplexer {
         const keybarAnchorInput = this.settingsModal.querySelector(`input[name="keybar-anchor"][value="${defaults.keybar.anchor}"]`);
         if (keybarAnchorInput) keybarAnchorInput.checked = true;
 
-        this.settings.diagnostics = { ...defaults.diagnostics };
         this.settingsModal.querySelectorAll('[data-setting-bool]').forEach(input => {
-            const [, key] = input.dataset.settingBool.split('.');
-            input.checked = defaults.diagnostics[key] === true;
+            input.checked = this.getSettingValue(defaults, input.dataset.settingBool) === true;
         });
         this.settingsModal.querySelectorAll('[data-setting-number]').forEach(input => {
-            const [, key] = input.dataset.settingNumber.split('.');
-            input.value = defaults.diagnostics[key];
+            input.value = this.getSettingValue(defaults, input.dataset.settingNumber);
         });
+        this.syncAttentionSettingsDisabled();
 
         // Preview the reset
         this.previewSettings();

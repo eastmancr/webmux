@@ -475,10 +475,37 @@ body.mobile-mode .sidebar-panel {
 
 .pane-item .name {
     flex: 1;
+    padding-right: 24px;
     font-size: 14px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.pane-attention-slot {
+    position: absolute;
+    right: 9px;
+    display: inline-flex;
+    width: 20px;
+    height: 20px;
+    align-items: center;
+    justify-content: center;
+    color: #1e1e2e;
+    border-radius: 7px;
+    pointer-events: none;
+}
+
+.pane-item.has-attention .pane-attention-slot {
+    background: var(--warning);
+}
+
+.pane-attention-icon {
+    display: block;
+}
+
+.pane-item:hover .pane-attention-slot,
+.pane-item.menu-open .pane-attention-slot {
+    visibility: hidden;
 }
 
 .pane-item .name .process-name {
@@ -2152,6 +2179,67 @@ body.mobile-mode .sidebar-panel {
     color: var(--text-muted);
     font-style: italic;
     margin-bottom: 16px;
+}
+
+.setting-check {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.setting-check-primary {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.setting-check input {
+    flex: 0 0 auto;
+    margin: 0;
+}
+
+.attention-indicator-options {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+    margin: 16px 0 0;
+    padding: 0;
+    border: 0;
+}
+
+.attention-indicator-options:disabled {
+    opacity: 0.5;
+}
+
+.attention-indicator-options:disabled .setting-check {
+    cursor: not-allowed;
+}
+
+.pane-attention-settings {
+    display: flex;
+    flex-direction: column;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+}
+
+.pane-attention-setting {
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr);
+    gap: 10px;
+    padding: 12px 0;
+}
+
+.pane-attention-setting h5 {
+    margin: 1px 0 8px;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.pane-attention-setting .pane-type-icon-opencode {
+    color: var(--text-primary);
 }
 
 .storage-summary {

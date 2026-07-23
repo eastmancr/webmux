@@ -53,6 +53,36 @@ func TestAnalyzeOpenCodeIndexCompatibility(t *testing.T) {
 	}
 }
 
+func TestOpenCodeProxyInjectsAttentionBridge(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/html"}},
+		Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head></head><body><script src="/assets/app.js"></script></body></html>`)),
+	}
+
+	runtime := &OpenCodeRuntime{}
+	if err := runtime.modifyOpenCodeIndexResponse(nil, "pane-1", "opencode", PaneStorageState{}, DiagnosticsSettings{}, resp); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+	for _, expected := range []string{
+		"webmux-pane-attention",
+		"hasNewOpenCodeAttention(oldValue, value)",
+		"item.type !== 'turn-complete' && item.type !== 'error'",
+		"var OriginalNotification = window.Notification",
+		"ServiceWorkerRegistration.prototype.showNotification",
+		"new BroadcastChannel('webmux-popouts')",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("injected OpenCode response missing %q", expected)
+		}
+	}
+}
+
 func TestAnalyzeOpenCodeStorageSchema(t *testing.T) {
 	tests := []struct {
 		name        string

@@ -195,6 +195,8 @@ func (w *RotatingLogWriter) Close() error {
 
 // Settings represents user-configurable settings
 type Settings struct {
+	// Pane behavior and attention indicators
+	Panes PanesSettings `json:"panes"`
 	// Multiplexer UI colors
 	UI UIColors `json:"ui"`
 	// Terminal colors
@@ -203,6 +205,17 @@ type Settings struct {
 	Keybar KeybarSettings `json:"keybar"`
 	// Diagnostics configuration
 	Diagnostics DiagnosticsSettings `json:"diagnostics"`
+}
+
+type PaneTypeSettings struct {
+	IndicateAttention bool `json:"indicateAttention"`
+}
+
+type PanesSettings struct {
+	AttentionIndicators  bool             `json:"attentionIndicators"`
+	ShowAttentionInTitle bool             `json:"showAttentionInTitle"`
+	Terminal             PaneTypeSettings `json:"terminal"`
+	OpenCode             PaneTypeSettings `json:"opencode"`
 }
 
 // DiagnosticsSettings controls optional connection diagnostics. All fields are
@@ -273,6 +286,12 @@ type TerminalColors struct {
 // DefaultSettings returns the default settings
 func DefaultSettings() *Settings {
 	return &Settings{
+		Panes: PanesSettings{
+			AttentionIndicators:  true,
+			ShowAttentionInTitle: true,
+			Terminal:             PaneTypeSettings{IndicateAttention: true},
+			OpenCode:             PaneTypeSettings{IndicateAttention: true},
+		},
 		UI: UIColors{
 			BgPrimary:     "#1e1e2e",
 			BgSecondary:   "#181825",
@@ -406,7 +425,7 @@ func LoadSettings() *Settings {
 		return DefaultSettings()
 	}
 
-	var settings Settings
+	settings := *DefaultSettings()
 	if err := json.Unmarshal(data, &settings); err != nil {
 		return DefaultSettings()
 	}
@@ -1023,7 +1042,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.settingsMu.RUnlock()
 
 	case http.MethodPost:
-		var settings Settings
+		settings := *DefaultSettings()
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
 			http.Error(w, "Invalid settings: "+err.Error(), http.StatusBadRequest)
 			return

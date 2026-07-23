@@ -448,7 +448,8 @@
             <div class="modal-body">
                 <div class="settings-header">
                     <div class="settings-tabs" role="tablist">
-                        <button class="settings-tab active" data-tab="ui" role="tab" aria-selected="true" aria-controls="ui-settings-panel">UI Colors</button>
+                        <button class="settings-tab active" data-tab="panes" role="tab" aria-selected="true" aria-controls="panes-settings-panel">Panes</button>
+                        <button class="settings-tab" data-tab="ui" role="tab" aria-selected="false" aria-controls="ui-settings-panel">UI Colors</button>
                         <button class="settings-tab" data-tab="terminal" role="tab" aria-selected="false" aria-controls="terminal-settings-panel">Terminal Colors</button>
                         <button class="settings-tab" data-tab="keybar" role="tab" aria-selected="false" aria-controls="keybar-settings-panel">Keybar</button>
                         <button class="settings-tab" data-tab="storage" role="tab" aria-selected="false" aria-controls="storage-settings-panel">Storage</button>
@@ -457,8 +458,55 @@
                 </div>
 
                 <div class="settings-content">
+                    <!-- Panes Tab -->
+                    <div class="settings-panel active" data-panel="panes" id="panes-settings-panel" role="tabpanel" aria-labelledby="panes-settings-tab">
+                        <div class="settings-section">
+                            <h4>Attention Indicators</h4>
+                            <p class="settings-note-inline">Mark panes that request attention while they are not focused.</p>
+                            <label class="setting-check setting-check-primary">
+                                <input type="checkbox" id="panes-attention-indicators" data-setting-bool="panes.attentionIndicators">
+                                <span>Enable attention indicators</span>
+                            </label>
+
+                            <fieldset id="attention-indicator-options" class="attention-indicator-options">
+                                <label class="setting-check">
+                                    <input type="checkbox" data-setting-bool="panes.showAttentionInTitle">
+                                    <span>Show pending attention in browser title</span>
+                                </label>
+
+                                <div class="pane-attention-settings">
+                                    <section class="pane-attention-setting" aria-labelledby="terminal-attention-title">
+                                        <svg class="pane-type-icon pane-type-icon-terminal" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                                            <path fill="currentColor" d="M20 19V7H4v12h16m0-16a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h16m-7 14v-2h5v2h-5m-3.42-4L5.57 9H8.4l3.3 3.3c.39.39.39 1.03 0 1.42L8.42 17H5.59l4-4z"/>
+                                        </svg>
+                                        <div>
+                                            <h5 id="terminal-attention-title">Terminal</h5>
+                                            <label class="setting-check">
+                                                <input type="checkbox" data-setting-bool="panes.terminal.indicateAttention">
+                                                <span>Indicate attention for terminal bells</span>
+                                            </label>
+                                        </div>
+                                    </section>
+                                    <section class="pane-attention-setting" aria-labelledby="opencode-attention-title">
+                                        <svg class="pane-type-icon pane-type-icon-opencode" viewBox="0 0 300 300" width="20" height="20" aria-hidden="true">
+                                            <path d="M90 240H30V60h60v180Zm180 0h-60V60h60v180Z" fill="currentColor" opacity=".55"/>
+                                            <path d="M210 60H90v180h120V60Zm60 240H30V0h240v300Z" fill="currentColor"/>
+                                        </svg>
+                                        <div>
+                                            <h5 id="opencode-attention-title">OpenCode</h5>
+                                            <label class="setting-check">
+                                                <input type="checkbox" data-setting-bool="panes.opencode.indicateAttention">
+                                                <span>Indicate attention for OpenCode notifications</span>
+                                            </label>
+                                        </div>
+                                    </section>
+                                </div>
+                            </fieldset>
+                        </div>
+                    </div>
+
                     <!-- UI Colors Tab -->
-                    <div class="settings-panel active" data-panel="ui" id="ui-settings-panel" role="tabpanel" aria-labelledby="ui-settings-tab">
+                    <div class="settings-panel" data-panel="ui" id="ui-settings-panel" role="tabpanel" aria-labelledby="ui-settings-tab">
                         <div class="settings-section">
                             <h4>Background Colors</h4>
                             <div class="color-grid">

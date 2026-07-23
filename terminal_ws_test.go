@@ -262,6 +262,42 @@ func TestDestroyedTmuxSessionDetachesClient(t *testing.T) {
 	}
 }
 
+func TestTmuxConfigForwardsPaneBells(t *testing.T) {
+	contents, err := staticFiles.ReadFile("static/tmux.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(contents)
+	if !strings.Contains(config, "set -g bell-action current") {
+		t.Fatal("tmux config must forward current pane bells for attention indicators")
+	}
+	if strings.Contains(config, "set -g bell-action none") {
+		t.Fatal("tmux config still discards pane bells")
+	}
+
+	if _, err := exec.LookPath("tmux"); err != nil {
+		return
+	}
+	socket := filepath.Join(t.TempDir(), "tmux.sock")
+	if err := exec.Command("tmux", "-S", socket, "new-session", "-d", "sleep", "30").Run(); err != nil {
+		t.Fatal(err)
+	}
+	defer exec.Command("tmux", "-S", socket, "kill-server").Run()
+	if err := exec.Command("tmux", "-S", socket, "set-option", "-g", "bell-action", "none").Run(); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureTmuxAttention(socket); err != nil {
+		t.Fatal(err)
+	}
+	value, err := exec.Command("tmux", "-S", socket, "show-option", "-gv", "bell-action").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(value)) != "current" {
+		t.Fatalf("bell-action = %q, want current", strings.TrimSpace(string(value)))
+	}
+}
+
 func TestOSC52ScannerHandlesFragmentedOutput(t *testing.T) {
 	server := &Server{}
 	scanner := newOSC52Scanner(server)

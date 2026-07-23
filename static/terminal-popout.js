@@ -205,6 +205,13 @@
     };
     if ('BroadcastChannel' in window) {
         const keybarChannel = new BroadcastChannel('webmux-popouts');
+        terminal.onBell(() => {
+            if (!document.hidden && document.hasFocus()) return;
+            keybarChannel.postMessage({
+                type: 'webmux-pane-attention',
+                paneId,
+            });
+        });
         const requestKeybarState = () => keybarChannel.postMessage({
             type: 'webmux-keybar-state-request',
             paneId,

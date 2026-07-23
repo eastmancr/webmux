@@ -355,6 +355,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var opencodeWindowTabsClosedKey = 'opencode.window.browser.dat:tabs.closed';
   var opencodeWindowTabsInfoKey = 'opencode.window.browser.dat:tabs.info';
   var opencodeWindowTabsRecentKey = 'opencode.window.browser.dat:tabs.recent';
+  var opencodeNotificationStorageKey = 'opencode.global.dat:notification';
   var opencodeGlobalStoragePrefix = 'opencode.global.dat:';
   var opencodeScopeSeparator = '\u0000';
   var canonicalServerID = 'webmux';
@@ -362,6 +363,63 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   // server and maps that server scope to "local" internally. Store as webmux,
   // but present local-scoped state back to OpenCode for the active origin.
   var currentServerID = 'local';
+  var attentionChannel = 'BroadcastChannel' in window ? new BroadcastChannel('webmux-popouts') : null;
+
+  function requestWebmuxAttention() {
+    if (!document.hidden && document.hasFocus()) return;
+    var message = { type: 'webmux-pane-attention', paneId: paneID, backendId: backendID };
+    try {
+      if (window.parent !== window) window.parent.postMessage(message, window.location.origin);
+    } catch (e) {}
+    try { if (attentionChannel) attentionChannel.postMessage(message); } catch (e) {}
+  }
+
+  function hasNewOpenCodeAttention(oldValue, newValue) {
+    try {
+      var oldList = oldValue ? JSON.parse(oldValue).list : [];
+      var newList = newValue ? JSON.parse(newValue).list : [];
+      if (!Array.isArray(oldList) || !Array.isArray(newList)) return false;
+      var existing = {};
+      oldList.forEach(function(item) {
+        if (!item || (item.type !== 'turn-complete' && item.type !== 'error')) return;
+        existing[item.type + '\u0000' + item.session + '\u0000' + item.time] = true;
+      });
+      return newList.some(function(item) {
+        if (!item || (item.type !== 'turn-complete' && item.type !== 'error')) return false;
+        return !existing[item.type + '\u0000' + item.session + '\u0000' + item.time];
+      });
+    } catch (e) {
+      return false;
+    }
+  }
+
+  if (window.Notification) {
+    var OriginalNotification = window.Notification;
+    var WebmuxNotification = function(title, options) {
+      requestWebmuxAttention();
+      return new OriginalNotification(title, options);
+    };
+    WebmuxNotification.prototype = OriginalNotification.prototype;
+    try { Object.setPrototypeOf(WebmuxNotification, OriginalNotification); } catch (e) {}
+    try {
+      Object.defineProperty(WebmuxNotification, 'permission', {
+        configurable: true,
+        get: function() { return OriginalNotification.permission; }
+      });
+    } catch (e) {}
+    if (OriginalNotification.requestPermission) {
+      WebmuxNotification.requestPermission = OriginalNotification.requestPermission.bind(OriginalNotification);
+    }
+    try { window.Notification = WebmuxNotification; } catch (e) {}
+  }
+
+  if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype.showNotification) {
+    var originalShowNotification = ServiceWorkerRegistration.prototype.showNotification;
+    ServiceWorkerRegistration.prototype.showNotification = function() {
+      requestWebmuxAttention();
+      return originalShowNotification.apply(this, arguments);
+    };
+  }
 
   function diagnosticsEnabled() {
     return diagnostics && diagnostics.enabled && diagnostics.clientEvents;
@@ -1055,6 +1113,9 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       else value = normalizeOpenCodeRoutingStorageValue(canonicalKey, value);
       var oldValue = Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey) ? serverStorage[canonicalKey] : null;
       if (oldValue === value) return;
+      if (canonicalKey === opencodeNotificationStorageKey && hasNewOpenCodeAttention(oldValue, value)) {
+        requestWebmuxAttention();
+      }
       serverStorage[canonicalKey] = value;
       dispatchStorageChange(key, oldValue === null ? null : materializeOpenCodeStorageValue(canonicalKey, oldValue), materializeOpenCodeStorageValue(canonicalKey, value));
       queueStorageUpdate({ operation: 'set', key: canonicalKey, value: value });
