@@ -374,6 +374,49 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     try { if (attentionChannel) attentionChannel.postMessage(message); } catch (e) {}
   }
 
+  function isOpenCodeAttentionRequest(value) {
+    try {
+      if (typeof value === 'string') value = JSON.parse(value);
+      if (!value || typeof value !== 'object') return false;
+      if (Array.isArray(value)) return value.some(isOpenCodeAttentionRequest);
+      if (value.type === 'permission.asked' || value.type === 'question.asked') return true;
+      return value.payload ? isOpenCodeAttentionRequest(value.payload) : false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function watchOpenCodeEventStream(response) {
+    try {
+      if (!response || !response.headers || !response.body) return;
+      if (!(response.headers.get('Content-Type') || '').toLowerCase().includes('text/event-stream')) return;
+      var reader = response.clone().body.getReader();
+      var decoder = new TextDecoder();
+      var buffer = '';
+      function inspectBlock(block) {
+        var data = block.split(/\r?\n/).filter(function(line) { return line.indexOf('data:') === 0; }).map(function(line) {
+          return line.slice(5).replace(/^ /, '');
+        }).join('\n');
+        if (data && isOpenCodeAttentionRequest(data)) requestWebmuxAttention();
+      }
+      function readNext() {
+        reader.read().then(function(result) {
+          if (result.done) return;
+          buffer += decoder.decode(result.value, { stream: true });
+          var separator;
+          while ((separator = buffer.search(/\r?\n\r?\n/)) !== -1) {
+            var block = buffer.slice(0, separator);
+            var delimiter = buffer.slice(separator).match(/^\r?\n\r?\n/)[0];
+            buffer = buffer.slice(separator + delimiter.length);
+            inspectBlock(block);
+          }
+          readNext();
+        }).catch(function() {});
+      }
+      readNext();
+    } catch (e) {}
+  }
+
   function hasNewOpenCodeAttention(oldValue, newValue) {
     try {
       var oldList = oldValue ? JSON.parse(oldValue).list : [];
@@ -1415,6 +1458,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     var startedAt = Date.now();
     if (info && info.method !== 'GET') postDiagnostic('opencode-fetch', 'start', { path: info.path, data: { method: info.method } });
     return originalFetch.call(this, input, init).then(function(response) {
+      watchOpenCodeEventStream(response);
       if (info) {
         var age = Date.now() - startedAt;
         if (!response.ok || age > 2000 || info.method !== 'GET') {
@@ -1454,6 +1498,11 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     try {
       es.addEventListener('open', function() { postDiagnostic('opencode-eventsource', 'open', { path: prefixed }); });
       es.addEventListener('error', function() { postDiagnostic('opencode-eventsource', 'error', { path: prefixed }); });
+      es.addEventListener('message', function(event) {
+        if (isOpenCodeAttentionRequest(event.data)) requestWebmuxAttention();
+      });
+      es.addEventListener('permission.asked', requestWebmuxAttention);
+      es.addEventListener('question.asked', requestWebmuxAttention);
     } catch (e) {}
     return es;
   };
