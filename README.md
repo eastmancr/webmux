@@ -55,16 +55,18 @@ wm mark                  # list marked files
 wm mark <file|dir>...    # mark files/directories for download
 wm mark unmark <path>    # unmark a file/directory
 wm mark clear            # clear all marked files
-wm copy [text]           # copy text to server clipboard (alias: wm c)
-wm paste                 # paste server clipboard (aliases: wm p, wm v)
+wm copy [-t type] [data] # copy typed data; reads stdin without data (alias: wm c)
+wm paste                 # read the stored clipboard (aliases: wm p, wm v)
+wm paste --request -t image/png
+                         # request fresh typed data from the focused browser
 wm init                  # output shell init script (wm wrapper)
 ```
 
-`wm copy` updates a server-side clipboard that browser tabs sync to the system clipboard through WebSocket notifications (permission required).
-`wm paste` returns the server-side clipboard; to paste your system clipboard into a terminal, use Ctrl+Shift+V.
+`wm copy` updates the typed server-side clipboard. Text updates are synchronized to browser tabs when browser permissions allow it.
+`wm paste --request` asks the focused browser for fresh clipboard data through a small paste prompt, which also works when enterprise browser policy denies programmatic clipboard reads.
 
 In webmux terminals, wrapper scripts for `wl-copy`, `wl-paste`, `xclip`, `xsel`, `pbcopy`, and `pbpaste` call
-`wm copy`/`wm paste` so TUI tools work without extra configuration.
+`wm copy`/`wm paste` with MIME-aware reads so TUI tools can request images and other clipboard files without extra configuration.
 
 To run `wm` outside a webmux terminal, set `WEBMUX_HOST=host:port` (or `WEBMUX_PORT`) to point it at the server.
 

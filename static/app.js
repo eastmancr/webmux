@@ -3532,6 +3532,32 @@ class TerminalMultiplexer {
         }
     }
 
+    async handleTerminalFilePaste(event, terminal) {
+        const files = Array.from(event.clipboardData?.files || []);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const formData = new FormData();
+        for (const file of files) formData.append('files', file, file.name || 'clipboard-data');
+        try {
+            const response = await fetch(this.url('/api/clipboard/files'), { method: 'POST', body: formData });
+            if (!response.ok) throw new Error(`upload failed (${response.status})`);
+            const result = await response.json();
+            const paths = Array.isArray(result.uploaded) ? result.uploaded : [];
+            if (paths.length === 0) throw new Error('upload returned no paths');
+            const quotedPaths = paths.map(path => /^[A-Za-z0-9_./-]+$/.test(path)
+                ? path
+                : `'${path.replaceAll("'", "'\\''")}'`);
+            terminal.paste(quotedPaths.join(' '));
+        } catch (error) {
+            console.error('[clipboard] File paste failed:', error);
+            this.toastError('Clipboard file paste failed');
+        } finally {
+            terminal.focus();
+        }
+    }
+
     ensureTerminal(pane, container) {
         if (this.isPanePoppedOut(pane)) return;
         if (this.terminals.has(pane.id)) {
@@ -3572,6 +3598,7 @@ class TerminalMultiplexer {
         const fitAddon = new FitAddon.FitAddon();
         terminal.loadAddon(fitAddon);
         terminal.open(host);
+        host.addEventListener('paste', event => this.handleTerminalFilePaste(event, terminal), true);
         let shiftSelecting = false;
         host.addEventListener('mousedown', event => {
             shiftSelecting = event.button === 0 && event.shiftKey;
@@ -6775,7 +6802,7 @@ class TerminalMultiplexer {
     // Paste server-side clipboard content to active pane
     async pasteFromClipboard() {
         try {
-            const resp = await fetch(this.url('/api/clipboard'));
+            const resp = await fetch(this.url('/api/clipboard/request?type=text/plain'));
             if (!resp.ok) {
                 this.toastError('Failed to read clipboard');
                 return;
@@ -7651,8 +7678,101 @@ class TerminalMultiplexer {
     async fetchClipboardAndWrite() {
         const contentResp = await fetch(this.url('/api/clipboard'));
         if (!contentResp.ok) return false;
+        const contentType = (contentResp.headers.get('Content-Type') || '').split(';', 1)[0].toLowerCase();
+        if (contentType && contentType !== 'text/plain') return true;
         const text = await contentResp.text();
         return this.writeClipboardViaIframes(text);
+    }
+
+    clipboardRequestPosition() {
+        const entry = this.terminals.get(this.focusedPaneId);
+        const screen = entry?.terminal.element?.querySelector('.xterm-screen');
+        if (!entry || !screen) {
+            return { left: Math.max(12, window.innerWidth / 2 - 110), top: Math.max(12, window.innerHeight / 2 - 30) };
+        }
+        const terminal = entry.terminal;
+        const buffer = terminal.buffer.active;
+        const rect = screen.getBoundingClientRect();
+        const cellWidth = rect.width / Math.max(terminal.cols, 1);
+        const cellHeight = rect.height / Math.max(terminal.rows, 1);
+        const row = Math.max(0, Math.min(terminal.rows - 1, buffer.baseY + buffer.cursorY - buffer.viewportY));
+        return {
+            left: Math.min(window.innerWidth - 232, Math.max(8, rect.left + buffer.cursorX * cellWidth)),
+            top: Math.min(window.innerHeight - 72, Math.max(8, rect.top + (row + 1) * cellHeight)),
+        };
+    }
+
+    clipboardFormData(data) {
+        const formData = new FormData();
+        const addedTypes = new Set();
+        for (const item of Array.from(data?.items || [])) {
+            if (item.kind === 'file') {
+                const file = item.getAsFile();
+                if (file) {
+                    formData.append('data', file, file.name || 'clipboard-data');
+                    if (file.type) addedTypes.add(file.type);
+                }
+            } else if (item.kind === 'string' && item.type) {
+                const text = data.getData(item.type);
+                formData.append('data', new Blob([text], { type: item.type }), 'clipboard-text');
+                addedTypes.add(item.type);
+            }
+        }
+        for (const type of Array.from(data?.types || [])) {
+            if (!type || type === 'Files' || addedTypes.has(type)) continue;
+            formData.append('data', new Blob([data.getData(type)], { type }), 'clipboard-text');
+        }
+        return formData;
+    }
+
+    showClipboardRequest(request) {
+        if (!document.hasFocus() || !request.requestId) return;
+        if (this.clipboardRequestPrompt) return;
+
+        const prompt = document.createElement('div');
+        prompt.className = 'clipboard-request-prompt';
+        prompt.contentEditable = 'true';
+        prompt.tabIndex = 0;
+        prompt.setAttribute('role', 'textbox');
+        prompt.setAttribute('aria-label', 'Paste clipboard contents');
+        prompt.textContent = 'Paste clipboard now';
+        const position = this.clipboardRequestPosition();
+        prompt.style.left = `${position.left}px`;
+        prompt.style.top = `${position.top}px`;
+        document.body.appendChild(prompt);
+        this.clipboardRequestPrompt = prompt;
+
+        const close = () => {
+            if (this.clipboardRequestPrompt === prompt) this.clipboardRequestPrompt = null;
+            prompt.remove();
+            clearTimeout(timer);
+            this.terminals.get(this.focusedPaneId)?.terminal.focus();
+        };
+        prompt.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                close();
+            }
+        });
+        prompt.addEventListener('paste', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const formData = this.clipboardFormData(event.clipboardData);
+            close();
+            try {
+                const response = await fetch(this.url(`/api/clipboard/requests/${encodeURIComponent(request.requestId)}`), {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (!response.ok && response.status !== 404 && response.status !== 409) {
+                    this.toastError('Clipboard request failed');
+                }
+            } catch (error) {
+                this.toastError('Clipboard request failed');
+            }
+        });
+        const timer = setTimeout(close, 15000);
+        requestAnimationFrame(() => prompt.focus());
     }
 
     // Listen for clipboard version changes over WebSocket. The clipboard content
@@ -7687,6 +7807,10 @@ class TerminalMultiplexer {
             ws.onmessage = async (event) => {
                 try {
                     const data = JSON.parse(event.data);
+                    if (data.type === 'clipboard-request') {
+                        this.showClipboardRequest(data);
+                        return;
+                    }
                     if (data.type !== 'clipboard') return;
                     const version = Number(data.version);
                     if (!Number.isSafeInteger(version)) return;

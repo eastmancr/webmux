@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"webmux/internal/shell"
 )
@@ -69,7 +70,7 @@ func main() {
 	case "copy", "c":
 		err = cmdCopy(args)
 	case "paste", "p", "v":
-		err = cmdPaste()
+		err = cmdPaste(args)
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -105,8 +106,10 @@ Commands:
   mark <file>...     Mark files for download
   mark unmark <file> Unmark a file
   mark clear         Clear all marked files
-  copy, c [text]     Copy text to browser clipboard (reads stdin if no args)
-  paste, p, v        Paste from browser clipboard to stdout
+  copy, c [-t type] [text]
+                     Copy typed data (reads stdin if no data is provided)
+  paste, p, v [--request] [-t type|--list-types]
+                     Read clipboard data or request it from the focused browser
   init               Output shell code that defines the wm wrapper function
 
 Environment:
@@ -122,7 +125,7 @@ Clipboard:
   so programs like neovim work automatically without configuration.
 
   Copy: Sends text to all connected browser tabs (updates system clipboard)
-  Paste: Returns the last text copied via wm copy (not system clipboard)
+  Paste: Returns stored data; --request asks the focused browser for fresh data
 
   To paste from your system clipboard into the terminal, use Ctrl+Shift+V.
 
@@ -646,21 +649,39 @@ func cmdInit() error {
 // The server broadcasts to connected browsers to update their clipboards
 // Usage: wm copy <text>  OR  echo "text" | wm copy
 func cmdCopy(args []string) error {
-	var text string
+	contentType := "text/plain"
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-t" || args[0] == "--type":
+			if len(args) < 2 {
+				return fmt.Errorf("%s requires a MIME type", args[0])
+			}
+			contentType = args[1]
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--type="):
+			contentType = strings.TrimPrefix(args[0], "--type=")
+			args = args[1:]
+		case args[0] == "--":
+			args = args[1:]
+			goto parsed
+		case strings.HasPrefix(args[0], "-"):
+			return fmt.Errorf("unknown copy option: %s", args[0])
+		default:
+			goto parsed
+		}
+	}
+
+parsed:
+	var data []byte
 
 	if len(args) > 0 {
-		text = strings.Join(args, " ")
+		data = []byte(strings.Join(args, " "))
 	} else {
-		// Read from stdin
-		data, err := io.ReadAll(os.Stdin)
+		var err error
+		data, err = io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("failed to read stdin: %w", err)
 		}
-		text = string(data)
-	}
-
-	if text == "" {
-		return fmt.Errorf("nothing to copy")
 	}
 
 	host := webmuxHost()
@@ -668,8 +689,8 @@ func cmdCopy(args []string) error {
 	// POST to clipboard API
 	resp, err := http.Post(
 		fmt.Sprintf("http://%s/api/clipboard", host),
-		"text/plain",
-		strings.NewReader(text),
+		contentType,
+		bytes.NewReader(data),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to set clipboard: %w", err)
@@ -686,10 +707,53 @@ func cmdCopy(args []string) error {
 
 // cmdPaste reads from the server-side clipboard via HTTP API
 // Outputs the clipboard contents to stdout
-func cmdPaste() error {
-	host := webmuxHost()
+func cmdPaste(args []string) error {
+	requestedType := ""
+	listTypes := false
+	requestBrowser := false
+	for len(args) > 0 {
+		switch {
+		case args[0] == "-t" || args[0] == "--type":
+			if len(args) < 2 {
+				return fmt.Errorf("%s requires a MIME type", args[0])
+			}
+			requestedType = args[1]
+			args = args[2:]
+		case strings.HasPrefix(args[0], "--type="):
+			requestedType = strings.TrimPrefix(args[0], "--type=")
+			args = args[1:]
+		case args[0] == "-l" || args[0] == "--list-types":
+			listTypes = true
+			args = args[1:]
+		case args[0] == "--request":
+			requestBrowser = true
+			args = args[1:]
+		default:
+			return fmt.Errorf("unknown paste option: %s", args[0])
+		}
+	}
+	if listTypes && requestedType != "" {
+		return fmt.Errorf("--list-types and --type cannot be combined")
+	}
 
-	resp, err := http.Get(fmt.Sprintf("http://%s/api/clipboard", host))
+	host := webmuxHost()
+	endpoint := fmt.Sprintf("http://%s/api/clipboard", host)
+	if requestBrowser {
+		endpoint += "/request"
+	}
+	query := url.Values{}
+	if listTypes {
+		query.Set("list-types", "1")
+	} else if requestedType != "" {
+		query.Set("type", requestedType)
+	} else if requestBrowser {
+		query.Set("type", "text/plain")
+	}
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Get(endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to get clipboard: %w", err)
 	}

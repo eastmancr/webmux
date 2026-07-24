@@ -59,6 +59,29 @@
     terminal.loadAddon(fitAddon);
     const host = document.getElementById('terminal');
     terminal.open(host);
+    host.addEventListener('paste', async event => {
+        const files = Array.from(event.clipboardData?.files || []);
+        if (files.length === 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const formData = new FormData();
+        for (const file of files) formData.append('files', file, file.name || 'clipboard-data');
+        try {
+            const response = await fetch(url('/api/clipboard/files'), { method: 'POST', body: formData });
+            if (!response.ok) throw new Error(`upload failed (${response.status})`);
+            const result = await response.json();
+            if (Array.isArray(result.uploaded) && result.uploaded.length > 0) {
+                const quotedPaths = result.uploaded.map(path => /^[A-Za-z0-9_./-]+$/.test(path)
+                    ? path
+                    : `'${path.replaceAll("'", "'\\''")}'`);
+                terminal.paste(quotedPaths.join(' '));
+            }
+        } catch (error) {
+            console.error('[clipboard] File paste failed:', error);
+        } finally {
+            terminal.focus();
+        }
+    }, true);
     const writeClipboardText = async text => {
         const fallbackCopy = () => {
             const textarea = document.createElement('textarea');
@@ -160,7 +183,7 @@
     const sendKeybarInput = async keys => {
         let payload = { keys: [keys] };
         if (keys === 'Paste') {
-            const clipboardResponse = await fetch(url('/api/clipboard'));
+            const clipboardResponse = await fetch(url('/api/clipboard/request?type=text/plain'));
             if (!clipboardResponse.ok) return;
             payload = { sequence: [{ type: 'text', value: await clipboardResponse.text() }] };
         }
@@ -276,6 +299,77 @@
     let syncingClipboard = false;
     let clipboardSocket = null;
     let clipboardReconnectTimer = null;
+    let clipboardRequestPrompt = null;
+    const clipboardFormData = data => {
+        const formData = new FormData();
+        const addedTypes = new Set();
+        for (const item of Array.from(data?.items || [])) {
+            if (item.kind === 'file') {
+                const file = item.getAsFile();
+                if (file) {
+                    formData.append('data', file, file.name || 'clipboard-data');
+                    if (file.type) addedTypes.add(file.type);
+                }
+            } else if (item.kind === 'string' && item.type) {
+                const text = data.getData(item.type);
+                formData.append('data', new Blob([text], { type: item.type }), 'clipboard-text');
+                addedTypes.add(item.type);
+            }
+        }
+        for (const type of Array.from(data?.types || [])) {
+            if (!type || type === 'Files' || addedTypes.has(type)) continue;
+            formData.append('data', new Blob([data.getData(type)], { type }), 'clipboard-text');
+        }
+        return formData;
+    };
+    const showClipboardRequest = request => {
+        if (!document.hasFocus() || !request.requestId) return;
+        if (clipboardRequestPrompt) return;
+        const prompt = document.createElement('div');
+        prompt.className = 'clipboard-request-prompt';
+        prompt.contentEditable = 'true';
+        prompt.tabIndex = 0;
+        prompt.setAttribute('role', 'textbox');
+        prompt.setAttribute('aria-label', 'Paste clipboard contents');
+        prompt.textContent = 'Paste clipboard now';
+
+        const screen = terminal.element?.querySelector('.xterm-screen');
+        const rect = screen?.getBoundingClientRect();
+        if (rect) {
+            const buffer = terminal.buffer.active;
+            const row = Math.max(0, Math.min(terminal.rows - 1, buffer.baseY + buffer.cursorY - buffer.viewportY));
+            prompt.style.left = `${Math.min(window.innerWidth - 232, Math.max(8, rect.left + buffer.cursorX * rect.width / Math.max(terminal.cols, 1)))}px`;
+            prompt.style.top = `${Math.min(window.innerHeight - 72, Math.max(8, rect.top + (row + 1) * rect.height / Math.max(terminal.rows, 1)))}px`;
+        }
+        document.body.appendChild(prompt);
+        clipboardRequestPrompt = prompt;
+        const close = () => {
+            if (clipboardRequestPrompt === prompt) clipboardRequestPrompt = null;
+            prompt.remove();
+            clearTimeout(timer);
+            terminal.focus();
+        };
+        prompt.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                close();
+            }
+        });
+        prompt.addEventListener('paste', async event => {
+            event.preventDefault();
+            event.stopPropagation();
+            const formData = clipboardFormData(event.clipboardData);
+            close();
+            try {
+                await fetch(url(`/api/clipboard/requests/${encodeURIComponent(request.requestId)}`), {
+                    method: 'POST',
+                    body: formData,
+                });
+            } catch (error) {}
+        });
+        const timer = setTimeout(close, 15000);
+        requestAnimationFrame(() => prompt.focus());
+    };
     const syncClipboard = async version => {
         pendingClipboardVersion = Math.max(pendingClipboardVersion, version);
         if (syncingClipboard || !document.hasFocus()) return;
@@ -284,7 +378,13 @@
             while (pendingClipboardVersion > knownClipboardVersion && document.hasFocus()) {
                 const targetVersion = pendingClipboardVersion;
                 const response = await fetch(url('/api/clipboard'));
-                if (!response.ok || !await writeClipboardText(await response.text())) return;
+                if (!response.ok) return;
+                const contentType = (response.headers.get('Content-Type') || '').split(';', 1)[0].toLowerCase();
+                if (contentType && contentType !== 'text/plain') {
+                    knownClipboardVersion = Math.max(knownClipboardVersion, targetVersion);
+                    continue;
+                }
+                if (!await writeClipboardText(await response.text())) return;
                 knownClipboardVersion = Math.max(knownClipboardVersion, targetVersion);
                 if (pendingClipboardVersion <= knownClipboardVersion) pendingClipboardVersion = -1;
                 terminal.focus();
@@ -300,6 +400,10 @@
         connection.onmessage = event => {
             try {
                 const message = JSON.parse(event.data);
+                if (message.type === 'clipboard-request') {
+                    showClipboardRequest(message);
+                    return;
+                }
                 const version = Number(message.version);
                 if (message.type !== 'clipboard' || !Number.isSafeInteger(version)) return;
                 if (knownClipboardVersion === -1) {

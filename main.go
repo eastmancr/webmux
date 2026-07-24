@@ -576,34 +576,37 @@ func SaveSettings(settings *Settings) error {
 
 // Server holds the HTTP server and pane manager
 type Server struct {
-	manager          *PaneManager
-	uploadDir        string
-	settings         *Settings
-	settingsMu       sync.RWMutex
-	scratchText      string
-	scratchMu        sync.RWMutex
-	scratchSubs      map[chan string]struct{} // SSE subscribers
-	scratchSubMu     sync.Mutex
-	markedFiles      []MarkedFile // Files marked for download
-	markedMu         sync.RWMutex
-	markedSubs       map[chan string]struct{} // SSE subscribers for marked files
-	markedSubMu      sync.Mutex
-	paneSubs         map[chan paneEvent]struct{}
-	paneSubMu        sync.Mutex
-	uiState          *UIState // UI layout state (groups, order, etc.)
-	uiStateMu        sync.RWMutex
-	stateSaveMu      sync.Mutex
-	stateLoadErr     error
-	workspaceMu      sync.Mutex
-	paneStorage      map[string]*PaneStorageState // Browser storage mirrored by shared pane backend
-	paneStorageMu    sync.RWMutex
-	paneStorageSubs  map[string]map[chan paneStorageEvent]struct{}
-	paneStorageSubMu sync.Mutex
-	clipboard        string       // Server-side clipboard for wm CLI
-	clipboardVersion uint64       // Increments on each clipboard change
-	clipboardMu      sync.RWMutex // Protects clipboard and clipboardVersion
-	clipboardSubs    map[chan uint64]struct{}
-	clipboardSubMu   sync.Mutex
+	manager            *PaneManager
+	uploadDir          string
+	settings           *Settings
+	settingsMu         sync.RWMutex
+	scratchText        string
+	scratchMu          sync.RWMutex
+	scratchSubs        map[chan string]struct{} // SSE subscribers
+	scratchSubMu       sync.Mutex
+	markedFiles        []MarkedFile // Files marked for download
+	markedMu           sync.RWMutex
+	markedSubs         map[chan string]struct{} // SSE subscribers for marked files
+	markedSubMu        sync.Mutex
+	paneSubs           map[chan paneEvent]struct{}
+	paneSubMu          sync.Mutex
+	uiState            *UIState // UI layout state (groups, order, etc.)
+	uiStateMu          sync.RWMutex
+	stateSaveMu        sync.Mutex
+	stateLoadErr       error
+	workspaceMu        sync.Mutex
+	paneStorage        map[string]*PaneStorageState // Browser storage mirrored by shared pane backend
+	paneStorageMu      sync.RWMutex
+	paneStorageSubs    map[string]map[chan paneStorageEvent]struct{}
+	paneStorageSubMu   sync.Mutex
+	clipboard          string       // Server-side text clipboard for compatibility
+	clipboardVersion   uint64       // Increments on each clipboard change
+	clipboardMu        sync.RWMutex // Protects clipboard and clipboardVersion
+	clipboardOffer     typedClipboardOffer
+	clipboardRequests  map[string]*clipboardReadRequest
+	clipboardRequestMu sync.Mutex
+	clipboardSubs      map[chan clipboardEvent]struct{}
+	clipboardSubMu     sync.Mutex
 }
 
 // NewServer creates a new server instance
@@ -624,19 +627,20 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 		log.Printf("Could not load scratch pad: %v", scratchErr)
 	}
 	s := &Server{
-		manager:         manager,
-		uploadDir:       uploadDir,
-		settings:        LoadSettings(),
-		scratchText:     scratchText,
-		scratchSubs:     make(map[chan string]struct{}),
-		markedFiles:     make([]MarkedFile, 0),
-		markedSubs:      make(map[chan string]struct{}),
-		paneSubs:        make(map[chan paneEvent]struct{}),
-		paneStorage:     LoadPaneStorage(),
-		paneStorageSubs: make(map[string]map[chan paneStorageEvent]struct{}),
-		clipboardSubs:   make(map[chan uint64]struct{}),
-		uiState:         initialUIState,
-		stateLoadErr:    err,
+		manager:           manager,
+		uploadDir:         uploadDir,
+		settings:          LoadSettings(),
+		scratchText:       scratchText,
+		scratchSubs:       make(map[chan string]struct{}),
+		markedFiles:       make([]MarkedFile, 0),
+		markedSubs:        make(map[chan string]struct{}),
+		paneSubs:          make(map[chan paneEvent]struct{}),
+		paneStorage:       LoadPaneStorage(),
+		paneStorageSubs:   make(map[string]map[chan paneStorageEvent]struct{}),
+		clipboardRequests: make(map[string]*clipboardReadRequest),
+		clipboardSubs:     make(map[chan clipboardEvent]struct{}),
+		uiState:           initialUIState,
+		stateLoadErr:      err,
 	}
 	// Wire up settings getter for pane manager
 	manager.getSettings = func() *Settings {
@@ -1074,29 +1078,33 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 const maxClipboardSize = 10 * 1024 * 1024
 
 var clipboardUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin: terminalOriginAllowed,
 }
 
 func (s *Server) setClipboard(content string) uint64 {
+	offer := cloneTypedClipboard(typedClipboardOffer{
+		Representations: map[string][]byte{"text/plain": []byte(content)},
+		CapturedAt:      time.Now(),
+	})
 	s.clipboardMu.Lock()
+	s.clipboardOffer = offer
 	s.clipboard = content
 	s.clipboardVersion++
 	version := s.clipboardVersion
 	s.clipboardMu.Unlock()
 
-	s.notifyClipboardSubscribers(version)
+	log.Printf("[clipboard] text updated size=%dB version=%d", len(content), version)
+	s.notifyClipboardSubscribers(clipboardEvent{Type: "clipboard", Version: version})
 	return version
 }
 
-func (s *Server) notifyClipboardSubscribers(version uint64) {
+func (s *Server) notifyClipboardSubscribers(event clipboardEvent) {
 	s.clipboardSubMu.Lock()
 	defer s.clipboardSubMu.Unlock()
 
 	for ch := range s.clipboardSubs {
 		select {
-		case ch <- version:
+		case ch <- event:
 		default:
 		}
 	}
@@ -1109,6 +1117,16 @@ func (s *Server) notifyClipboardSubscribers(version uint64) {
 func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if r.URL.Query().Get("list-types") == "1" || r.URL.Query().Has("type") {
+			offer := s.currentTypedClipboard()
+			requestedType, err := normalizeClipboardMIME(r.URL.Query().Get("type"))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			s.writeClipboardOfferResponse(w, offer, requestedType, r.URL.Query().Get("list-types") == "1")
+			return
+		}
 		s.clipboardMu.RLock()
 		content := s.clipboard
 		s.clipboardMu.RUnlock()
@@ -1127,7 +1145,20 @@ func (s *Server) handleClipboard(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to read body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		s.setClipboard(string(body))
+		contentType, err := normalizeClipboardMIME(r.Header.Get("Content-Type"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if contentType == "text/plain" {
+			s.setClipboard(string(body))
+		} else {
+			s.setTypedClipboard(typedClipboardOffer{
+				Representations: map[string][]byte{contentType: body},
+				CapturedAt:      time.Now(),
+			})
+			log.Printf("[clipboard] stored type=%q size=%dB", contentType, len(body))
+		}
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -1148,7 +1179,7 @@ func (s *Server) handleClipboardEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	ch := make(chan uint64, 10)
+	ch := make(chan clipboardEvent, 10)
 	s.clipboardSubMu.Lock()
 	s.clipboardSubs[ch] = struct{}{}
 	s.clipboardSubMu.Unlock()
@@ -1179,11 +1210,11 @@ func (s *Server) handleClipboardEvents(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case version, ok := <-ch:
+		case event, ok := <-ch:
 			if !ok {
 				return
 			}
-			if err := conn.WriteJSON(map[string]any{"type": "clipboard", "version": version}); err != nil {
+			if err := conn.WriteJSON(event); err != nil {
 				return
 			}
 		case <-done:
@@ -2475,6 +2506,9 @@ func main() {
 	mux.HandleFunc("/api/marked/download", server.handleMarkedDownload)
 	mux.HandleFunc("/api/clipboard", server.handleClipboard)
 	mux.HandleFunc("/api/clipboard/events", server.handleClipboardEvents)
+	mux.HandleFunc("/api/clipboard/files", server.handleClipboardFiles)
+	mux.HandleFunc("/api/clipboard/request", server.handleClipboardRequest)
+	mux.HandleFunc("/api/clipboard/requests/", server.handleClipboardRequestResponse)
 	mux.HandleFunc("/api/clipboard/version", server.handleClipboardVersion)
 	mux.HandleFunc("/api/diagnostics/client", server.handleClientDiagnostics)
 

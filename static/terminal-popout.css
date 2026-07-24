@@ -36,6 +36,25 @@ body {
     display: none !important;
 }
 
+.clipboard-request-prompt {
+    position: fixed;
+    z-index: 100;
+    width: max-content;
+    min-width: 154px;
+    max-width: calc(100vw - 16px);
+    min-height: 36px;
+    box-sizing: border-box;
+    padding: 9px 11px;
+    border: 1px solid var(--accent, #89b4fa);
+    border-radius: 7px;
+    outline: 2px solid rgba(137, 180, 250, 0.35);
+    background: var(--bg-secondary, #181825);
+    color: var(--text-primary, #cdd6f4);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+    font: 12px/1.35 'SF Mono', Monaco, monospace;
+    white-space: nowrap;
+}
+
 .keybar {
     display: flex;
     align-items: center;

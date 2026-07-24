@@ -850,6 +850,28 @@ body.mobile-mode .sidebar-panel {
     height: 100%;
 }
 
+.clipboard-request-prompt {
+    position: fixed;
+    z-index: 4000;
+    width: max-content;
+    min-width: 154px;
+    max-width: calc(100vw - 16px);
+    min-height: 36px;
+    padding: 9px 11px;
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--text-primary);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.4);
+    font: 12px/1.35 'JetBrains Mono', 'Fira Code', monospace;
+    white-space: nowrap;
+}
+
+.clipboard-request-prompt:focus {
+    outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    outline-offset: 1px;
+}
+
 .terminal-host .xterm-viewport {
     scrollbar-width: none;
     background-color: var(--terminal-background, #1e1e2e) !important;

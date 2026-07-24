@@ -25,16 +25,20 @@ func ClipboardWrapperScripts(wmPath string) []WrapperScript {
 			Name: "wl-copy",
 			Content: fmt.Sprintf(`#!/bin/sh
 # webmux wl-copy wrapper - copies to browser clipboard via HTTP API
-# Supports: wl-copy [text], echo text | wl-copy, wl-copy < file
-# Ignores wl-copy-specific flags for compatibility
+# Supports typed data through --type
 
-# Skip flags (wl-copy has -n, -p, -t, etc.)
+type="text/plain"
 while [ $# -gt 0 ]; do
   case "$1" in
     -n|--trim-newline|-p|--primary|-o|--paste-once|-f|--foreground|-c|--clear)
       shift ;;
-    -t|--type|-s|--seat)
-      shift 2 ;;  # these take an argument
+    -t|--type)
+      [ $# -ge 2 ] || { echo "wl-copy: $1 requires an argument" >&2; exit 1; }
+      type="$2"; shift 2 ;;
+    --type=*)
+      type="${1#*=}"; shift ;;
+    -s|--seat)
+      shift 2 ;;
     --)
       shift; break ;;
     -*)
@@ -46,25 +50,32 @@ done
 
 if [ $# -gt 0 ]; then
   # Text provided as arguments
-  printf "%%s" "$*" | %q copy
+  printf "%%s" "$*" | %q copy --type "$type"
 else
   # Read from stdin
-  %q copy
+  %q copy --type "$type"
 fi
 `, wmPath, wmPath),
 		},
 		{
 			Name: "wl-paste",
 			Content: fmt.Sprintf(`#!/bin/sh
-# webmux wl-paste wrapper - pastes from server-side clipboard via HTTP API
-# Ignores wl-paste-specific flags for compatibility
+# webmux wl-paste wrapper - requests the focused browser clipboard
 
-# Skip flags
+type=""
+list_types=false
 while [ $# -gt 0 ]; do
   case "$1" in
-    -n|--no-newline|-l|--list-types|-p|--primary)
+    -n|--no-newline|-p|--primary)
       shift ;;
-    -t|--type|-s|--seat)
+    -l|--list-types)
+      list_types=true; shift ;;
+    -t|--type)
+      [ $# -ge 2 ] || { echo "wl-paste: $1 requires an argument" >&2; exit 1; }
+      type="$2"; shift 2 ;;
+    --type=*)
+      type="${1#*=}"; shift ;;
+    -s|--seat)
       shift 2 ;;
     -w|--watch)
       # --watch is not supported, just exit
@@ -79,8 +90,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-%q paste
-`, wmPath),
+if [ "$list_types" = true ]; then
+  %q paste --request --list-types
+elif [ -n "$type" ]; then
+  %q paste --request --type "$type"
+else
+  %q paste --request --type text/plain
+fi
+`, wmPath, wmPath, wmPath),
 		},
 		{
 			Name: "xclip",
@@ -90,6 +107,7 @@ done
 
 selection="clipboard"
 mode="in"  # default is copy (input)
+target="text/plain"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -103,8 +121,13 @@ while [ $# -gt 0 ]; do
     -o|-out)
       mode="out"
       shift ;;
-    -d|-display|-target|-t|-loops|-l|-quiet|-q|-verbose|-v|-silent|-f|-r|-rmlastnl|-sensitive|-noutf8)
-      shift ;;  # ignore these flags
+    -target|-t)
+      shift
+      [ $# -gt 0 ] || { echo "xclip: target requires an argument" >&2; exit 1; }
+      target="$1"
+      shift ;;
+    -d|-display|-loops|-l|-quiet|-q|-verbose|-v|-silent|-f|-r|-rmlastnl|-sensitive|-noutf8)
+      shift ;;
     -*)
       shift ;;
     *)
@@ -113,12 +136,20 @@ while [ $# -gt 0 ]; do
 done
 
 # Only handle clipboard selection (primary selection not supported via OSC 52)
+case "$target" in
+  UTF8_STRING|STRING|TEXT|text/plain\;charset=utf-8)
+    target="text/plain" ;;
+esac
 if [ "$mode" = "out" ]; then
-  %q paste
+  if [ "$target" = "TARGETS" ]; then
+    %q paste --request --list-types
+  else
+    %q paste --request --type "$target"
+  fi
 else
-  %q copy
+  %q copy --type "$target"
 fi
-`, wmPath, wmPath),
+`, wmPath, wmPath, wmPath),
 		},
 		{
 			Name: "xsel",
@@ -155,7 +186,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$mode" = "out" ]; then
-  %q paste
+  %q paste --request --type text/plain
 else
   %q copy
 fi
@@ -171,8 +202,8 @@ fi
 		{
 			Name: "pbpaste",
 			Content: fmt.Sprintf(`#!/bin/sh
-# webmux pbpaste wrapper - pastes from clipboard via HTTP API
-%q paste
+# webmux pbpaste wrapper - requests the focused browser clipboard
+%q paste --request --type text/plain
 `, wmPath),
 		},
 	}

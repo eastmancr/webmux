@@ -15,7 +15,7 @@ build: $(WM_EMBEDDED)
 	go build -o $(BINARY) .
 
 # Build wm into static/ for embedding
-$(WM_EMBEDDED): cmd/wm/main.go
+$(WM_EMBEDDED): cmd/wm/main.go internal/shell/init.go internal/shell/wrappers.go
 	go build -o $(WM_EMBEDDED) ./cmd/wm
 
 # Dev build - serves static files from disk with live reload
