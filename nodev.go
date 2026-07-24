@@ -40,6 +40,12 @@ func staticAssetExists(assetPath string) bool {
 	return err == nil && !info.IsDir()
 }
 
+func staticClientVersion() string {
+	return clientAssetVersion(func(assetPath string) ([]byte, error) {
+		return staticFiles.ReadFile("static/" + assetPath)
+	})
+}
+
 func noCacheStaticHandler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")

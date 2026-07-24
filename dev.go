@@ -60,8 +60,8 @@ func init() {
 // InitDevMode sets up dev mode if enabled
 func InitDevMode(mux *http.ServeMux, server *Server) http.Handler {
 	// Get the directory where the executable is
-	exe, _ := os.Executable()
-	devMode.staticDir = filepath.Join(filepath.Dir(exe), "static")
+	devMode.staticDir = devStaticDir()
+	server.assetVersion = staticClientVersion()
 	log.Printf("[dev] Watching %s for changes", devMode.staticDir)
 
 	// Add dev reload endpoint
@@ -82,6 +82,24 @@ func staticAssetExists(assetPath string) bool {
 	}
 	info, err := os.Stat(filepath.Join(staticDir, filepath.FromSlash(assetPath)))
 	return err == nil && !info.IsDir()
+}
+
+func devStaticDir() string {
+	if devMode.staticDir != "" {
+		return devMode.staticDir
+	}
+	exe, err := os.Executable()
+	if err == nil {
+		return filepath.Join(filepath.Dir(exe), "static")
+	}
+	return "static"
+}
+
+func staticClientVersion() string {
+	staticDir := devStaticDir()
+	return clientAssetVersion(func(assetPath string) ([]byte, error) {
+		return os.ReadFile(filepath.Join(staticDir, filepath.FromSlash(assetPath)))
+	})
 }
 
 // handleDevReload handles WebSocket connections for live reload

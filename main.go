@@ -47,6 +47,34 @@ import (
 //go:embed static/*
 var staticFiles embed.FS
 
+var clientAssetPaths = []string{
+	"app.js",
+	"index.html",
+	"style.css",
+	"terminal-popout.css",
+	"terminal-popout.js",
+	"vendor/xterm/addon-fit.js",
+	"vendor/xterm/addon-image.js",
+	"vendor/xterm/addon-webgl.js",
+	"vendor/xterm/xterm.css",
+	"vendor/xterm/xterm.js",
+}
+
+func clientAssetVersion(readAsset func(string) ([]byte, error)) string {
+	hash := sha256.New()
+	for _, assetPath := range clientAssetPaths {
+		contents, err := readAsset(assetPath)
+		if err != nil {
+			return ""
+		}
+		io.WriteString(hash, assetPath)
+		hash.Write([]byte{0})
+		hash.Write(contents)
+		hash.Write([]byte{0})
+	}
+	return hex.EncodeToString(hash.Sum(nil))
+}
+
 // SECTION: LOGGING
 
 // RotatingLogWriter writes to both stdout and a rotating log file
@@ -577,6 +605,12 @@ func SaveSettings(settings *Settings) error {
 // Server holds the HTTP server and pane manager
 type Server struct {
 	manager            *PaneManager
+	runID              string
+	assetVersion       string
+	shutdown           chan struct{}
+	shutdownOnce       sync.Once
+	shutdownContext    context.Context
+	shutdownCancel     context.CancelFunc
 	uploadDir          string
 	settings           *Settings
 	settingsMu         sync.RWMutex
@@ -611,6 +645,7 @@ type Server struct {
 
 // NewServer creates a new server instance
 func NewServer(manager *PaneManager, uploadDir string) *Server {
+	shutdownContext, shutdownCancel := context.WithCancel(context.Background())
 	persisted, err := LoadInstanceState(manager.instanceID)
 	if err != nil {
 		log.Printf("Invalid instance state: %v", err)
@@ -628,6 +663,11 @@ func NewServer(manager *PaneManager, uploadDir string) *Server {
 	}
 	s := &Server{
 		manager:           manager,
+		runID:             fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()),
+		assetVersion:      staticClientVersion(),
+		shutdown:          make(chan struct{}),
+		shutdownContext:   shutdownContext,
+		shutdownCancel:    shutdownCancel,
 		uploadDir:         uploadDir,
 		settings:          LoadSettings(),
 		scratchText:       scratchText,
@@ -701,10 +741,12 @@ func (s *Server) forceCloseAllBackends(timeout time.Duration) bool {
 // SECTION: API
 
 type paneEvent struct {
-	Type      string `json:"type"`
-	PaneID    string `json:"paneId,omitempty"`
-	BackendID string `json:"backendId,omitempty"`
-	Pane      *Pane  `json:"pane,omitempty"`
+	Type         string `json:"type"`
+	ServerRunID  string `json:"serverRunId,omitempty"`
+	AssetVersion string `json:"assetVersion,omitempty"`
+	PaneID       string `json:"paneId,omitempty"`
+	BackendID    string `json:"backendId,omitempty"`
+	Pane         *Pane  `json:"pane,omitempty"`
 }
 
 var paneEventsUpgrader = websocket.Upgrader{
@@ -750,7 +792,7 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 		close(ch)
 	}()
 
-	if err := conn.WriteJSON(paneEvent{Type: "ready"}); err != nil {
+	if err := conn.WriteJSON(paneEvent{Type: "ready", ServerRunID: s.runID, AssetVersion: s.assetVersion}); err != nil {
 		s.diagnosticf("pane-events", "event=write-error type=ready err=%q", err.Error())
 		return
 	}
@@ -782,25 +824,61 @@ func (s *Server) handlePaneEvents(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			s.diagnosticf("pane-events", "event=disconnect reason=context")
 			return
+		case <-s.shutdown:
+			_ = conn.WriteJSON(paneEvent{Type: "server-shutdown", ServerRunID: s.runID})
+			return
 		}
 	}
 }
 
+func (s *Server) beginShutdown() {
+	s.shutdownOnce.Do(func() {
+		if s.shutdown != nil {
+			close(s.shutdown)
+		}
+		if s.shutdownCancel != nil {
+			s.shutdownCancel()
+		}
+	})
+}
+
+func (s *Server) shutdownAwareHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Upgraded connections are not tracked by http.Server.Shutdown. Their
+		// handlers either use the explicit shutdown signal or end at process exit.
+		if s.shutdownContext == nil || websocket.IsWebSocketUpgrade(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ctx, cancel := context.WithCancel(r.Context())
+		stopShutdownCancel := context.AfterFunc(s.shutdownContext, cancel)
+		defer func() {
+			stopShutdownCancel()
+			cancel()
+		}()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 // handleInfo returns server configuration info
 func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Header().Set("Content-Type", "application/json")
 
 	panes := s.manager.ListPanes()
 
 	json.NewEncoder(w).Encode(map[string]any{
-		"workDir":    s.manager.workDir,
-		"uploadDir":  s.uploadDir,
-		"shell":      s.manager.shell,
-		"port":       s.manager.serverPort,
-		"instanceID": s.manager.instanceID,
-		"paneCount":  len(panes),
-		"paneTypes":  s.manager.PaneTypes(),
-		"tmuxSocket": s.manager.tmuxSocketPath(),
+		"workDir":      s.manager.workDir,
+		"uploadDir":    s.uploadDir,
+		"shell":        s.manager.shell,
+		"port":         s.manager.serverPort,
+		"instanceID":   s.manager.instanceID,
+		"serverRunId":  s.runID,
+		"assetVersion": s.assetVersion,
+		"paneCount":    len(panes),
+		"paneTypes":    s.manager.PaneTypes(),
+		"tmuxSocket":   s.manager.tmuxSocketPath(),
 	})
 }
 
@@ -2524,12 +2602,13 @@ func main() {
 	log.Printf("Upload directory: %s", *uploadDir)
 	log.Printf("Default shell: %s", *shell)
 
-	httpServer := &http.Server{Addr: ":" + *port, Handler: mountPathHandler(mux)}
+	httpServer := &http.Server{Addr: ":" + *port, Handler: server.shutdownAwareHandler(mountPathHandler(mux))}
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	forceClose := make(chan bool, 1)
 	go func() {
 		sig := <-sigChan
+		server.beginShutdown()
 		force := *closePanesOnExit || sig == syscall.SIGQUIT
 		forceClose <- force
 		if force {

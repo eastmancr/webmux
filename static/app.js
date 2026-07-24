@@ -76,7 +76,10 @@ class TerminalMultiplexer {
 
         // Server connection state
         this.serverConnected = true;
-        this.connectionCheckInterval = null;
+        this.serverRunId = null;
+        this.assetVersion = null;
+        this.serverRestartDetected = false;
+        this.serverRecoveryPromise = null;
         this.diagnosticQueue = [];
         this.diagnosticFlushTimer = null;
         this.paneTypes = [
@@ -199,7 +202,7 @@ class TerminalMultiplexer {
 
     connectPaneEvents() {
         let reconnectTimer = null;
-        const reconnectDelay = 2000;
+        let reconnectDelay = 250;
 
         const connect = () => {
             const ws = new WebSocket(this.wsUrl('/api/panes/events'));
@@ -207,6 +210,7 @@ class TerminalMultiplexer {
             this.paneSocket = ws;
 
             ws.onopen = () => {
+                reconnectDelay = 250;
                 this.logDiagnostic('pane-events', 'open', { path: '/api/panes/events' });
                 if (this.settings?.diagnostics?.enabled && this.settings.diagnostics.optionalPing) {
                     const interval = Math.max(5, this.settings.diagnostics.pingIntervalSeconds || 30) * 1000;
@@ -214,10 +218,6 @@ class TerminalMultiplexer {
                         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'diagnostic-ping', ts: Date.now() }));
                     }, interval);
                 }
-                if (!this.serverConnected) {
-                    this.setServerConnected(true);
-                }
-                this.checkPaneHealth({ savePassiveChanges: false });
             };
 
             ws.onmessage = (event) => {
@@ -238,10 +238,12 @@ class TerminalMultiplexer {
                     this.setServerConnected(false);
                 }
                 if (!reconnectTimer) {
+                    const delay = reconnectDelay;
+                    reconnectDelay = Math.min(reconnectDelay * 2, 2000);
                     reconnectTimer = setTimeout(() => {
                         reconnectTimer = null;
                         connect();
-                    }, reconnectDelay);
+                    }, delay);
                 }
             };
 
@@ -614,7 +616,7 @@ class TerminalMultiplexer {
         }
     }
 
-    setServerConnected(connected) {
+    setServerConnected(connected, options = {}) {
         // Skip if state hasn't changed
         if (connected === this.serverConnected) {
             return;
@@ -635,8 +637,103 @@ class TerminalMultiplexer {
         } else {
             this.hideDisconnectionWarning();
             // Reload UI state and panes when reconnected
-            this.loadUIState().then(() => this.loadPanes());
+            if (options.reload !== false) {
+                this.loadUIState().then(() => this.loadPanes());
+            }
         }
+    }
+
+    handleServerReady(serverRunId, assetVersion) {
+        if (this.observeServerIdentity(serverRunId, assetVersion)) return;
+        if (!this.serverConnected) {
+            this.setServerConnected(true);
+        } else {
+            this.checkPaneHealth({ savePassiveChanges: false });
+        }
+    }
+
+    observeServerIdentity(serverRunId, assetVersion) {
+        if (typeof serverRunId !== 'string' || !serverRunId) return false;
+        if (!this.serverRunId) {
+            this.serverRunId = serverRunId;
+            this.assetVersion = assetVersion || null;
+            return false;
+        }
+        if (serverRunId === this.serverRunId) {
+            if (!this.assetVersion && assetVersion) this.assetVersion = assetVersion;
+            return false;
+        }
+
+        const assetsChanged = !this.assetVersion || !assetVersion || this.assetVersion !== assetVersion;
+        this.serverRunId = serverRunId;
+        this.assetVersion = assetVersion || null;
+        if (assetsChanged) {
+            this.showServerRestartModal();
+        } else {
+            this.recoverAfterServerRestart();
+        }
+        return true;
+    }
+
+    recoverAfterServerRestart() {
+        if (this.serverRecoveryPromise) return this.serverRecoveryPromise;
+        this.serverRecoveryPromise = (async () => {
+            this.setServerConnected(true, { reload: false });
+            await this.loadSettings();
+            await this.loadServerInfo();
+            await this.loadUIState();
+            await this.loadPanes();
+
+            const reloadedBackends = new Set();
+            for (const pane of this.panes.values()) {
+                if (!this.isSharedPane(pane) || reloadedBackends.has(pane.backendId)) continue;
+                reloadedBackends.add(pane.backendId);
+                const popoutWindow = this.popoutWindows.get(this.getPopoutKey(pane));
+                if (popoutWindow && !popoutWindow.closed) {
+                    popoutWindow.location.href = this.url(`/p/${pane.id}/`);
+                }
+                this.reloadSharedPaneIframe(pane);
+            }
+            this.updatePaneLayout();
+            this.showToast('Reconnected after server restart');
+        })().catch(error => {
+            console.error('Failed to recover after server restart:', error);
+            this.setServerConnected(false);
+        }).finally(() => {
+            this.serverRecoveryPromise = null;
+        });
+        return this.serverRecoveryPromise;
+    }
+
+    showServerRestartModal() {
+        if (this.serverRestartDetected) return;
+        this.serverRestartDetected = true;
+        this.setServerConnected(false);
+
+        const modal = document.createElement('div');
+        modal.id = 'server-restart-modal';
+        modal.className = 'modal';
+        modal.setAttribute('role', 'alertdialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-labelledby', 'server-restart-title');
+        modal.setAttribute('aria-describedby', 'server-restart-description');
+        modal.innerHTML = `
+            <div class="modal-content modal-sm">
+                <div class="modal-header">
+                    <h3 id="server-restart-title">Server restarted</h3>
+                </div>
+                <div class="modal-body">
+                    <p id="server-restart-description">Refresh this page to reconnect and load the latest Webmux client.</p>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-primary">Refresh page</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        const refreshButton = modal.querySelector('button');
+        refreshButton.addEventListener('click', () => window.location.reload());
+        document.body.appendChild(modal);
+        refreshButton.focus();
     }
 
     updateActionButtonStates() {
@@ -929,7 +1026,15 @@ class TerminalMultiplexer {
     handlePaneEvent(event) {
         if (!event || !event.type) return;
 
-        if (event.type === 'ready') return;
+        if (event.type === 'ready') {
+            this.handleServerReady(event.serverRunId, event.assetVersion);
+            return;
+        }
+
+        if (event.type === 'server-shutdown') {
+            this.setServerConnected(false);
+            return;
+        }
 
         if (event.type === 'deleted') {
             if (event.paneId) {
@@ -5670,6 +5775,7 @@ class TerminalMultiplexer {
         try {
             const response = await fetch(this.url('/api/info'));
             const info = await response.json();
+            if (this.observeServerIdentity(info.serverRunId, info.assetVersion)) return;
             this.serverInfo = info;
             if (Array.isArray(info.paneTypes)) {
                 this.paneTypes = info.paneTypes;
