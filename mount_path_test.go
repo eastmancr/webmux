@@ -17,6 +17,7 @@ func TestMountPathHandler(t *testing.T) {
 		{name: "explicit index", target: "/index.html", wantPath: "/index.html"},
 		{name: "root static asset", target: "/style.css", wantPath: "/style.css"},
 		{name: "mounted static asset", target: "/webmux/style.css", wantPath: "/style.css"},
+		{name: "mounted favicon", target: "/webmux/favicon.ico?v=1", wantPath: "/favicon.ico"},
 		{name: "mounted explicit index", target: "/webmux/index.html", wantPath: "/index.html"},
 		{name: "extensionless static asset", target: "/wm", wantPath: "/wm"},
 		{name: "extensionless mount", target: "/webmux", wantLocation: "/webmux/"},

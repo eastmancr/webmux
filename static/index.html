@@ -6,13 +6,19 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="mobile-web-app-capable" content="yes">
     <title>Webmux</title>
-    <link rel="icon" href="favicon.ico" type="image/x-icon">
     <script>
         (function() {
             var path = window.location.pathname;
             if (path !== '/' && !path.endsWith('/') && !path.endsWith('/index.html')) {
                 window.location.replace(path + '/' + window.location.search + window.location.hash);
+                return;
             }
+
+            var favicon = document.createElement('link');
+            favicon.rel = 'icon';
+            favicon.type = 'image/x-icon';
+            favicon.href = 'favicon.ico?v=1';
+            document.head.appendChild(favicon);
         })();
     </script>
     <link rel="stylesheet" href="vendor/xterm/xterm.css">
