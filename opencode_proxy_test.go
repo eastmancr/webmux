@@ -71,11 +71,13 @@ func TestOpenCodeProxyInjectsAttentionBridge(t *testing.T) {
 	content := string(body)
 	for _, expected := range []string{
 		"webmux-pane-attention",
+		"var backgroundSession = !!sessionID && !!activeSessionID && sessionID !== activeSessionID",
+		"force: backgroundSession",
 		"value.type === 'permission.asked' || value.type === 'question.asked'",
 		"watchOpenCodeEventStream(response)",
 		"es.addEventListener('permission.asked', requestWebmuxAttention)",
 		"es.addEventListener('question.asked', requestWebmuxAttention)",
-		"hasNewOpenCodeAttention(oldValue, value)",
+		"var attentionCause = hasNewOpenCodeAttention(oldValue, value)",
 		"item.type !== 'turn-complete' && item.type !== 'error'",
 		"var OriginalNotification = window.Notification",
 		"ServiceWorkerRegistration.prototype.showNotification",

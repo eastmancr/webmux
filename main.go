@@ -1445,6 +1445,12 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 			validCustomNames = append(validCustomNames, paneID)
 		}
 	}
+	validAttentionPaneIDs := make([]string, 0)
+	for _, paneID := range state.AttentionPaneIDs {
+		if validPaneIDs[paneID] && !slices.Contains(validAttentionPaneIDs, paneID) {
+			validAttentionPaneIDs = append(validAttentionPaneIDs, paneID)
+		}
+	}
 
 	// Validate active group
 	activeGroupID := state.ActiveGroupID
@@ -1484,6 +1490,7 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 		GroupCounter:     groupCounter,
 		SidebarCollapsed: state.SidebarCollapsed,
 		CustomNames:      validCustomNames,
+		AttentionPaneIDs: validAttentionPaneIDs,
 	}
 }
 
@@ -1556,10 +1563,17 @@ func (s *Server) removePaneFromUIState(paneID string) {
 			newCustomNames = append(newCustomNames, id)
 		}
 	}
+	newAttentionPaneIDs := make([]string, 0)
+	for _, id := range s.uiState.AttentionPaneIDs {
+		if id != paneID {
+			newAttentionPaneIDs = append(newAttentionPaneIDs, id)
+		}
+	}
 
 	s.uiState.Groups = newGroups
 	s.uiState.GroupOrder = newOrder
 	s.uiState.CustomNames = newCustomNames
+	s.uiState.AttentionPaneIDs = newAttentionPaneIDs
 	s.uiState.Revision++
 
 	// Reset counter if no groups remain

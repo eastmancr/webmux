@@ -836,6 +836,7 @@ class TerminalMultiplexer {
             })),
             activeGroupId: this.activeGroupId,
             focusedPaneId: this.focusedPaneId,
+            attentionPaneIds: Array.from(this.attentionPaneIds),
             sidebarCollapsed: this.sidebar?.classList.contains('collapsed') || false,
             customNames: Array.from(this.customNames),
             groupCounter: this.groupCounter
@@ -928,6 +929,11 @@ class TerminalMultiplexer {
             if (state.groupOrder) {
                 state.groupOrder = state.groupOrder.filter(id => typeof id === 'string');
             }
+
+            if (state.attentionPaneIds && !Array.isArray(state.attentionPaneIds)) return;
+            state.attentionPaneIds = Array.isArray(state.attentionPaneIds)
+                ? state.attentionPaneIds.filter(id => typeof id === 'string')
+                : [];
 
             // Validate groupCounter is a safe positive integer
             if (typeof state.groupCounter !== 'number' ||
@@ -1692,6 +1698,10 @@ class TerminalMultiplexer {
                 serverPaneMap.set(pane.id, pane);
                 this.panes.set(pane.id, pane);
             }
+            this.attentionPaneIds = new Set(
+                (this.savedState?.attentionPaneIds || []).filter(paneId => this.paneAttentionEnabled(this.panes.get(paneId)))
+            );
+            this.updateAttentionTitle();
             this.reconcilePopoutStates();
 
             // Try to restore saved state from server
@@ -2350,21 +2360,23 @@ class TerminalMultiplexer {
         return panes[pane.type]?.indicateAttention === true;
     }
 
-    markPaneAttention(paneId) {
+    markPaneAttention(paneId, force = false) {
         const pane = this.panes.get(paneId);
         if (!this.paneAttentionEnabled(pane)) return;
-        if (this.focusedPaneId === paneId && !document.hidden && document.hasFocus()) return;
+        if (!force && this.focusedPaneId === paneId && !document.hidden && document.hasFocus()) return;
         if (this.attentionPaneIds.has(paneId)) return;
 
         this.attentionPaneIds.add(paneId);
         this.updatePaneAttentionInSidebar(paneId);
         this.updateAttentionTitle();
+        this.saveUIState();
     }
 
     clearPaneAttention(paneId) {
         if (!this.attentionPaneIds.delete(paneId)) return;
         this.updatePaneAttentionInSidebar(paneId);
         this.updateAttentionTitle();
+        this.saveUIState();
     }
 
     clearFocusedPaneAttention() {
@@ -2394,6 +2406,7 @@ class TerminalMultiplexer {
         }
         changedPaneIds.forEach(paneId => this.updatePaneAttentionInSidebar(paneId));
         this.updateAttentionTitle();
+        if (changedPaneIds.length > 0) this.saveUIState();
     }
 
     renderPaneAttention(pane) {
@@ -2412,7 +2425,7 @@ class TerminalMultiplexer {
             ? Array.from(this.sharedIframes.values()).find(candidate => candidate.contentWindow === source)
             : (msg.backendId ? this.sharedIframes.get(msg.backendId) : null);
         if (iframe?.dataset.activePaneId) paneId = iframe.dataset.activePaneId;
-        this.markPaneAttention(paneId);
+        this.markPaneAttention(paneId, msg.force === true);
     }
 
     addGroupToSidebar(group) {

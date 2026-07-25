@@ -286,5 +286,6 @@ func cloneUIState(state *UIState) *UIState {
 	}
 	clone.GroupOrder = append([]string(nil), state.GroupOrder...)
 	clone.CustomNames = append([]string(nil), state.CustomNames...)
+	clone.AttentionPaneIDs = append([]string(nil), state.AttentionPaneIDs...)
 	return &clone
 }

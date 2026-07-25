@@ -847,6 +847,7 @@ type UIState struct {
 	GroupOrder       []string  `json:"groupOrder"`
 	ActiveGroupID    string    `json:"activeGroupId"`
 	FocusedPaneID    string    `json:"focusedPaneId"`
+	AttentionPaneIDs []string  `json:"attentionPaneIds"`
 	GroupCounter     int       `json:"groupCounter"`
 	SidebarCollapsed bool      `json:"sidebarCollapsed"`
 	CustomNames      []string  `json:"customNames"` // pane IDs with custom names

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -289,13 +290,17 @@ func TestUIStateValidatesAndUpdatesFocusedPane(t *testing.T) {
 			{ID: "group-1", PaneIDs: []string{"pane-1", "pane-2"}},
 			{ID: "group-2", PaneIDs: []string{"pane-3"}},
 		},
-		GroupOrder:    []string{"group-1", "group-2"},
-		ActiveGroupID: "group-1",
-		FocusedPaneID: "pane-3",
+		GroupOrder:       []string{"group-1", "group-2"},
+		ActiveGroupID:    "group-1",
+		FocusedPaneID:    "pane-3",
+		AttentionPaneIDs: []string{"pane-1", "missing-pane", "pane-1"},
 	}
 	validated := server.validateUIState(state)
 	if validated.FocusedPaneID != "pane-1" {
 		t.Fatalf("focused pane = %q, want first pane in active group", validated.FocusedPaneID)
+	}
+	if !slices.Equal(validated.AttentionPaneIDs, []string{"pane-1"}) {
+		t.Fatalf("attention panes = %v, want [pane-1]", validated.AttentionPaneIDs)
 	}
 
 	validated.FocusedPaneID = "pane-1"
@@ -303,6 +308,9 @@ func TestUIStateValidatesAndUpdatesFocusedPane(t *testing.T) {
 	server.removePaneFromUIState("pane-1")
 	if server.uiState.FocusedPaneID != "pane-2" {
 		t.Fatalf("focused pane after removal = %q, want pane-2", server.uiState.FocusedPaneID)
+	}
+	if len(server.uiState.AttentionPaneIDs) != 0 {
+		t.Fatalf("attention panes after removal = %v, want none", server.uiState.AttentionPaneIDs)
 	}
 }
 
