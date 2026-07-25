@@ -113,8 +113,14 @@ Clipboard sync uses WebSocket notifications (`/api/clipboard/events`) instead of
 
 ## Build
 ```
-make build   # production (embeds static/ including wm binary)
-make dev     # dev mode (serves from disk, copies wm to project root)
-make check   # verify compilation
-make clean   # remove built binaries
+make build     # production (embeds static/ including wm binary)
+make dev       # dev mode (serves from disk, copies wm to project root)
+make check     # verify compilation
+make smoke-dev # isolated dev server and browser smoke test
+make clean     # remove built binaries
 ```
+
+## Verification
+- Run `make check` for code changes.
+- Every non-cosmetic change must also be verified with `make smoke-dev` before completion. This exercises a real development server, terminal pane, and headless browser using isolated temporary state and ports.
+- Documentation, comments, and purely visual styling changes may skip `make smoke-dev` when they cannot affect loading or interaction behavior.

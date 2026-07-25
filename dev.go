@@ -88,9 +88,21 @@ func devStaticDir() string {
 	if devMode.staticDir != "" {
 		return devMode.staticDir
 	}
+	if dir := os.Getenv("WEBMUX_STATIC_DIR"); dir != "" {
+		return dir
+	}
 	exe, err := os.Executable()
 	if err == nil {
-		return filepath.Join(filepath.Dir(exe), "static")
+		dir := filepath.Join(filepath.Dir(exe), "static")
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			return dir
+		}
+	}
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		dir := filepath.Join(cwd, "static")
+		if info, statErr := os.Stat(dir); statErr == nil && info.IsDir() {
+			return dir
+		}
 	}
 	return "static"
 }

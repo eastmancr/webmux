@@ -8,6 +8,76 @@
     const url = path => `${basePath}${path}`;
     const wsUrl = path => `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}${url(path)}`;
 
+    const registerTerminalLinks = terminal => {
+        const urlPattern = /https?:\/\/[^\s<>"'`\\]+/g;
+        const trailingPunctuation = /[.,;:!?)}\]]+$/;
+
+        const wrappedLineText = lineNumber => {
+            const buffer = terminal.buffer.active;
+            let first = lineNumber - 1;
+            let last = first;
+            while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+            while (buffer.getLine(last + 1)?.isWrapped) last++;
+
+            const rows = [];
+            for (let row = first; row <= last; row++) {
+                rows.push(buffer.getLine(row)?.translateToString(true) || '');
+            }
+            return { text: rows.join(''), first };
+        };
+
+        const mapStringIndex = (row, column, length) => {
+            const buffer = terminal.buffer.active;
+            const cell = buffer.getNullCell();
+            while (length > 0) {
+                const line = buffer.getLine(row);
+                if (!line) return null;
+                for (let x = column; x < line.length; x++) {
+                    line.getCell(x, cell);
+                    const chars = cell.getChars();
+                    if (!cell.getWidth()) continue;
+                    length -= chars.length || 1;
+                    if (x === line.length - 1 && !chars) {
+                        const nextLine = buffer.getLine(row + 1);
+                        if (nextLine?.isWrapped) {
+                            nextLine.getCell(0, cell);
+                            if (cell.getWidth() === 2) length++;
+                        }
+                    }
+                    if (length < 0) return { row, column: x };
+                }
+                row++;
+                column = 0;
+            }
+            return { row, column };
+        };
+
+        return terminal.registerLinkProvider({
+            provideLinks: (lineNumber, callback) => {
+                const logicalLine = wrappedLineText(lineNumber);
+                const links = [];
+                for (const match of logicalLine.text.matchAll(urlPattern)) {
+                    const link = match[0].replace(trailingPunctuation, '');
+                    if (!link) continue;
+                    const start = mapStringIndex(logicalLine.first, 0, match.index);
+                    const end = start && mapStringIndex(start.row, start.column, link.length);
+                    if (!start || !end) continue;
+                    links.push({
+                        text: link,
+                        range: {
+                            start: { x: start.column + 1, y: start.row + 1 },
+                            end: { x: end.column, y: end.row + 1 },
+                        },
+                        activate: (event, value) => {
+                            if (event.ctrlKey) window.open(value, '_blank', 'noopener,noreferrer');
+                        },
+                    });
+                }
+                callback(links.length ? links : undefined);
+            },
+        });
+    };
+
     const defaults = {
         base00: '#1e1e2e', base02: '#313244', base03: '#45475a', base04: '#585b70',
         base05: '#cdd6f4', base06: '#f5e0dc', base07: '#ffffff', base08: '#f38ba8',
@@ -125,27 +195,7 @@
         }
         return !copyTerminalSelection();
     });
-    terminal.registerLinkProvider({
-        provideLinks: (lineNumber, callback) => {
-            const text = terminal.buffer.active.getLine(lineNumber - 1)?.translateToString(true) || '';
-            const links = [];
-            for (const match of text.matchAll(/https?:\/\/[^\s<>"'`\\]+/g)) {
-                const url = match[0].replace(/[.,;:!?)}\]]+$/, '');
-                if (!url) continue;
-                links.push({
-                    text: url,
-                    range: {
-                        start: { x: match.index + 1, y: lineNumber },
-                        end: { x: match.index + url.length, y: lineNumber },
-                    },
-                    activate: (event, link) => {
-                        if (event.ctrlKey) window.open(link, '_blank', 'noopener,noreferrer');
-                    },
-                });
-            }
-            callback(links.length ? links : undefined);
-        },
-    });
+    registerTerminalLinks(terminal);
     try {
         const webglAddon = new WebglAddon.WebglAddon();
         webglAddon.onContextLoss(() => webglAddon.dispose());

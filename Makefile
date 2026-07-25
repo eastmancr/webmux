@@ -6,7 +6,7 @@ WM_EMBEDDED := static/wm
 PKG := pkg
 VERSION := $(shell grep pkgver= PKGBUILD | cut -d= -f2)
 
-.PHONY: all build dev clean run run-dev check pkg
+.PHONY: all build dev clean run run-dev check smoke-dev pkg
 
 all: build
 
@@ -42,6 +42,10 @@ check: $(WM_EMBEDDED)
 	go test ./...
 	go build -o /dev/null .
 	go build -o /dev/null ./cmd/wm
+
+# Isolated browser smoke test using temporary XDG state and random ports.
+smoke-dev:
+	node scripts/dev-smoke-test.mjs
 
 # Prepare package directory for makepkg
 pkg: build
