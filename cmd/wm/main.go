@@ -280,10 +280,10 @@ func cmdList(host string) error {
 	}
 
 	var panes []struct {
-		ID             string `json:"id"`
-		Type           string `json:"type"`
-		Name           string `json:"name"`
-		CurrentProcess string `json:"currentProcess"`
+		ID              string `json:"id"`
+		Type            string `json:"type"`
+		Name            string `json:"name"`
+		CurrentActivity string `json:"currentActivity"`
 	}
 	if err := json.Unmarshal(body, &panes); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
@@ -295,14 +295,14 @@ func cmdList(host string) error {
 	}
 
 	if stdoutIsTerminal() {
-		fmt.Printf("%-12s %-10s %-20s %s\n", "ID", "TYPE", "NAME", "PROCESS")
+		fmt.Printf("%-12s %-10s %-20s %s\n", "ID", "TYPE", "NAME", "ACTIVITY")
 	}
 	for _, p := range panes {
-		proc := p.CurrentProcess
-		if proc == "" {
-			proc = "-"
+		activity := p.CurrentActivity
+		if activity == "" {
+			activity = "-"
 		}
-		fmt.Printf("%-12s %-10s %-20s %s\n", p.ID, p.Type, p.Name, proc)
+		fmt.Printf("%-12s %-10s %-20s %s\n", p.ID, p.Type, p.Name, activity)
 	}
 	return nil
 }

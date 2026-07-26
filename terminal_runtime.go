@@ -35,9 +35,18 @@ import (
 
 // SECTION: TERMINAL RUNTIME
 
+type tmuxActivityState uint8
+
+const (
+	tmuxActivityUnseen tmuxActivityState = iota
+	tmuxActivitySuppressing
+	tmuxActivityVisible
+)
+
 // TerminalPaneState stores runtime-only state for terminal panes.
 type TerminalPaneState struct {
-	tmuxSession string
+	tmuxSession       string
+	tmuxActivityState tmuxActivityState
 }
 
 // TerminalRuntime owns tmux lifecycle for terminal panes.
@@ -47,6 +56,7 @@ type TerminalRuntime struct {
 	mu             sync.RWMutex
 	tmuxConfigPath string
 	wmBinDir       string // Directory containing wm binary (added to PATH)
+	homeDir        string
 	sixelSupported bool
 }
 
@@ -58,6 +68,7 @@ var displayEnvVars = []string{
 }
 
 func (tr *TerminalRuntime) SetupResources() {
+	tr.homeDir, _ = os.UserHomeDir()
 	tr.extractTmuxConfig()
 	tr.extractWMBinary()
 	tr.installShellScripts()
@@ -396,13 +407,13 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 		}
 		missingChecks = 0
 
-		// Update current foreground process
-		proc := tr.getForegroundProcess(tmuxSession)
+		// Update the pane's current directory and foreground command display.
+		activity := tr.getForegroundActivity(state)
 		var paneCopy *Pane
 		sm.mu.Lock()
 		if s, ok := sm.panes[pane.ID]; ok {
-			if s.CurrentProcess != proc {
-				s.CurrentProcess = proc
+			if s.CurrentActivity != activity {
+				s.CurrentActivity = activity
 				copy := *s
 				paneCopy = &copy
 			}
@@ -416,35 +427,59 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 	}
 }
 
-// getForegroundProcess returns the foreground command, or the current directory
-// name when the pane is sitting at its shell prompt.
-func (tr *TerminalRuntime) getForegroundProcess(tmuxSession string) string {
+// getForegroundActivity returns the pane's current directory and, when one is
+// running, its foreground command.
+func (tr *TerminalRuntime) getForegroundActivity(state *TerminalPaneState) string {
 	tmuxSocket := tr.tmuxSocketPath()
 
 	// Fetch both values together so directory display adds no extra tmux process.
-	out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "-t", tmuxSession, "#{pane_current_command}\t#{pane_current_path}").Output()
+	out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "-t", state.tmuxSession, "#{pane_current_command}\t#{pane_current_path}").Output()
 	if err != nil {
 		return ""
 	}
 
 	values := strings.SplitN(strings.TrimSuffix(string(out), "\n"), "\t", 2)
 	procName := strings.TrimSpace(values[0])
+	procName = filterActivityCommand(procName, &state.tmuxActivityState)
 	currentPath := ""
 	if len(values) == 2 {
 		currentPath = values[1]
 	}
-	return foregroundProcessDisplay(procName, currentPath, tr.manager.shell)
+	return foregroundActivityDisplay(procName, currentPath, tr.manager.shell, tr.homeDir)
 }
 
-func foregroundProcessDisplay(procName, currentPath, shell string) string {
-	if procName == filepath.Base(shell) && currentPath != "" {
-		name := filepath.Base(currentPath)
-		if name == string(filepath.Separator) {
-			return name
+func filterActivityCommand(procName string, tmuxState *tmuxActivityState) string {
+	if *tmuxState == tmuxActivityUnseen && procName == "tmux" {
+		*tmuxState = tmuxActivitySuppressing
+	}
+	if *tmuxState == tmuxActivitySuppressing {
+		if procName == "tmux" {
+			return ""
 		}
-		return string(filepath.Separator) + name
+		*tmuxState = tmuxActivityVisible
 	}
 	return procName
+}
+
+func foregroundActivityDisplay(procName, currentPath, shell, homeDir string) string {
+	if currentPath == "" {
+		return procName
+	}
+
+	pathDisplay := ""
+	if homeDir != "" && filepath.Clean(currentPath) == filepath.Clean(homeDir) {
+		pathDisplay = "~"
+	} else {
+		name := filepath.Base(currentPath)
+		pathDisplay = name
+		if name != string(filepath.Separator) {
+			pathDisplay = string(filepath.Separator) + name
+		}
+	}
+	if procName == "" || procName == filepath.Base(shell) {
+		return pathDisplay
+	}
+	return pathDisplay + " · " + procName
 }
 
 // Stop terminates a terminal pane backend.

@@ -42,7 +42,7 @@ type Pane struct {
 	Name            string    `json:"name"`
 	Port            int       `json:"port"`
 	CreatedAt       time.Time `json:"createdAt"`
-	CurrentProcess  string    `json:"currentProcess,omitempty"`
+	CurrentActivity string    `json:"currentActivity,omitempty"`
 }
 
 // PaneTypeInfo describes a pane type that can be shown in the UI.

@@ -1126,7 +1126,7 @@ class TerminalMultiplexer {
                     continue;
                 }
 
-                // Update pane data (including currentProcess)
+                // Update pane data (including currentActivity)
                 const existing = this.panes.get(pane.id);
                 if (!existing) {
                     pane._addedAt = Date.now();
@@ -1137,7 +1137,7 @@ class TerminalMultiplexer {
                     if (savePassiveChanges) this.saveUIState();
                     continue;
                 }
-                if (existing.currentProcess !== pane.currentProcess || existing.name !== pane.name || existing.type !== pane.type) {
+                if (existing.currentActivity !== pane.currentActivity || existing.name !== pane.name || existing.type !== pane.type) {
                     Object.assign(existing, pane);
                     needsRefresh = true;
                 }
@@ -1220,7 +1220,7 @@ class TerminalMultiplexer {
             return;
         }
 
-        if (existing.currentProcess !== pane.currentProcess || existing.name !== pane.name || existing.type !== pane.type) {
+        if (existing.currentActivity !== pane.currentActivity || existing.name !== pane.name || existing.type !== pane.type) {
             Object.assign(existing, pane);
             this.refreshSidebar();
         }
@@ -2819,15 +2819,15 @@ class TerminalMultiplexer {
         if (!isMulti) {
             const pane = this.panes.get(validPaneIds[0]);
             const displayName = this.getPaneDisplayName(pane);
-            const processName = this.getPaneProcessDisplay(pane);
-            const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
+            const activity = this.getPaneActivityDisplay(pane);
+            const activityHtml = activity ? `<span class="activity-name"> · ${this.escapeHtml(activity)}</span>` : '';
             const isRenaming = this.renamingPaneId === pane?.id;
             const paneTypeLabel = this.getPaneTypeLabel(pane);
             const hasAttention = this.attentionPaneIds.has(pane?.id);
 
             const nameHtml = isRenaming
                 ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-pane-id="${pane?.id}">`
-                : `<span class="name">${this.escapeHtml(displayName)}${processHtml}</span>`;
+                : `<span class="name">${this.escapeHtml(displayName)}${activityHtml}</span>`;
 
             return `
                 <div class="pane-item ${activePaneInGroup ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}"
@@ -2844,8 +2844,8 @@ class TerminalMultiplexer {
         const paneItems = this.getGroupPaneIdsInVisualOrder(group).map(sid => {
             const pane = this.panes.get(sid);
             const displayName = this.getPaneDisplayName(pane);
-            const processName = this.getPaneProcessDisplay(pane);
-            const processHtml = processName ? `<span class="process-name"> · ${this.escapeHtml(processName)}</span>` : '';
+            const activity = this.getPaneActivityDisplay(pane);
+            const activityHtml = activity ? `<span class="activity-name"> · ${this.escapeHtml(activity)}</span>` : '';
             const paneTypeLabel = this.getPaneTypeLabel(pane);
             const isActivePane = activePaneInGroup && this.focusedPaneId === sid;
             const hasAttention = this.attentionPaneIds.has(sid);
@@ -2853,7 +2853,7 @@ class TerminalMultiplexer {
                 <div class="pane-item sub-item ${isActivePane ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
                      role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 16)}
-                    <span class="name">${this.escapeHtml(displayName)}${processHtml}</span>
+                    <span class="name">${this.escapeHtml(displayName)}${activityHtml}</span>
                     ${this.renderPaneAttention(pane)}
                     ${this.renderPaneActions(pane, group.id, { breakout: true, active: isActivePane })}
                 </div>
@@ -3165,10 +3165,10 @@ class TerminalMultiplexer {
         `;
     }
 
-    getPaneProcessDisplay(pane) {
+    getPaneActivityDisplay(pane) {
         if (this.isSharedPane(pane)) return this.getPaneTypeLabel(pane);
-        if (!pane || !pane.currentProcess) return '';
-        return pane.currentProcess;
+        if (!pane || !pane.currentActivity) return '';
+        return pane.currentActivity;
     }
 
     highlightPaneInGroup(paneId, highlight) {

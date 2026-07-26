@@ -521,7 +521,7 @@ body.mobile-mode .sidebar-panel {
     visibility: hidden;
 }
 
-.pane-item .name .process-name {
+.pane-item .name .activity-name {
     color: var(--text-muted);
     font-weight: 400;
 }
