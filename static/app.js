@@ -110,6 +110,9 @@ class TerminalMultiplexer {
         // Track which group is active
         this.activeGroupId = null;
 
+        // Most-recently-used tab selections, including the active group.
+        this.groupSelectionHistory = [];
+
         // Track which pane is focused within a split group (for keybar targeting)
         this.focusedPaneId = null;
         this.uiStateRevision = 0;
@@ -1260,25 +1263,29 @@ class TerminalMultiplexer {
                 // Remove empty group
                 this.groups.delete(groupId);
                 this.groupOrder = this.groupOrder.filter(id => id !== groupId);
+                this.forgetGroupSelection(groupId);
                 document.getElementById(`group-${groupId}`)?.remove();
 
                 if (this.activeGroupId === groupId) {
                     this.activeGroupId = null;
-                    // Select the next group in order, or previous if we closed the last one
-                    const nextGroupIndex = Math.min(groupIndex, this.groupOrder.length - 1);
-                    const nextGroupId = this.groupOrder[nextGroupIndex];
-            if (nextGroupId) {
-                this.activateGroup(nextGroupId, null, { save: shouldSave });
-            } else {
-                this.focusedPaneId = null;
-                this.updatePaneLayout();
-                this.noPaneEl.classList.remove('hidden');
-                this.keybar.classList.add('hidden');
-                this.keybarToggle.classList.remove('active');
-                this.updateMobileKeybarVisibility();
-                // Keep expand button visible when no panes
-                this.clearIconFade?.();
-            }
+                    const previousSelection = this.getPreviousGroupSelection();
+                    // Fall back to sidebar order when there is no selection history.
+                    const fallbackIndex = Math.min(groupIndex, this.groupOrder.length - 1);
+                    const fallbackGroupId = this.groupOrder[fallbackIndex];
+                    if (previousSelection) {
+                        this.activateGroup(previousSelection.groupId, previousSelection.paneId, { save: shouldSave });
+                    } else if (fallbackGroupId) {
+                        this.activateGroup(fallbackGroupId, null, { save: shouldSave });
+                    } else {
+                        this.focusedPaneId = null;
+                        this.updatePaneLayout();
+                        this.noPaneEl.classList.remove('hidden');
+                        this.keybar.classList.add('hidden');
+                        this.keybarToggle.classList.remove('active');
+                        this.updateMobileKeybarVisibility();
+                        // Keep expand button visible when no panes
+                        this.clearIconFade?.();
+                    }
                 }
             } else {
                 this.updateGroupLayout(group);
@@ -1868,6 +1875,7 @@ class TerminalMultiplexer {
             this.groupOrder = [];
             this.activeGroupId = null;
             this.focusedPaneId = null;
+            this.groupSelectionHistory = [];
             this.paneList.innerHTML = '';
             this.resetPaneDisplayDOM();
 
@@ -2551,15 +2559,19 @@ class TerminalMultiplexer {
 
         this.groups.delete(groupId);
         this.groupOrder = this.groupOrder.filter(id => id !== groupId);
+        this.forgetGroupSelection(groupId);
         document.getElementById(`group-${groupId}`)?.remove();
 
         if (this.activeGroupId === groupId) {
             this.activeGroupId = null;
-            // Select the next group in order, or previous if we closed the last one
-            const nextGroupIndex = Math.min(groupIndex, this.groupOrder.length - 1);
-            const nextGroupId = this.groupOrder[nextGroupIndex];
-            if (nextGroupId) {
-                this.activateGroup(nextGroupId);
+            const previousSelection = this.getPreviousGroupSelection();
+            // Fall back to sidebar order when there is no selection history.
+            const fallbackIndex = Math.min(groupIndex, this.groupOrder.length - 1);
+            const fallbackGroupId = this.groupOrder[fallbackIndex];
+            if (previousSelection) {
+                this.activateGroup(previousSelection.groupId, previousSelection.paneId);
+            } else if (fallbackGroupId) {
+                this.activateGroup(fallbackGroupId);
             } else {
                 this.focusedPaneId = null;
                 this.updatePaneLayout();
@@ -3673,6 +3685,25 @@ class TerminalMultiplexer {
     // Pane Rendering
     // ==================
 
+    rememberGroupSelection(groupId, paneId) {
+        this.groupSelectionHistory = this.groupSelectionHistory.filter(selection => selection.groupId !== groupId);
+        this.groupSelectionHistory.push({ groupId, paneId });
+    }
+
+    forgetGroupSelection(groupId) {
+        this.groupSelectionHistory = this.groupSelectionHistory.filter(selection => selection.groupId !== groupId);
+    }
+
+    getPreviousGroupSelection() {
+        while (this.groupSelectionHistory.length > 0) {
+            const selection = this.groupSelectionHistory[this.groupSelectionHistory.length - 1];
+            const group = this.groups.get(selection.groupId);
+            if (group?.paneIds.length > 0) return selection;
+            this.groupSelectionHistory.pop();
+        }
+        return null;
+    }
+
     activateGroup(groupId, focusPaneId = null, options = {}) {
         const group = this.groups.get(groupId);
         if (!group) return;
@@ -3692,6 +3723,7 @@ class TerminalMultiplexer {
 
         this.activeGroupId = groupId;
         this.focusedPaneId = paneToFocus;
+        this.rememberGroupSelection(groupId, paneToFocus);
         this.updateSidebarActiveStates();
         this.noPaneEl.classList.add('hidden');
         this.updateKeybarVisibility();
@@ -3727,6 +3759,10 @@ class TerminalMultiplexer {
         // Track focused pane for keybar targeting in split groups
         const focusChanged = this.focusedPaneId !== paneId;
         this.focusedPaneId = paneId;
+        const activeGroup = this.groups.get(this.activeGroupId);
+        if (activeGroup?.paneIds.includes(paneId)) {
+            this.rememberGroupSelection(activeGroup.id, paneId);
+        }
         this.updateSidebarActiveStates();
         this.updateKeybarVisibility();
         if (focusChanged && options.save !== false) this.saveUIState();
