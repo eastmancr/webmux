@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { appendFile, cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -135,6 +135,8 @@ try {
     for (const name of ['config', 'data', 'state', 'uploads']) {
         await mkdir(path.join(tempRoot, name));
     }
+    const staticDir = path.join(tempRoot, 'static');
+    await cp(path.join(root, 'static'), staticDir, { recursive: true });
 
     const build = spawnSync('go', ['build', '-tags', 'dev', '-o', binary, '.'], { cwd: root, stdio: 'inherit' });
     assert.equal(build.status, 0, 'development build failed');
@@ -145,22 +147,27 @@ try {
     const isolatedEnv = {
         ...process.env,
         HISTFILE: '/dev/null',
-        WEBMUX_STATIC_DIR: path.join(root, 'static'),
+        WEBMUX_STATIC_DIR: staticDir,
         XDG_CONFIG_HOME: path.join(tempRoot, 'config'),
         XDG_DATA_HOME: path.join(tempRoot, 'data'),
         XDG_STATE_HOME: path.join(tempRoot, 'state'),
     };
-    server = spawn(binary, [
+    const serverArgs = [
         '-port', String(serverPort),
         '-pane-port-start', String(panePort),
         '-upload-dir', path.join(tempRoot, 'uploads'),
-        '-close-panes-on-exit',
         root,
-    ], { cwd: root, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] });
-
-    server.stdout.on('data', chunk => { serverLog += chunk; });
-    server.stderr.on('data', chunk => { serverLog += chunk; });
-    await waitFor(async () => (await fetch(`${baseURL}/api/info`)).ok, 'isolated webmux server');
+    ];
+    const startServer = async () => {
+        server = spawn(binary, serverArgs, { cwd: root, env: isolatedEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+        server.stdout.on('data', chunk => { serverLog += chunk; });
+        server.stderr.on('data', chunk => { serverLog += chunk; });
+        return waitFor(async () => {
+            const response = await fetch(`${baseURL}/api/info`);
+            return response.ok ? response.json() : null;
+        }, 'isolated webmux server');
+    };
+    let serverInfo = await startServer();
 
     const paneResponse = await fetch(`${mountedURL}api/panes`, {
         method: 'POST',
@@ -195,6 +202,83 @@ try {
     assert.deepEqual(tools.exceptions, [], `browser exceptions: ${tools.exceptions.join('; ')}`);
     assert.deepEqual(tools.consoleErrors, [], `console errors: ${tools.consoleErrors.join('; ')}`);
     assert.deepEqual(tools.scriptFailures, [], `script load failures: ${tools.scriptFailures.join('; ')}`);
+
+    const initialRunId = serverInfo.serverRunId;
+    const initialAssetVersion = serverInfo.assetVersion;
+    await tools.evaluate(`window.__webmuxSmokeDocumentToken = 'same-document'; window.app.openLogsModal()`);
+    await waitFor(() => tools.evaluate(`Boolean(window.app.logsRefreshInterval?.close)`), 'logs event stream');
+    await stopProcess(server, 'SIGTERM');
+    await waitFor(() => tools.evaluate(`window.app?.connectionMode === 'recovering' && window.app.terminals.size === 0`), 'client connection pause');
+    serverInfo = await startServer();
+    assert.notEqual(serverInfo.serverRunId, initialRunId, 'replacement server should have a new run ID');
+    assert.equal(serverInfo.assetVersion, initialAssetVersion, 'unchanged static assets should retain their version');
+    await waitFor(() => tools.evaluate(`window.app?.serverRunId === '${serverInfo.serverRunId}' && window.app.connectionMode === 'active' && window.app.serverConnected && window.app.terminals.size === 1 && !window.app.serverRecoveryPromise`), 'in-place server recovery');
+    const recoveredState = await tools.evaluate(`({
+        token: window.__webmuxSmokeDocumentToken,
+        modal: Boolean(document.getElementById('server-restart-modal')),
+        paneSocket: window.app.paneSocket?.readyState,
+        clipboardSocket: window.app.clipboardSocket?.readyState,
+        scratchEvents: window.app.scratchEventSource?.readyState,
+        markedEvents: window.app.markedEventSource?.readyState,
+        logsEvents: Boolean(window.app.logsRefreshInterval?.close),
+    })`);
+    assert.equal(recoveredState.token, 'same-document', 'compatible restart should preserve the document');
+    assert.equal(recoveredState.modal, false, 'compatible restart should not show the refresh modal');
+    assert.equal(recoveredState.paneSocket, 1, 'pane events should reconnect');
+    assert.ok(recoveredState.clipboardSocket === 0 || recoveredState.clipboardSocket === 1, 'clipboard events should reconnect');
+    assert.ok(recoveredState.scratchEvents === 0 || recoveredState.scratchEvents === 1, 'scratch events should reconnect');
+    assert.ok(recoveredState.markedEvents === 0 || recoveredState.markedEvents === 1, 'marked events should reconnect');
+    assert.equal(recoveredState.logsEvents, true, 'logs events should reconnect');
+
+    tools.clearErrors();
+    await tools.evaluate(`window.__webmuxSmokeDocumentToken = 'stale-document'`);
+    await stopProcess(server, 'SIGTERM');
+    await waitFor(() => tools.evaluate(`window.app?.connectionMode === 'recovering'`), 'second client connection pause');
+    await appendFile(path.join(staticDir, 'app.js'), `\nwindow.__webmuxSmokeChangedAsset = true;\n`);
+    const compatibleAssetVersion = serverInfo.assetVersion;
+    serverInfo = await startServer();
+    assert.notEqual(serverInfo.assetVersion, compatibleAssetVersion, 'changed app.js should change the asset version');
+    await waitFor(() => tools.evaluate(`window.app?.connectionMode === 'refresh-required' && Boolean(document.getElementById('server-restart-modal'))`), 'refresh-required restart modal');
+    const stoppedState = await tools.evaluate(`({
+        token: window.__webmuxSmokeDocumentToken,
+        changedAssetLoaded: Boolean(window.__webmuxSmokeChangedAsset),
+        paneSocket: window.app.paneSocket,
+        clipboardSocket: window.app.clipboardSocket,
+        scratchEvents: window.app.scratchEventSource,
+        markedEvents: window.app.markedEventSource,
+        devReloadSocket: window.app.devReloadSocket,
+        logsEvents: window.app.logsRefreshInterval,
+        terminals: window.app.terminals.size,
+        sharedIframes: window.app.sharedIframes.size,
+        scratchTimer: window.app.scratchReconnectTimer,
+        markedTimer: window.app.markedReconnectTimer,
+        clipboardTimer: window.app.clipboardReconnectTimer,
+        devReloadTimer: window.app.devReloadReconnectTimer,
+    })`);
+    assert.deepEqual(stoppedState, {
+        token: 'stale-document',
+        changedAssetLoaded: false,
+        paneSocket: null,
+        clipboardSocket: null,
+        scratchEvents: null,
+        markedEvents: null,
+        devReloadSocket: null,
+        logsEvents: null,
+        terminals: 0,
+        sharedIframes: 0,
+        scratchTimer: null,
+        markedTimer: null,
+        clipboardTimer: null,
+        devReloadTimer: null,
+    }, 'refresh modal should leave no reconnecting application connections');
+
+    await tools.evaluate(`document.querySelector('#server-restart-modal button').click()`);
+    await waitFor(() => tools.evaluate(`Boolean(window.__webmuxSmokeChangedAsset) && window.app?.serverRunId === '${serverInfo.serverRunId}' && window.app.terminals.size === 1`), 'refreshed client after static change');
+    assert.equal(await tools.evaluate(`window.__webmuxSmokeDocumentToken`), undefined, 'refresh should replace the stale document');
+    assert.equal(await tools.evaluate(`Boolean(document.getElementById('server-restart-modal'))`), false, 'refresh modal should be gone after reload');
+    assert.deepEqual(tools.exceptions, [], `restart exceptions: ${tools.exceptions.join('; ')}`);
+    assert.deepEqual(tools.consoleErrors, [], `restart console errors: ${tools.consoleErrors.join('; ')}`);
+    assert.deepEqual(tools.scriptFailures, [], `restart script failures: ${tools.scriptFailures.join('; ')}`);
 
     const closeAllUI = await tools.evaluate(`(() => {
         const button = document.getElementById('close-all');

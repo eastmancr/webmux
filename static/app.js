@@ -151,6 +151,18 @@ class TerminalMultiplexer {
         this.assetVersion = null;
         this.serverRestartDetected = false;
         this.serverRecoveryPromise = null;
+        this.connectionMode = 'active';
+        this.paneEventsEnabled = true;
+        this.scratchEventSource = null;
+        this.scratchReconnectTimer = null;
+        this.markedEventSource = null;
+        this.markedReconnectTimer = null;
+        this.clipboardSocket = null;
+        this.clipboardReconnectTimer = null;
+        this.clipboardFocusHandler = null;
+        this.devReloadSocket = null;
+        this.devReloadReconnectTimer = null;
+        this.resumeLogsAfterRecovery = false;
         this.diagnosticQueue = [];
         this.diagnosticFlushTimer = null;
         this.paneTypes = [
@@ -276,6 +288,7 @@ class TerminalMultiplexer {
         let reconnectDelay = 250;
 
         const connect = () => {
+            if (!this.paneEventsEnabled || this.connectionMode === 'refresh-required') return;
             const ws = new WebSocket(this.wsUrl('/api/panes/events'));
             let diagnosticPingTimer = null;
             this.paneSocket = ws;
@@ -305,10 +318,8 @@ class TerminalMultiplexer {
                 if (this.paneSocket === ws) {
                     this.paneSocket = null;
                 }
-                if (this.serverConnected) {
-                    this.setServerConnected(false);
-                }
-                if (!reconnectTimer) {
+                this.beginServerRecovery();
+                if (this.paneEventsEnabled && !reconnectTimer) {
                     const delay = reconnectDelay;
                     reconnectDelay = Math.min(reconnectDelay * 2, 2000);
                     reconnectTimer = setTimeout(() => {
@@ -324,6 +335,16 @@ class TerminalMultiplexer {
             };
         };
 
+        this.stopPaneEvents = () => {
+            this.paneEventsEnabled = false;
+            if (reconnectTimer) {
+                clearTimeout(reconnectTimer);
+                reconnectTimer = null;
+            }
+            const socket = this.paneSocket;
+            this.paneSocket = null;
+            socket?.close(1000, 'client refresh required');
+        };
         connect();
     }
 
@@ -688,6 +709,7 @@ class TerminalMultiplexer {
     }
 
     setServerConnected(connected, options = {}) {
+        if (connected && this.connectionMode === 'refresh-required') return;
         // Skip if state hasn't changed
         if (connected === this.serverConnected) {
             return;
@@ -715,8 +737,11 @@ class TerminalMultiplexer {
     }
 
     handleServerReady(serverRunId, assetVersion) {
+        if (this.connectionMode === 'refresh-required') return;
         if (this.observeServerIdentity(serverRunId, assetVersion)) return;
-        if (!this.serverConnected) {
+        if (this.connectionMode === 'recovering') {
+            this.recoverAfterServerRestart(false);
+        } else if (!this.serverConnected) {
             this.setServerConnected(true);
         } else {
             this.checkPaneHealth({ savePassiveChanges: false });
@@ -741,34 +766,67 @@ class TerminalMultiplexer {
         if (assetsChanged) {
             this.showServerRestartModal();
         } else {
-            this.recoverAfterServerRestart();
+            this.recoverAfterServerRestart(true);
         }
         return true;
     }
 
-    recoverAfterServerRestart() {
+    beginServerRecovery() {
+        if (this.connectionMode === 'refresh-required' || this.connectionMode === 'recovering') return;
+        this.connectionMode = 'recovering';
+        this.setServerConnected(false);
+        this.stopRestartSensitiveConnections();
+    }
+
+    stopRestartSensitiveConnections() {
+        this.stopScratchEvents();
+        this.stopMarkedEvents();
+        this.stopClipboardEvents();
+        this.stopDevReload();
+        this.resumeLogsAfterRecovery = !this.logsModal?.classList.contains('hidden') && this.logsAutoRefresh?.checked;
+        this.stopLogsAutoRefresh();
+        this.resetPaneDisplayDOM();
+    }
+
+    startRestartSensitiveConnections() {
+        this.connectScratchEvents();
+        this.connectMarkedEvents();
+        this.startClipboardWebSocket();
+        this.connectDevReload();
+        if (this.resumeLogsAfterRecovery) this.startLogsAutoRefresh();
+        this.resumeLogsAfterRecovery = false;
+    }
+
+    recoverAfterServerRestart(showToast = true) {
         if (this.serverRecoveryPromise) return this.serverRecoveryPromise;
         this.serverRecoveryPromise = (async () => {
-            this.setServerConnected(true, { reload: false });
+            this.connectionMode = 'active';
             await this.loadSettings();
             await this.loadServerInfo();
             await this.loadUIState();
             await this.loadPanes();
+            if (this.connectionMode === 'refresh-required') return;
 
-            const reloadedBackends = new Set();
-            for (const pane of this.panes.values()) {
-                if (!this.isSharedPane(pane) || reloadedBackends.has(pane.backendId)) continue;
-                reloadedBackends.add(pane.backendId);
-                const popoutWindow = this.popoutWindows.get(this.getPopoutKey(pane));
+            for (const [popoutKey, state] of this.popoutStates) {
+                const pane = this.panes.get(state.paneId);
+                if (!pane) continue;
+                const popoutWindow = this.popoutWindows.get(popoutKey);
                 if (popoutWindow && !popoutWindow.closed) {
                     popoutWindow.location.href = this.url(`/p/${pane.id}/`);
+                } else {
+                    this.popoutChannel?.postMessage({
+                        type: 'webmux-popout-reload',
+                        paneId: state.paneId,
+                        popoutId: state.popoutId,
+                    });
                 }
-                this.reloadSharedPaneIframe(pane);
             }
-            this.updatePaneLayout();
-            this.showToast('Reconnected after server restart');
+            this.startRestartSensitiveConnections();
+            this.setServerConnected(true, { reload: false });
+            if (showToast) this.showToast('Reconnected after server restart');
         })().catch(error => {
             console.error('Failed to recover after server restart:', error);
+            this.connectionMode = 'recovering';
             this.setServerConnected(false);
         }).finally(() => {
             this.serverRecoveryPromise = null;
@@ -779,7 +837,11 @@ class TerminalMultiplexer {
     showServerRestartModal() {
         if (this.serverRestartDetected) return;
         this.serverRestartDetected = true;
+        this.connectionMode = 'refresh-required';
         this.setServerConnected(false);
+        this.stopPaneEvents?.();
+        this.stopRestartSensitiveConnections();
+        this.closePopoutsForRefresh();
 
         const modal = document.createElement('div');
         modal.id = 'server-restart-modal';
@@ -805,6 +867,19 @@ class TerminalMultiplexer {
         refreshButton.addEventListener('click', () => window.location.reload());
         document.body.appendChild(modal);
         refreshButton.focus();
+    }
+
+    closePopoutsForRefresh() {
+        for (const [key, state] of Array.from(this.popoutStates)) {
+            this.popoutChannel?.postMessage({
+                type: 'webmux-popout-close',
+                paneId: state.paneId,
+                popoutId: state.popoutId,
+            });
+            const popoutWindow = this.popoutWindows.get(key);
+            if (popoutWindow && !popoutWindow.closed) popoutWindow.close();
+            this.clearPopoutTracking(key);
+        }
     }
 
     updateActionButtonStates() {
@@ -1029,6 +1104,7 @@ class TerminalMultiplexer {
         const savePassiveChanges = options.savePassiveChanges === true;
         try {
             const response = await fetch(this.url('/api/panes'));
+            if (this.connectionMode !== 'active') return;
 
             // Update connection status on successful response
             if (!this.serverConnected) {
@@ -1036,6 +1112,7 @@ class TerminalMultiplexer {
             }
 
             const panes = await response.json();
+            if (this.connectionMode !== 'active') return;
 
             // Build a map of server panes and update pane data
             const serverPaneIds = new Set();
@@ -1109,7 +1186,7 @@ class TerminalMultiplexer {
         }
 
         if (event.type === 'server-shutdown') {
-            this.setServerConnected(false);
+            this.beginServerRecovery();
             return;
         }
 
@@ -1776,6 +1853,7 @@ class TerminalMultiplexer {
             this.logDiagnostic('panes', 'load-start');
             const response = await fetch(this.url('/api/panes'));
             const serverPanes = await response.json();
+            if (this.connectionMode === 'refresh-required') return;
 
             // Clear existing state before loading
             this.panes.clear();
@@ -4013,7 +4091,7 @@ class TerminalMultiplexer {
     }
 
     connectTerminal(paneId, entry) {
-        if (entry.disposed || entry.suspended || !this.panes.has(paneId)) return;
+        if (this.connectionMode !== 'active' || entry.disposed || entry.suspended || !this.panes.has(paneId)) return;
         const socket = new WebSocket(this.wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
         socket.binaryType = 'arraybuffer';
         entry.socket = socket;
@@ -4041,7 +4119,7 @@ class TerminalMultiplexer {
             this.logDiagnostic('terminal', 'close', { paneId });
             entry.socket = null;
             entry.terminal.options.disableStdin = true;
-            if (entry.suspended) return;
+            if (entry.suspended || this.connectionMode !== 'active') return;
             document.getElementById(`pane-${paneId}`)?.classList.add('loading');
             entry.reconnectTimer = setTimeout(() => {
                 entry.reconnectTimer = null;
@@ -4380,6 +4458,10 @@ class TerminalMultiplexer {
     }
 
     updatePaneLayout(keepControlVisible = false) {
+        if (this.connectionMode !== 'active') {
+            this.hideSharedIframes();
+            return;
+        }
         const activeGroup = this.groups.get(this.activeGroupId);
 
         document.querySelectorAll('.pane-container').forEach(el => {
@@ -5569,6 +5651,7 @@ class TerminalMultiplexer {
 
     startLogsAutoRefresh() {
         this.stopLogsAutoRefresh();
+        if (this.connectionMode !== 'active') return;
         const es = new EventSource(this.url('/api/logs/events'));
         let refreshTimer = null;
 
@@ -7621,11 +7704,15 @@ class TerminalMultiplexer {
     }
 
     connectScratchEvents() {
+        if (this.connectionMode !== 'active') return;
+        this.stopScratchEvents();
         // Connect to SSE for scratch pad updates from CLI.
         const retryDelay = 2000;
 
         const connect = () => {
+            if (this.connectionMode !== 'active') return;
             const es = new EventSource(this.url('/api/scratch/events'));
+            this.scratchEventSource = es;
 
             es.onmessage = (e) => {
                 try {
@@ -7667,13 +7754,27 @@ class TerminalMultiplexer {
 
             es.onerror = () => {
                 es.close();
-                setTimeout(connect, retryDelay);
+                if (this.scratchEventSource === es) this.scratchEventSource = null;
+                if (this.connectionMode === 'active' && !this.scratchReconnectTimer) {
+                    this.scratchReconnectTimer = setTimeout(() => {
+                        this.scratchReconnectTimer = null;
+                        connect();
+                    }, retryDelay);
+                }
             };
-
-            this.scratchEventSource = es;
         };
 
         connect();
+    }
+
+    stopScratchEvents() {
+        if (this.scratchReconnectTimer) {
+            clearTimeout(this.scratchReconnectTimer);
+            this.scratchReconnectTimer = null;
+        }
+        const source = this.scratchEventSource;
+        this.scratchEventSource = null;
+        source?.close();
     }
 
     // Sync scratch pad text to server when user edits
@@ -7694,11 +7795,15 @@ class TerminalMultiplexer {
     // ============
 
     connectMarkedEvents() {
+        if (this.connectionMode !== 'active') return;
+        this.stopMarkedEvents();
         // Connect to SSE for marked files updates.
         const retryDelay = 2000;
 
         const connect = () => {
+            if (this.connectionMode !== 'active') return;
             const es = new EventSource(this.url('/api/marked/events'));
+            this.markedEventSource = es;
 
             es.onmessage = (e) => {
                 try {
@@ -7712,13 +7817,27 @@ class TerminalMultiplexer {
 
             es.onerror = () => {
                 es.close();
-                setTimeout(connect, retryDelay);
+                if (this.markedEventSource === es) this.markedEventSource = null;
+                if (this.connectionMode === 'active' && !this.markedReconnectTimer) {
+                    this.markedReconnectTimer = setTimeout(() => {
+                        this.markedReconnectTimer = null;
+                        connect();
+                    }, retryDelay);
+                }
             };
-
-            this.markedEventSource = es;
         };
 
         connect();
+    }
+
+    stopMarkedEvents() {
+        if (this.markedReconnectTimer) {
+            clearTimeout(this.markedReconnectTimer);
+            this.markedReconnectTimer = null;
+        }
+        const source = this.markedEventSource;
+        this.markedEventSource = null;
+        source?.close();
     }
 
     async markFile(path) {
@@ -8084,10 +8203,11 @@ class TerminalMultiplexer {
     // still travels through GET /api/clipboard so large payloads are fetched only
     // when a version actually changes.
     startClipboardWebSocket() {
+        if (this.connectionMode !== 'active') return;
+        this.stopClipboardEvents();
         let knownVersion = -1;
         let pendingVersion = -1;
         let syncing = false;
-        let reconnectTimer = null;
         const reconnectDelay = 2000;
         const syncClipboard = async version => {
             pendingVersion = Math.max(pendingVersion, version);
@@ -8106,6 +8226,7 @@ class TerminalMultiplexer {
         };
 
         const connect = () => {
+            if (this.connectionMode !== 'active') return;
             const ws = new WebSocket(this.wsUrl('/api/clipboard/events'));
             this.clipboardSocket = ws;
 
@@ -8135,9 +8256,9 @@ class TerminalMultiplexer {
                 if (this.clipboardSocket === ws) {
                     this.clipboardSocket = null;
                 }
-                if (!reconnectTimer) {
-                    reconnectTimer = setTimeout(() => {
-                        reconnectTimer = null;
+                if (this.connectionMode === 'active' && !this.clipboardReconnectTimer) {
+                    this.clipboardReconnectTimer = setTimeout(() => {
+                        this.clipboardReconnectTimer = null;
                         connect();
                     }, reconnectDelay);
                 }
@@ -8148,10 +8269,59 @@ class TerminalMultiplexer {
             };
         };
 
-        window.addEventListener('focus', () => {
+        this.clipboardFocusHandler = () => {
             if (pendingVersion > knownVersion) syncClipboard(pendingVersion);
-        });
+        };
+        window.addEventListener('focus', this.clipboardFocusHandler);
         connect();
+    }
+
+    stopClipboardEvents() {
+        if (this.clipboardReconnectTimer) {
+            clearTimeout(this.clipboardReconnectTimer);
+            this.clipboardReconnectTimer = null;
+        }
+        if (this.clipboardFocusHandler) {
+            window.removeEventListener('focus', this.clipboardFocusHandler);
+            this.clipboardFocusHandler = null;
+        }
+        const socket = this.clipboardSocket;
+        this.clipboardSocket = null;
+        socket?.close(1000, 'server connection paused');
+    }
+
+    connectDevReload() {
+        if (this.connectionMode !== 'active' || this.devReloadSocket) return;
+        fetch(this.url('/api/dev-reload'), { method: 'HEAD' })
+            .then(response => {
+                if (this.connectionMode !== 'active' || (response.status !== 400 && !response.ok)) return;
+                const ws = new WebSocket(this.wsUrl('/api/dev-reload'));
+                this.devReloadSocket = ws;
+                ws.onmessage = event => {
+                    if (event.data === 'reload') window.location.reload();
+                };
+                ws.onclose = () => {
+                    if (this.devReloadSocket === ws) this.devReloadSocket = null;
+                    if (this.connectionMode === 'active' && !this.devReloadReconnectTimer) {
+                        this.devReloadReconnectTimer = setTimeout(() => {
+                            this.devReloadReconnectTimer = null;
+                            this.connectDevReload();
+                        }, 1000);
+                    }
+                };
+                ws.onerror = () => ws.close();
+            })
+            .catch(() => {});
+    }
+
+    stopDevReload() {
+        if (this.devReloadReconnectTimer) {
+            clearTimeout(this.devReloadReconnectTimer);
+            this.devReloadReconnectTimer = null;
+        }
+        const socket = this.devReloadSocket;
+        this.devReloadSocket = null;
+        socket?.close(1000, 'server connection paused');
     }
 
 }
@@ -8159,22 +8329,5 @@ class TerminalMultiplexer {
 // Initialize app
 document.addEventListener('DOMContentLoaded', () => {
     window.app = new TerminalMultiplexer();
-
-    // Dev mode live reload - only attempt if endpoint exists
-    // Uses HEAD request to probe; avoids WebSocket errors in production
-    fetch(window.app.url('/api/dev-reload'), { method: 'HEAD' })
-        .then(response => {
-            // 400 = endpoint exists but needs WebSocket upgrade (expected)
-            if (response.status === 400 || response.ok) {
-                const ws = new WebSocket(window.app.wsUrl('/api/dev-reload'));
-                ws.onmessage = (e) => {
-                    if (e.data === 'reload') {
-                        console.log('[dev] Reloading...');
-                        location.reload();
-                    }
-                };
-                ws.onerror = () => {};
-            }
-        })
-        .catch(() => {});
+    window.app.connectDevReload();
 });

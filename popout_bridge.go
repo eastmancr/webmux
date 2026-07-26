@@ -68,6 +68,10 @@ const panePopoutBridgeScript = `<script>
       setTimeout(function() { disablePaneClient('This pane has been returned to webmux.'); }, 100);
       return;
     }
+    if (msg.type === 'webmux-popout-reload' && (msg.popoutId === popoutId || msg.paneId === paneId)) {
+      window.location.reload();
+      return;
+    }
     if (msg.type === 'webmux-pane-owner-main' && msg.paneId === paneId && shouldAcceptMainOwnership(msg)) {
       disablePaneClient('This pane is active in the webmux workspace.');
       return;
