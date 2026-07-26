@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFile, cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { appendFile, chmod, cp, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -132,9 +132,12 @@ class DevTools {
 }
 
 try {
-    for (const name of ['config', 'data', 'state', 'uploads']) {
+    for (const name of ['bin', 'config', 'data', 'state', 'uploads']) {
         await mkdir(path.join(tempRoot, name));
     }
+    const fakeOpenCode = path.join(tempRoot, 'bin', 'opencode');
+    await cp(path.join(root, 'scripts', 'testdata', 'fake-opencode.mjs'), fakeOpenCode);
+    await chmod(fakeOpenCode, 0o755);
     const staticDir = path.join(tempRoot, 'static');
     await cp(path.join(root, 'static'), staticDir, { recursive: true });
 
@@ -151,6 +154,7 @@ try {
         XDG_CONFIG_HOME: path.join(tempRoot, 'config'),
         XDG_DATA_HOME: path.join(tempRoot, 'data'),
         XDG_STATE_HOME: path.join(tempRoot, 'state'),
+        PATH: `${path.join(tempRoot, 'bin')}:${process.env.PATH}`,
     };
     const serverArgs = [
         '-port', String(serverPort),
@@ -177,6 +181,14 @@ try {
     const paneBody = await paneResponse.text();
     assert.equal(paneResponse.status, 201, paneBody);
     const pane = JSON.parse(paneBody);
+    const openCodeResponse = await fetch(`${mountedURL}api/panes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'opencode', name: 'opencode-attention-test' }),
+    });
+    const openCodeBody = await openCodeResponse.text();
+    assert.equal(openCodeResponse.status, 201, openCodeBody);
+    const openCodePane = JSON.parse(openCodeBody);
 
     chromium = spawn(findChromium(), [
         '--headless=new',
@@ -199,9 +211,67 @@ try {
 
     await tools.command('Page.navigate', { url: mountedURL });
     await waitFor(() => tools.evaluate('window.app?.terminals.size === 1'), 'embedded terminal');
+    await tools.evaluate(`(() => {
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${openCodePane.id}'));
+        window.app.activateGroup(group.id, '${openCodePane.id}');
+    })()`);
+    await waitFor(() => tools.evaluate(`window.app?.sharedIframes.get('opencode')?.contentWindow?.__fakeOpenCodeReady`), 'fake OpenCode');
     assert.deepEqual(tools.exceptions, [], `browser exceptions: ${tools.exceptions.join('; ')}`);
     assert.deepEqual(tools.consoleErrors, [], `console errors: ${tools.consoleErrors.join('; ')}`);
     assert.deepEqual(tools.scriptFailures, [], `script load failures: ${tools.scriptFailures.join('; ')}`);
+
+    const fakeOpenCodeURL = `http://127.0.0.1:${openCodePane.port}`;
+    await fetch(`${fakeOpenCodeURL}/test/question/ask?id=focused-question`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused interactive attention');
+    await fetch(`${fakeOpenCodeURL}/question/focused-question/reply`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused interactive resolution');
+    await fetch(`${fakeOpenCodeURL}/test/permission/ask?id=focused-permission`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused permission attention');
+    await fetch(`${fakeOpenCodeURL}/permission/focused-permission/reject`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused permission rejection');
+
+    await tools.evaluate(`(() => {
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${pane.id}'));
+        window.app.activateGroup(group.id, '${pane.id}');
+    })()`);
+    await tools.evaluate(`window.app.saveUIState()`);
+    await fetch(`${fakeOpenCodeURL}/test/question/ask?id=question-one` , { method: 'POST' });
+    await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}') && document.querySelector('[data-pane-id="${openCodePane.id}"]')?.classList.contains('has-attention')`), 'question attention');
+    await fetch(`${fakeOpenCodeURL}/test/permission/ask?id=permission-one`, { method: 'POST' });
+    await fetch(`${fakeOpenCodeURL}/question/question-one/reply`, { method: 'POST' });
+    assert.equal(await tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), true, 'resolving one of multiple causes should retain attention');
+    await fetch(`${fakeOpenCodeURL}/permission/permission-one/reply`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'resolved interactive attention');
+
+    await tools.evaluate(`(() => {
+        const iframe = window.app.sharedIframes.get('opencode');
+        iframe.contentWindow.localStorage.setItem('opencode.window.browser.dat:tabs', JSON.stringify([
+            { type: 'session', server: 'webmux', sessionId: 'background-session' },
+        ]));
+        iframe.contentWindow.localStorage.setItem('opencode.global.dat:notification', JSON.stringify({
+            list: [{ type: 'turn-complete', session: 'background-session', directory: '/tmp/webmux-attention', time: 1, viewed: false }],
+        }));
+    })()`);
+    await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'unviewed notification attention');
+    await tools.evaluate(`window.app.sharedIframes.get('opencode').contentWindow.localStorage.setItem('opencode.window.browser.dat:tabs', '[]')`);
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'closed notification tab resolution');
+    await tools.evaluate(`(() => {
+        const iframe = window.app.sharedIframes.get('opencode');
+        iframe.contentWindow.localStorage.setItem('opencode.window.browser.dat:tabs', JSON.stringify([
+            { type: 'session', server: 'webmux', sessionId: 'background-session' },
+        ]));
+        iframe.contentWindow.localStorage.setItem('opencode.global.dat:notification', JSON.stringify({
+            list: [{ type: 'turn-complete', session: 'background-session', directory: '/tmp/webmux-attention', time: 1, viewed: true }],
+        }));
+    })()`);
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'viewed notification resolution');
+
+    await fetch(`${fakeOpenCodeURL}/test/question/ask?id=restart-question`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'pre-restart question attention');
+    await waitFor(async () => {
+        const storage = await fetch(`${baseURL}/api/storage/opencode`).then(response => response.json());
+        return Boolean(storage.items?.['webmux.internal.opencode.attention']);
+    }, 'persisted OpenCode attention causes');
 
     const initialRunId = serverInfo.serverRunId;
     const initialAssetVersion = serverInfo.assetVersion;
@@ -213,6 +283,23 @@ try {
     assert.notEqual(serverInfo.serverRunId, initialRunId, 'replacement server should have a new run ID');
     assert.equal(serverInfo.assetVersion, initialAssetVersion, 'unchanged static assets should retain their version');
     await waitFor(() => tools.evaluate(`window.app?.serverRunId === '${serverInfo.serverRunId}' && window.app.connectionMode === 'active' && window.app.serverConnected && window.app.terminals.size === 1 && !window.app.serverRecoveryPromise`), 'in-place server recovery');
+    await tools.evaluate(`(() => {
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${openCodePane.id}'));
+        window.app.activateGroup(group.id, '${openCodePane.id}');
+    })()`);
+    await waitFor(() => tools.evaluate(`window.app.sharedIframes.get('opencode')?.contentWindow?.__fakeOpenCodeReady`), 'recovered fake OpenCode');
+    assert.equal(await tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), true, 'OpenCode attention should survive restart source rehydration');
+    await tools.evaluate(`(() => {
+        const frame = window.app.sharedIframes.get('opencode').contentWindow;
+        frame.__fakeOpenCodeEvents.close();
+        return frame.fetch('/question/restart-question/reply', { method: 'POST' });
+    })()`);
+    await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'post-restart question resolution');
+    await tools.evaluate(`(() => {
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${pane.id}'));
+        window.app.activateGroup(group.id, '${pane.id}');
+    })()`);
+    await tools.evaluate(`window.app.saveUIState()`);
     const recoveredState = await tools.evaluate(`({
         token: window.__webmuxSmokeDocumentToken,
         modal: Boolean(document.getElementById('server-restart-modal')),
@@ -273,7 +360,12 @@ try {
     }, 'refresh modal should leave no reconnecting application connections');
 
     await tools.evaluate(`document.querySelector('#server-restart-modal button').click()`);
-    await waitFor(() => tools.evaluate(`Boolean(window.__webmuxSmokeChangedAsset) && window.app?.serverRunId === '${serverInfo.serverRunId}' && window.app.terminals.size === 1`), 'refreshed client after static change');
+    await waitFor(() => tools.evaluate(`Boolean(window.__webmuxSmokeChangedAsset) && window.app?.serverRunId === '${serverInfo.serverRunId}'`), 'refreshed client after static change');
+    await tools.evaluate(`(() => {
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${pane.id}'));
+        window.app.activateGroup(group.id, '${pane.id}');
+    })()`);
+    await waitFor(() => tools.evaluate(`window.app.terminals.size === 1`), 'terminal after refreshed client');
     assert.equal(await tools.evaluate(`window.__webmuxSmokeDocumentToken`), undefined, 'refresh should replace the stale document');
     assert.equal(await tools.evaluate(`Boolean(document.getElementById('server-restart-modal'))`), false, 'refresh modal should be gone after reload');
     assert.deepEqual(tools.exceptions, [], `restart exceptions: ${tools.exceptions.join('; ')}`);
@@ -399,10 +491,11 @@ try {
         calls: ['terminal'],
         firstText: 'Close Terminal Panes?',
         heldOpen: true,
-        ordered: ['smoke-opencode-middle', 'smoke-opencode-bottom'],
+        ordered: [openCodePane.id, 'smoke-opencode-middle', 'smoke-opencode-bottom'],
         closed: [
             { id: 'smoke-opencode-bottom', preAnimated: true, skipReflow: true },
             { id: 'smoke-opencode-middle', preAnimated: true, skipReflow: true },
+            { id: openCodePane.id, preAnimated: true, skipReflow: true },
         ],
         reflows: 1,
     }, 'typed Close All should confirm, filter, and close from bottom to top');

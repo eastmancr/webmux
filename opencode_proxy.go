@@ -356,6 +356,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var opencodeWindowTabsInfoKey = 'opencode.window.browser.dat:tabs.info';
   var opencodeWindowTabsRecentKey = 'opencode.window.browser.dat:tabs.recent';
   var opencodeNotificationStorageKey = 'opencode.global.dat:notification';
+  var opencodeAttentionStorageKey = 'webmux.internal.opencode.attention';
   var opencodeGlobalStoragePrefix = 'opencode.global.dat:';
   var opencodeScopeSeparator = '\u0000';
   var canonicalServerID = 'webmux';
@@ -364,48 +365,135 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   // but present local-scoped state back to OpenCode for the active origin.
   var currentServerID = 'local';
   var attentionChannel = 'BroadcastChannel' in window ? new BroadcastChannel('webmux-popouts') : null;
-
-  function openCodeAttentionSession(value) {
-    try {
-      if (value && typeof value.data === 'string') value = value.data;
-      if (typeof value === 'string') value = JSON.parse(value);
-      if (!value || typeof value !== 'object') return '';
-      if (Array.isArray(value)) {
-        for (var i = 0; i < value.length; i++) {
-          var session = openCodeAttentionSession(value[i]);
-          if (session) return session;
-        }
-        return '';
-      }
-      if (value.sessionID || value.sessionId || value.session) return value.sessionID || value.sessionId || value.session;
-      return openCodeAttentionSession(value.properties || value.payload || value.permission || value.question);
-    } catch (e) {
-      return '';
+  var openCodeAttentionCauses = {};
+  try {
+    var storedAttentionCauses = JSON.parse(serverStorage[opencodeAttentionStorageKey] || '{}');
+    if (storedAttentionCauses && typeof storedAttentionCauses === 'object' && !Array.isArray(storedAttentionCauses)) {
+      openCodeAttentionCauses = storedAttentionCauses;
     }
-  }
+  } catch (e) {}
+  delete serverStorage[opencodeAttentionStorageKey];
 
-  function requestWebmuxAttention(cause) {
-    var sessionID = openCodeAttentionSession(cause);
+  function sendWebmuxAttentionState() {
     var activeSessionID = currentOpenCodeRouteInfo(window.location.href)?.sessionID || '';
-    var backgroundSession = !!sessionID && !!activeSessionID && sessionID !== activeSessionID;
-    if (!backgroundSession && !document.hidden && document.hasFocus()) return;
-    var message = { type: 'webmux-pane-attention', paneId: paneID, backendId: backendID, force: backgroundSession };
+    var force = Object.keys(openCodeAttentionCauses).some(function(key) {
+      var parts = key.split('\u0000');
+      if (parts[0] === 'question' || parts[0] === 'permission') return true;
+      return parts[0] === 'notification' && (!activeSessionID || parts[2] !== activeSessionID);
+    });
+    var message = {
+      type: 'webmux-pane-attention',
+      paneId: paneID,
+      backendId: backendID,
+      active: Object.keys(openCodeAttentionCauses).length > 0,
+      force: force
+    };
     try {
       if (window.parent !== window) window.parent.postMessage(message, window.location.origin);
     } catch (e) {}
     try { if (attentionChannel) attentionChannel.postMessage(message); } catch (e) {}
   }
 
-  function isOpenCodeAttentionRequest(value) {
+  function persistOpenCodeAttention() {
+    queueStorageUpdate({ operation: 'set', key: opencodeAttentionStorageKey, value: JSON.stringify(openCodeAttentionCauses) });
+    sendWebmuxAttentionState();
+  }
+
+  function openCodeAttentionEvent(value, forcedType, directory) {
     try {
+      if (value && typeof value.data === 'string') value = value.data;
       if (typeof value === 'string') value = JSON.parse(value);
-      if (!value || typeof value !== 'object') return false;
-      if (Array.isArray(value)) return value.some(isOpenCodeAttentionRequest);
-      if (value.type === 'permission.asked' || value.type === 'question.asked') return true;
-      return value.payload ? isOpenCodeAttentionRequest(value.payload) : false;
+      if (!value || typeof value !== 'object') return null;
+      directory = value.directory || directory || '';
+      if (Array.isArray(value)) {
+        for (var i = 0; i < value.length; i++) {
+          var nested = openCodeAttentionEvent(value[i], forcedType, directory);
+          if (nested) return nested;
+        }
+        return null;
+      }
+      var type = forcedType || value.type;
+      if (typeof type === 'string' && (type.indexOf('permission.') === 0 || type.indexOf('question.') === 0)) {
+        return { type: type, properties: value.properties || value.payload || value, directory: directory };
+      }
+      return openCodeAttentionEvent(value.payload || value.properties, forcedType, directory);
     } catch (e) {
-      return false;
+      return null;
     }
+  }
+
+  function openCodeAttentionKey(source, properties, directory) {
+    properties = properties || {};
+    var item = properties.permission || properties.question || properties;
+    var session = properties.sessionID || properties.sessionId || item.sessionID || item.sessionId || 'unknown';
+    var id = properties.permissionID || properties.requestID || properties.questionID || item.id || properties.id || 'current';
+    return source + '\u0000' + (directory || '') + '\u0000' + session + '\u0000' + id;
+  }
+
+  function resolveOpenCodeAttentionCause(source, id) {
+    var suffix = '\u0000' + id;
+    var changed = false;
+    Object.keys(openCodeAttentionCauses).forEach(function(key) {
+      if (key.indexOf(source + '\u0000') === 0 && key.slice(-suffix.length) === suffix) {
+        delete openCodeAttentionCauses[key];
+        changed = true;
+      }
+    });
+    if (changed) persistOpenCodeAttention();
+  }
+
+  function handleOpenCodeAttentionEvent(value, forcedType) {
+    var event = openCodeAttentionEvent(value, forcedType);
+    if (!event) return;
+    var source = event.type.split('.')[0];
+    if (event.type === source + '.asked') {
+      var attentionKey = openCodeAttentionKey(source, event.properties, event.directory);
+      if (openCodeAttentionCauses[attentionKey]) return;
+      openCodeAttentionCauses[attentionKey] = true;
+      persistOpenCodeAttention();
+      return;
+    }
+    if (event.type === source + '.replied' || event.type === source + '.rejected') {
+      var key = openCodeAttentionKey(source, event.properties, event.directory);
+      resolveOpenCodeAttentionCause(source, key.slice(key.lastIndexOf('\u0000') + 1));
+    }
+  }
+
+  function syncOpenCodePendingAttention(source, value, directory) {
+    var previous = JSON.stringify(openCodeAttentionCauses);
+    var list = Array.isArray(value) ? value : (value && Array.isArray(value.data) ? value.data : []);
+    var prefix = source + '\u0000' + (directory || '') + '\u0000';
+    Object.keys(openCodeAttentionCauses).forEach(function(key) {
+      if (key.indexOf(prefix) === 0) delete openCodeAttentionCauses[key];
+    });
+    list.forEach(function(item) {
+      if (item && item.id) openCodeAttentionCauses[openCodeAttentionKey(source, item, directory)] = true;
+    });
+    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention();
+    else sendWebmuxAttentionState();
+  }
+
+  function syncOpenCodeNotificationAttention(value) {
+    var previous = JSON.stringify(openCodeAttentionCauses);
+    Object.keys(openCodeAttentionCauses).forEach(function(key) {
+      if (key.indexOf('notification\u0000') === 0) delete openCodeAttentionCauses[key];
+    });
+    try {
+      var openSessions = {};
+      var tabs = JSON.parse(serverStorage[opencodeWindowTabsKey] || '[]');
+      if (Array.isArray(tabs)) tabs.forEach(function(tab) {
+        if (tab && tab.type === 'session' && tab.sessionId) openSessions[tab.sessionId] = true;
+      });
+      var parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      var list = parsed && Array.isArray(parsed.list) ? parsed.list : [];
+      list.forEach(function(item) {
+        if (!item || !openSessions[item.session] || item.viewed === true || (item.type !== 'turn-complete' && item.type !== 'error')) return;
+        var id = item.type + ':' + item.time;
+        openCodeAttentionCauses[openCodeAttentionKey('notification', { sessionID: item.session, id: id }, item.directory)] = true;
+      });
+    } catch (e) {}
+    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention();
+    else sendWebmuxAttentionState();
   }
 
   function watchOpenCodeEventStream(response) {
@@ -419,7 +507,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
         var data = block.split(/\r?\n/).filter(function(line) { return line.indexOf('data:') === 0; }).map(function(line) {
           return line.slice(5).replace(/^ /, '');
         }).join('\n');
-        if (data && isOpenCodeAttentionRequest(data)) requestWebmuxAttention(data);
+        if (data) handleOpenCodeAttentionEvent(data);
       }
       function readNext() {
         reader.read().then(function(result) {
@@ -437,53 +525,6 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       }
       readNext();
     } catch (e) {}
-  }
-
-  function hasNewOpenCodeAttention(oldValue, newValue) {
-    try {
-      var oldList = oldValue ? JSON.parse(oldValue).list : [];
-      var newList = newValue ? JSON.parse(newValue).list : [];
-      if (!Array.isArray(oldList) || !Array.isArray(newList)) return false;
-      var existing = {};
-      oldList.forEach(function(item) {
-        if (!item || (item.type !== 'turn-complete' && item.type !== 'error')) return;
-        existing[item.type + '\u0000' + item.session + '\u0000' + item.time] = true;
-      });
-      return newList.find(function(item) {
-        if (!item || (item.type !== 'turn-complete' && item.type !== 'error')) return false;
-        return !existing[item.type + '\u0000' + item.session + '\u0000' + item.time];
-      });
-    } catch (e) {
-      return false;
-    }
-  }
-
-  if (window.Notification) {
-    var OriginalNotification = window.Notification;
-    var WebmuxNotification = function(title, options) {
-      requestWebmuxAttention();
-      return new OriginalNotification(title, options);
-    };
-    WebmuxNotification.prototype = OriginalNotification.prototype;
-    try { Object.setPrototypeOf(WebmuxNotification, OriginalNotification); } catch (e) {}
-    try {
-      Object.defineProperty(WebmuxNotification, 'permission', {
-        configurable: true,
-        get: function() { return OriginalNotification.permission; }
-      });
-    } catch (e) {}
-    if (OriginalNotification.requestPermission) {
-      WebmuxNotification.requestPermission = OriginalNotification.requestPermission.bind(OriginalNotification);
-    }
-    try { window.Notification = WebmuxNotification; } catch (e) {}
-  }
-
-  if (window.ServiceWorkerRegistration && ServiceWorkerRegistration.prototype.showNotification) {
-    var originalShowNotification = ServiceWorkerRegistration.prototype.showNotification;
-    ServiceWorkerRegistration.prototype.showNotification = function() {
-      requestWebmuxAttention();
-      return originalShowNotification.apply(this, arguments);
-    };
   }
 
   function diagnosticsEnabled() {
@@ -534,8 +575,19 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       activeOpenCodePath = nextItems[activePathStorageKey];
       delete nextItems[activePathStorageKey];
     }
+    if (Object.prototype.hasOwnProperty.call(nextItems, opencodeAttentionStorageKey)) {
+      try {
+        var nextAttentionCauses = JSON.parse(nextItems[opencodeAttentionStorageKey] || '{}');
+        if (nextAttentionCauses && typeof nextAttentionCauses === 'object' && !Array.isArray(nextAttentionCauses)) {
+          openCodeAttentionCauses = nextAttentionCauses;
+        }
+      } catch (e) {}
+      delete nextItems[opencodeAttentionStorageKey];
+      sendWebmuxAttentionState();
+    }
     var oldStorage = serverStorage;
     serverStorage = normalizeOpenCodeStorageItems(nextItems);
+    syncOpenCodeNotificationAttention(serverStorage[opencodeNotificationStorageKey] || null);
     storageVersion = nextVersion || 0;
     var seen = {};
     Object.keys(oldStorage).forEach(function(key) {
@@ -1025,6 +1077,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   var originalOpenCodeDefaultServerStorageValue = Object.prototype.hasOwnProperty.call(serverStorage, opencodeDefaultServerStorageKey) ? serverStorage[opencodeDefaultServerStorageKey] : null;
   var originalOpenCodeLayoutStorageValue = Object.prototype.hasOwnProperty.call(serverStorage, 'opencode.global.dat:layout') ? serverStorage['opencode.global.dat:layout'] : null;
   serverStorage = normalizeOpenCodeStorageItems(serverStorage);
+  syncOpenCodeNotificationAttention(serverStorage[opencodeNotificationStorageKey] || null);
   if (originalOpenCodeServerStorageValue !== null
       && serverStorage[opencodeServerStorageKey] !== originalOpenCodeServerStorageValue) {
     queueStorageUpdate({ operation: 'set', key: opencodeServerStorageKey, value: serverStorage[opencodeServerStorageKey] });
@@ -1178,11 +1231,10 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       else value = normalizeOpenCodeRoutingStorageValue(canonicalKey, value);
       var oldValue = Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey) ? serverStorage[canonicalKey] : null;
       if (oldValue === value) return;
-      if (canonicalKey === opencodeNotificationStorageKey) {
-        var attentionCause = hasNewOpenCodeAttention(oldValue, value);
-        if (attentionCause) requestWebmuxAttention(attentionCause);
-      }
       serverStorage[canonicalKey] = value;
+      if (canonicalKey === opencodeNotificationStorageKey || canonicalKey === opencodeWindowTabsKey) {
+        syncOpenCodeNotificationAttention(serverStorage[opencodeNotificationStorageKey] || null);
+      }
       dispatchStorageChange(key, oldValue === null ? null : materializeOpenCodeStorageValue(canonicalKey, oldValue), materializeOpenCodeStorageValue(canonicalKey, value));
       queueStorageUpdate({ operation: 'set', key: canonicalKey, value: value });
     },
@@ -1192,12 +1244,17 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       if (!Object.prototype.hasOwnProperty.call(serverStorage, canonicalKey)) return;
       var oldValue = serverStorage[canonicalKey];
       delete serverStorage[canonicalKey];
+      if (canonicalKey === opencodeNotificationStorageKey || canonicalKey === opencodeWindowTabsKey) {
+        syncOpenCodeNotificationAttention(serverStorage[opencodeNotificationStorageKey] || null);
+      }
       dispatchStorageChange(key, materializeOpenCodeStorageValue(canonicalKey, oldValue), null);
       queueStorageUpdate({ operation: 'remove', key: canonicalKey });
     },
     clear: function() {
       var oldStorage = serverStorage;
       serverStorage = {};
+      openCodeAttentionCauses = {};
+      sendWebmuxAttentionState();
       Object.keys(oldStorage).forEach(function(key) { dispatchStorageChange(materializeOpenCodeStorageKey(key), materializeOpenCodeStorageValue(key, oldStorage[key]), null); });
       queueStorageUpdate({ operation: 'clear' });
     }
@@ -1482,6 +1539,24 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
     if (info && info.method !== 'GET') postDiagnostic('opencode-fetch', 'start', { path: info.path, data: { method: info.method } });
     return originalFetch.call(this, input, init).then(function(response) {
       watchOpenCodeEventStream(response);
+      if (response.ok && info && info.method === 'GET') {
+        var snapshotSource = /\/question(?:\?|$)/.test(info.path) || /\/api\/question\/request(?:\?|$)/.test(info.path)
+          ? 'question'
+          : (/\/permission(?:\?|$)/.test(info.path) || /\/api\/permission\/request(?:\?|$)/.test(info.path) ? 'permission' : '');
+        if (snapshotSource) {
+          var snapshotURL = new URL(info.path, window.location.origin);
+          var snapshotDirectory = snapshotURL.searchParams.get('directory') || '';
+          response.clone().json().then(function(value) {
+            syncOpenCodePendingAttention(snapshotSource, value, snapshotDirectory);
+          }).catch(function() {});
+        }
+      }
+      if (response.ok && info && info.method === 'POST') {
+        var resolution = info.path.match(/\/(question|permission)\/([^\/?]+)\/(?:reply|reject)(?:\?|$)/);
+        if (resolution) {
+          try { resolveOpenCodeAttentionCause(resolution[1], decodeURIComponent(resolution[2])); } catch (e) {}
+        }
+      }
       if (info) {
         var age = Date.now() - startedAt;
         if (!response.ok || age > 2000 || info.method !== 'GET') {
@@ -1522,10 +1597,12 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       es.addEventListener('open', function() { postDiagnostic('opencode-eventsource', 'open', { path: prefixed }); });
       es.addEventListener('error', function() { postDiagnostic('opencode-eventsource', 'error', { path: prefixed }); });
       es.addEventListener('message', function(event) {
-        if (isOpenCodeAttentionRequest(event.data)) requestWebmuxAttention(event.data);
+        handleOpenCodeAttentionEvent(event.data);
       });
-      es.addEventListener('permission.asked', requestWebmuxAttention);
-      es.addEventListener('question.asked', requestWebmuxAttention);
+      ['permission.asked', 'permission.replied', 'permission.rejected',
+       'question.asked', 'question.replied', 'question.rejected'].forEach(function(type) {
+        es.addEventListener(type, function(event) { handleOpenCodeAttentionEvent(event, type); });
+      });
     } catch (e) {}
     return es;
   };

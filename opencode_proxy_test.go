@@ -71,16 +71,17 @@ func TestOpenCodeProxyInjectsAttentionBridge(t *testing.T) {
 	content := string(body)
 	for _, expected := range []string{
 		"webmux-pane-attention",
-		"var backgroundSession = !!sessionID && !!activeSessionID && sessionID !== activeSessionID",
-		"force: backgroundSession",
-		"value.type === 'permission.asked' || value.type === 'question.asked'",
+		"var opencodeAttentionStorageKey = 'webmux.internal.opencode.attention'",
+		"var openCodeAttentionCauses = {}",
+		"active: Object.keys(openCodeAttentionCauses).length > 0",
+		"parts[0] === 'question' || parts[0] === 'permission'",
+		"persistOpenCodeAttention()",
 		"watchOpenCodeEventStream(response)",
-		"es.addEventListener('permission.asked', requestWebmuxAttention)",
-		"es.addEventListener('question.asked', requestWebmuxAttention)",
-		"var attentionCause = hasNewOpenCodeAttention(oldValue, value)",
-		"item.type !== 'turn-complete' && item.type !== 'error'",
-		"var OriginalNotification = window.Notification",
-		"ServiceWorkerRegistration.prototype.showNotification",
+		"'permission.asked', 'permission.replied', 'permission.rejected'",
+		"'question.asked', 'question.replied', 'question.rejected'",
+		"syncOpenCodePendingAttention(snapshotSource, value, snapshotDirectory)",
+		"resolveOpenCodeAttentionCause(resolution[1]",
+		"item.viewed === true || (item.type !== 'turn-complete' && item.type !== 'error')",
 		"new BroadcastChannel('webmux-popouts')",
 	} {
 		if !strings.Contains(content, expected) {

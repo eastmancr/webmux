@@ -2664,7 +2664,11 @@ class TerminalMultiplexer {
     }
 
     clearFocusedPaneAttention() {
-        if (this.focusedPaneId && !document.hidden) this.clearPaneAttention(this.focusedPaneId);
+        if (this.focusedPaneId && !document.hidden) this.clearPaneAttentionOnFocus(this.focusedPaneId);
+    }
+
+    clearPaneAttentionOnFocus(paneId) {
+        if (this.panes.get(paneId)?.type !== 'opencode') this.clearPaneAttention(paneId);
     }
 
     updatePaneAttentionInSidebar(paneId) {
@@ -2709,7 +2713,8 @@ class TerminalMultiplexer {
             ? Array.from(this.sharedIframes.values()).find(candidate => candidate.contentWindow === source)
             : (msg.backendId ? this.sharedIframes.get(msg.backendId) : null);
         if (iframe?.dataset.activePaneId) paneId = iframe.dataset.activePaneId;
-        this.markPaneAttention(paneId, msg.force === true);
+        if (msg.active === false) this.clearPaneAttention(paneId);
+        else this.markPaneAttention(paneId, msg.force === true);
     }
 
     addGroupToSidebar(group) {
@@ -3621,7 +3626,7 @@ class TerminalMultiplexer {
             : visualPaneIds[0];
 
         const pane = this.panes.get(paneToFocus);
-        if (!document.hidden) this.clearPaneAttention(paneToFocus);
+        if (!document.hidden) this.clearPaneAttentionOnFocus(paneToFocus);
         if (this.activeGroupId === groupId && this.focusedPaneId === paneToFocus && this.isSharedPane(pane)) {
             return;
         }
@@ -3660,7 +3665,7 @@ class TerminalMultiplexer {
     focusPane(paneId, options = {}) {
         const container = document.getElementById(`pane-${paneId}`);
         if (!container) return;
-        if (!document.hidden) this.clearPaneAttention(paneId);
+        if (!document.hidden) this.clearPaneAttentionOnFocus(paneId);
 
         // Track focused pane for keybar targeting in split groups
         const focusChanged = this.focusedPaneId !== paneId;
@@ -3846,7 +3851,7 @@ class TerminalMultiplexer {
                         const paneId = iframe.dataset.paneId;
                         const focusChanged = this.focusedPaneId !== paneId;
                         this.focusedPaneId = paneId;
-                        if (!document.hidden) this.clearPaneAttention(paneId);
+                        if (!document.hidden) this.clearPaneAttentionOnFocus(paneId);
                         this.updateKeybarVisibility();
                         if (focusChanged && document.hasFocus()) this.saveUIState();
                     });
