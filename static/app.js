@@ -95,6 +95,7 @@ class TerminalMultiplexer {
         // Panes: individual pane definitions from the backend
         this.panes = new Map();
         this.closingPaneIds = new Set();
+        this.pendingCloseAllButton = null;
         this.attentionPaneIds = new Set();
         this.baseDocumentTitle = document.title || 'Webmux';
 
@@ -1225,6 +1226,9 @@ class TerminalMultiplexer {
         this.toggleSidebarBtn = document.getElementById('toggle-sidebar');
         this.openSettingsBtn = document.getElementById('open-settings');
         this.paneList = document.getElementById('pane-list');
+        this.closeAllWrapper = document.getElementById('close-all-wrapper');
+        this.closeAllBtn = document.getElementById('close-all');
+        this.closeAllOptions = Array.from(document.querySelectorAll('.close-all-option'));
         this.newPaneSplits = Array.from(document.querySelectorAll('.new-pane-split'));
         this.paneDisplay = document.getElementById('panes');
         this.paneDisplayContainer = document.getElementById('pane-display-container');
@@ -1515,7 +1519,28 @@ class TerminalMultiplexer {
 
         // Pane management
         this.bindNewPaneSplits();
+        this.paneDisplayContainer.addEventListener('pointerdown', () => this.dismissPaneMenus(), true);
+        window.addEventListener('blur', () => {
+            setTimeout(() => {
+                if (document.activeElement instanceof HTMLIFrameElement && this.paneDisplay.contains(document.activeElement)) {
+                    this.dismissPaneMenus();
+                }
+            }, 0);
+        });
+        [this.closeAllBtn, ...this.closeAllOptions].forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (this.pendingCloseAllButton === btn) {
+                    const paneType = btn.dataset.closePaneType || null;
+                    this.resetCloseAllConfirmation();
+                    this.closePanes(paneType);
+                    return;
+                }
+                this.setCloseAllConfirmation(btn);
+            });
+        });
         document.addEventListener('click', (e) => {
+            if (!e.target.closest('.close-all-confirm')) this.resetCloseAllConfirmation();
             const activeSplit = e.target.closest('.new-pane-split');
             this.closeNewPaneMenus(activeSplit);
             if (!e.target.closest('.storage-action-split')) {
@@ -1528,6 +1553,7 @@ class TerminalMultiplexer {
         document.addEventListener('keydown', (e) => {
             if (e.target instanceof Element && e.target.closest('.terminal-host')) return;
             if (e.key !== 'Escape') return;
+            this.resetCloseAllConfirmation();
             this.closeNewPaneMenus();
             this.closeStorageActionMenus();
             this.closePaneActionMenus();
@@ -2220,8 +2246,13 @@ class TerminalMultiplexer {
         this.loadServerInfo().catch(() => {});
     }
 
-    async closePane(paneId) {
+    async closePane(paneId, options = {}) {
+        if ((!options.preAnimated && this.closingPaneIds.has(paneId)) || !this.panes.has(paneId)) return;
         this.closingPaneIds.add(paneId);
+        const sidebarPositions = options.skipReflow ? null : this.getSidebarPanePositions();
+        if (!options.preAnimated) await this.animatePaneClose(paneId);
+
+        if (!this.panes.has(paneId)) return;
 
         for (const [groupId, group] of this.groups) {
             const paneIndexInGroup = group.paneIds.indexOf(paneId);
@@ -2252,6 +2283,7 @@ class TerminalMultiplexer {
             }
             break;
         }
+        if (sidebarPositions) this.animateSidebarPaneReflow(sidebarPositions);
 
         try {
             const response = await fetch(this.url(`/api/panes/${paneId}`), { method: 'DELETE' });
@@ -2263,6 +2295,110 @@ class TerminalMultiplexer {
             console.error('Failed to close pane:', error);
             this.closingPaneIds.delete(paneId);
         }
+    }
+
+    prefersReducedMotion() {
+        return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    }
+
+    getSidebarPanePositions() {
+        const positions = new Map();
+        this.paneList.querySelectorAll('.pane-item[data-pane-id]:not(.pane-closing)').forEach(item => {
+            positions.set(item.dataset.paneId, item.getBoundingClientRect().top);
+        });
+        return positions;
+    }
+
+    async animatePaneClose(paneId) {
+        if (this.prefersReducedMotion()) return;
+        const sidebarItem = this.paneList.querySelector(`.pane-item[data-pane-id="${CSS.escape(paneId)}"]`);
+        const paneContainer = document.getElementById(`pane-${paneId}`);
+        const animatedElements = [sidebarItem, paneContainer].filter(Boolean);
+        if (animatedElements.length === 0) return;
+
+        animatedElements.forEach(element => element.classList.add('pane-closing'));
+        await new Promise(resolve => setTimeout(resolve, 180));
+    }
+
+    animateSidebarPaneReflow(previousPositions) {
+        if (this.prefersReducedMotion()) return;
+        this.paneList.querySelectorAll('.pane-item[data-pane-id]').forEach(item => {
+            const previousTop = previousPositions.get(item.dataset.paneId);
+            if (previousTop === undefined) return;
+            const delta = previousTop - item.getBoundingClientRect().top;
+            if (Math.abs(delta) < 1) return;
+            item.animate([
+                { transform: `translateY(${delta}px)` },
+                { transform: 'translateY(0)' },
+            ], { duration: 180, easing: 'ease-out' });
+        });
+    }
+
+    getPaneIdsInSidebarOrder(paneType = null) {
+        return Array.from(this.paneList.querySelectorAll('.pane-item[data-pane-id]'))
+            .map(item => item.dataset.paneId)
+            .filter(paneId => !paneType || this.panes.get(paneId)?.type === paneType);
+    }
+
+    async closePanes(paneType = null) {
+        const paneIds = this.getPaneIdsInSidebarOrder(paneType).reverse();
+        await this.closePaneSequence(paneIds);
+    }
+
+    async closeGroupPanes(groupId) {
+        const group = this.groups.get(groupId);
+        if (!group) return;
+        const paneIds = this.getPaneIdsInSidebarOrder().filter(paneId => group.paneIds.includes(paneId)).reverse();
+        await this.closePaneSequence(paneIds);
+    }
+
+    async closePaneSequence(paneIds) {
+        const closingIds = paneIds.filter(paneId => this.panes.has(paneId) && !this.closingPaneIds.has(paneId));
+        if (closingIds.length === 0) return;
+
+        const sidebarPositions = this.getSidebarPanePositions();
+        const exitAnimations = [];
+        for (const [index, paneId] of closingIds.entries()) {
+            this.closingPaneIds.add(paneId);
+            exitAnimations.push(this.animatePaneClose(paneId));
+            if (!this.prefersReducedMotion() && index < closingIds.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, 40));
+            }
+        }
+
+        await Promise.all(exitAnimations);
+        const closePromises = closingIds.map(paneId => this.closePane(paneId, {
+            preAnimated: true,
+            skipReflow: true,
+        }));
+        this.animateSidebarPaneReflow(sidebarPositions);
+        await Promise.all(closePromises);
+    }
+
+    setCloseAllConfirmation(button) {
+        this.resetCloseAllConfirmation();
+        this.pendingCloseAllButton = button;
+        button.classList.add('close-all-confirm');
+        button.textContent = `${button.dataset.label}?`;
+        button.setAttribute('aria-label', `${button.dataset.label}? Click again to confirm`);
+        this.closeAllWrapper.classList.add('confirming');
+    }
+
+    resetCloseAllConfirmation() {
+        if (!this.pendingCloseAllButton) return;
+        const button = this.pendingCloseAllButton;
+        button.classList.remove('close-all-confirm');
+        button.textContent = button.dataset.label;
+        button.removeAttribute('aria-label');
+        this.pendingCloseAllButton = null;
+        this.closeAllWrapper.classList.remove('confirming');
+    }
+
+    dismissPaneMenus() {
+        this.resetCloseAllConfirmation();
+        this.closeNewPaneMenus();
+        this.closeStorageActionMenus();
+        this.closePaneActionMenus();
     }
 
     // Send input to a pane via the pane input API
@@ -2754,7 +2890,7 @@ class TerminalMultiplexer {
                 if (paneId) {
                     this.closePane(paneId);
                 } else if (groupId) {
-                    this.closeGroup(groupId);
+                    this.closeGroupPanes(groupId);
                 }
             });
         });

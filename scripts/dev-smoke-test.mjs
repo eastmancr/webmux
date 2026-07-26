@@ -196,6 +196,151 @@ try {
     assert.deepEqual(tools.consoleErrors, [], `console errors: ${tools.consoleErrors.join('; ')}`);
     assert.deepEqual(tools.scriptFailures, [], `script load failures: ${tools.scriptFailures.join('; ')}`);
 
+    const closeAllUI = await tools.evaluate(`(() => {
+        const button = document.getElementById('close-all');
+        button.click();
+        const pending = {
+            text: button.textContent,
+            confirming: button.classList.contains('close-all-confirm'),
+            flyoutVisible: getComputedStyle(document.getElementById('close-all-menu')).visibility === 'visible',
+        };
+        document.body.click();
+        return {
+            pending,
+            dismissedText: button.textContent,
+            dismissed: !button.classList.contains('close-all-confirm'),
+        };
+    })()`);
+    assert.deepEqual(closeAllUI, {
+        pending: { text: 'Close All?', confirming: true, flyoutVisible: true },
+        dismissedText: 'Close All',
+        dismissed: true,
+    }, 'Close All should require confirmation and dismiss it on an outside click');
+    assert.equal(await tools.evaluate(`document.getElementById('close-all-wrapper').parentElement.className`), 'pane-list-footer', 'Close All should remain in the pane list section');
+
+    const paneAreaDismissal = await tools.evaluate(`(() => {
+        const closeAll = document.getElementById('close-all');
+        const newPaneToggle = document.querySelector('.new-pane-toggle');
+        const paneMenuToggle = document.querySelector('.pane-menu-toggle');
+        newPaneToggle.click();
+        paneMenuToggle.click();
+        closeAll.click();
+        const before = {
+            closeAll: closeAll.classList.contains('close-all-confirm'),
+            newPane: !document.querySelector('.new-pane-menu').classList.contains('hidden'),
+            paneMenu: !document.querySelector('.pane-action-menu').classList.contains('hidden'),
+        };
+        document.getElementById('pane-${pane.id}').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+        return {
+            before,
+            after: {
+                closeAll: closeAll.classList.contains('close-all-confirm'),
+                newPane: !document.querySelector('.new-pane-menu').classList.contains('hidden'),
+                paneMenu: !document.querySelector('.pane-action-menu').classList.contains('hidden'),
+            },
+        };
+    })()`);
+    assert.deepEqual(paneAreaDismissal, {
+        before: { closeAll: true, newPane: true, paneMenu: true },
+        after: { closeAll: false, newPane: false, paneMenu: false },
+    }, 'pane-area interaction should dismiss transient pane controls');
+
+    const closeAllRect = await tools.evaluate(`(() => {
+        const rect = document.getElementById('close-all').getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    })()`);
+    await tools.command('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: closeAllRect.x + closeAllRect.width / 2,
+        y: closeAllRect.y + closeAllRect.height / 2,
+    });
+    await waitFor(() => tools.evaluate(`getComputedStyle(document.getElementById('close-all-menu')).visibility === 'visible'`), 'Close All hover flyout');
+    const closeAllMenuRect = await tools.evaluate(`(() => {
+        const rect = document.getElementById('close-all-menu').getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    })()`);
+    await tools.command('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: closeAllMenuRect.x + closeAllMenuRect.width / 2,
+        y: closeAllMenuRect.y + closeAllMenuRect.height / 2,
+    });
+    assert.equal(await tools.evaluate(`getComputedStyle(document.getElementById('close-all-menu')).visibility`), 'visible', 'flyout should remain visible while hovered');
+
+    const closeAllBehavior = await tools.evaluate(`(async () => {
+        const originalClosePanes = window.app.closePanes;
+        const originalClosePane = window.app.closePane;
+        const originalReducedMotion = window.app.prefersReducedMotion;
+        const originalAnimateSidebarPaneReflow = window.app.animateSidebarPaneReflow;
+        const calls = [];
+        window.app.closePanes = type => calls.push(type || 'all');
+        const terminalButton = document.querySelector('[data-close-pane-type="terminal"]');
+        terminalButton.click();
+        const firstText = terminalButton.textContent;
+        const heldOpen = document.getElementById('close-all-wrapper').classList.contains('confirming');
+        terminalButton.click();
+
+        const testPanes = [
+            { id: 'smoke-terminal-top', type: 'terminal' },
+            { id: 'smoke-opencode-middle', type: 'opencode' },
+            { id: 'smoke-opencode-bottom', type: 'opencode' },
+        ];
+        const testRows = testPanes.map(pane => {
+            window.app.panes.set(pane.id, pane);
+            const row = document.createElement('div');
+            row.className = 'pane-item';
+            row.dataset.paneId = pane.id;
+            document.getElementById('pane-list').appendChild(row);
+            return row;
+        });
+        const ordered = window.app.getPaneIdsInSidebarOrder('opencode');
+        const closed = [];
+        let reflows = 0;
+        window.app.closePanes = originalClosePanes;
+        window.app.closePane = async (id, options) => closed.push({ id, preAnimated: options.preAnimated, skipReflow: options.skipReflow });
+        window.app.animateSidebarPaneReflow = () => { reflows++; };
+        window.app.prefersReducedMotion = () => true;
+        await window.app.closePanes('opencode');
+
+        testRows.forEach(row => row.remove());
+        testPanes.forEach(pane => {
+            window.app.panes.delete(pane.id);
+            window.app.closingPaneIds.delete(pane.id);
+        });
+        window.app.closePane = originalClosePane;
+        window.app.animateSidebarPaneReflow = originalAnimateSidebarPaneReflow;
+        window.app.prefersReducedMotion = originalReducedMotion;
+        return { calls, firstText, heldOpen, ordered, closed, reflows };
+    })()`);
+    assert.deepEqual(closeAllBehavior, {
+        calls: ['terminal'],
+        firstText: 'Close Terminal Panes?',
+        heldOpen: true,
+        ordered: ['smoke-opencode-middle', 'smoke-opencode-bottom'],
+        closed: [
+            { id: 'smoke-opencode-bottom', preAnimated: true, skipReflow: true },
+            { id: 'smoke-opencode-middle', preAnimated: true, skipReflow: true },
+        ],
+        reflows: 1,
+    }, 'typed Close All should confirm, filter, and close from bottom to top');
+
+    const closeMotion = await tools.evaluate(`(async () => {
+        const paneItem = document.querySelector('.pane-item[data-pane-id="${pane.id}"]');
+        const paneContainer = document.getElementById('pane-${pane.id}');
+        const originalReducedMotion = window.app.prefersReducedMotion;
+        window.app.prefersReducedMotion = () => false;
+        const animation = window.app.animatePaneClose('${pane.id}');
+        const animated = paneItem.classList.contains('pane-closing') && paneContainer.classList.contains('pane-closing');
+        await animation;
+        paneItem.classList.remove('pane-closing');
+        paneContainer.classList.remove('pane-closing');
+        window.app.prefersReducedMotion = () => true;
+        await window.app.animatePaneClose('${pane.id}');
+        const reduced = !paneItem.classList.contains('pane-closing') && !paneContainer.classList.contains('pane-closing');
+        window.app.prefersReducedMotion = originalReducedMotion;
+        return { animated, reduced };
+    })()`);
+    assert.deepEqual(closeMotion, { animated: true, reduced: true }, 'pane close animation should respect reduced motion');
+
     const testURL = 'https://example.com/this/is/a/very/long/path/that/wraps/across/the/terminal/width';
     const inputResponse = await fetch(`${mountedURL}api/panes/${pane.id}/input`, {
         method: 'POST',

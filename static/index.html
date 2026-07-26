@@ -104,6 +104,16 @@
                     <!-- Panes will be populated here -->
                 </div>
 
+                <div class="pane-list-footer" role="toolbar" aria-label="Pane actions">
+                    <div id="close-all-wrapper" class="close-all-wrapper">
+                        <div id="close-all-menu" class="close-all-menu" role="menu" aria-label="Close panes by type">
+                            <button class="close-all-option" data-close-pane-type="terminal" data-label="Close Terminal Panes" role="menuitem">Close Terminal Panes</button>
+                            <button class="close-all-option" data-close-pane-type="opencode" data-label="Close OpenCode Panes" role="menuitem">Close OpenCode Panes</button>
+                        </div>
+                        <button id="close-all" class="btn btn-secondary" data-label="Close All" aria-haspopup="menu" aria-controls="close-all-menu">Close All</button>
+                    </div>
+                </div>
+
                 <div class="sidebar-footer" role="toolbar" aria-label="File actions">
                     <button id="open-upload" class="btn btn-secondary" aria-label="Upload files">
                         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
