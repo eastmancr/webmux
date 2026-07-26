@@ -98,6 +98,7 @@ class TerminalMultiplexer {
         this.pendingCloseAllButton = null;
         this.attentionPaneIds = new Set();
         this.baseDocumentTitle = document.title || 'Webmux';
+        this.attentionAudioContext = null;
 
         // Groups: visual groupings of panes (1-4 panes per group)
         // Structure: { id, name, paneIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
@@ -232,6 +233,7 @@ class TerminalMultiplexer {
     async init() {
         this.bindElements();
         this.bindEvents();
+        this.setupAttentionAudio();
         this.setupPaneDragTarget();
         this.setupPopoutRegistry();
 
@@ -1544,6 +1546,9 @@ class TerminalMultiplexer {
         document.getElementById('panes-attention-indicators')?.addEventListener('change', () => {
             this.syncAttentionSettingsDisabled();
         });
+        document.getElementById('preview-attention-sound')?.addEventListener('click', async () => {
+            if (await this.unlockAttentionAudio()) this.playAttentionSound(true);
+        });
 
         // Keybar settings event listeners
         const addKeybarBtn = document.getElementById('add-keybar-btn');
@@ -2651,6 +2656,9 @@ class TerminalMultiplexer {
         if (this.attentionPaneIds.has(paneId)) return;
 
         this.attentionPaneIds.add(paneId);
+        if (pane.type === 'terminal' && this.settings?.panes?.playAttentionSound === true) {
+            this.playAttentionSound();
+        }
         this.updatePaneAttentionInSidebar(paneId);
         this.updateAttentionTitle();
         this.saveUIState();
@@ -2683,6 +2691,55 @@ class TerminalMultiplexer {
         document.title = showInTitle && this.attentionPaneIds.size > 0
             ? `[${this.attentionPaneIds.size}] ${this.baseDocumentTitle}`
             : this.baseDocumentTitle;
+    }
+
+    setupAttentionAudio() {
+        const unlock = () => {
+            if (this.settings?.panes?.playAttentionSound !== true) return;
+            this.unlockAttentionAudio();
+        };
+        window.addEventListener('pointerdown', unlock);
+        window.addEventListener('keydown', unlock);
+        document.getElementById('panes-play-attention-sound')?.addEventListener('change', unlock);
+    }
+
+    async unlockAttentionAudio() {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return null;
+        try {
+            this.attentionAudioContext ||= new AudioContext();
+        } catch (error) {
+            return null;
+        }
+        if (this.attentionAudioContext.state === 'suspended') {
+            try {
+                await this.attentionAudioContext.resume();
+            } catch (error) {
+                return null;
+            }
+        }
+        return this.attentionAudioContext.state === 'running' ? this.attentionAudioContext : null;
+    }
+
+    playAttentionSound(preview = false) {
+        if (!preview && this.settings?.panes?.playAttentionSound !== true) return;
+        const context = this.attentionAudioContext;
+        if (!context || context.state !== 'running') return;
+
+        const start = context.currentTime;
+        for (const [frequency, offset] of [[659.25, 0], [880, 0.11]]) {
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.value = frequency;
+            gain.gain.setValueAtTime(0.0001, start + offset);
+            gain.gain.exponentialRampToValueAtTime(1.0, start + offset + 0.015);
+            gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.24);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start(start + offset);
+            oscillator.stop(start + offset + 0.25);
+        }
     }
 
     reconcileAttentionSettings() {
@@ -6083,6 +6140,7 @@ class TerminalMultiplexer {
             panes: {
                 attentionIndicators: true,
                 showAttentionInTitle: true,
+                playAttentionSound: true,
                 terminal: { indicateAttention: true },
                 opencode: { indicateAttention: true }
             },

@@ -242,6 +242,7 @@ type PaneTypeSettings struct {
 type PanesSettings struct {
 	AttentionIndicators  bool             `json:"attentionIndicators"`
 	ShowAttentionInTitle bool             `json:"showAttentionInTitle"`
+	PlayAttentionSound   bool             `json:"playAttentionSound"`
 	Terminal             PaneTypeSettings `json:"terminal"`
 	OpenCode             PaneTypeSettings `json:"opencode"`
 }
@@ -317,6 +318,7 @@ func DefaultSettings() *Settings {
 		Panes: PanesSettings{
 			AttentionIndicators:  true,
 			ShowAttentionInTitle: true,
+			PlayAttentionSound:   true,
 			Terminal:             PaneTypeSettings{IndicateAttention: true},
 			OpenCode:             PaneTypeSettings{IndicateAttention: true},
 		},

@@ -27,8 +27,8 @@ func TestKeybarAnchorDefaultsAndValidation(t *testing.T) {
 
 func TestPaneAttentionDefaults(t *testing.T) {
 	settings := DefaultSettings()
-	if !settings.Panes.AttentionIndicators || !settings.Panes.ShowAttentionInTitle {
-		t.Fatal("pane attention indicators and title indicator should default on")
+	if !settings.Panes.AttentionIndicators || !settings.Panes.ShowAttentionInTitle || !settings.Panes.PlayAttentionSound {
+		t.Fatal("pane attention indicators, title indicator, and sound should default on")
 	}
 	if !settings.Panes.Terminal.IndicateAttention || !settings.Panes.OpenCode.IndicateAttention {
 		t.Fatal("terminal and OpenCode attention indicators should default on")
@@ -37,13 +37,13 @@ func TestPaneAttentionDefaults(t *testing.T) {
 
 func TestPaneAttentionExplicitFalseSurvivesSettingsMerge(t *testing.T) {
 	settings := *DefaultSettings()
-	data := []byte(`{"panes":{"attentionIndicators":false,"showAttentionInTitle":false,"terminal":{"indicateAttention":false},"opencode":{"indicateAttention":false}}}`)
+	data := []byte(`{"panes":{"attentionIndicators":false,"showAttentionInTitle":false,"playAttentionSound":false,"terminal":{"indicateAttention":false},"opencode":{"indicateAttention":false}}}`)
 	if err := json.Unmarshal(data, &settings); err != nil {
 		t.Fatal(err)
 	}
 	mergeWithDefaults(&settings)
 
-	if settings.Panes.AttentionIndicators || settings.Panes.ShowAttentionInTitle {
+	if settings.Panes.AttentionIndicators || settings.Panes.ShowAttentionInTitle || settings.Panes.PlayAttentionSound {
 		t.Fatal("explicitly disabled global attention settings were reset")
 	}
 	if settings.Panes.Terminal.IndicateAttention || settings.Panes.OpenCode.IndicateAttention {
@@ -57,7 +57,7 @@ func TestPaneAttentionDefaultsSurviveLegacySettingsJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !settings.Panes.AttentionIndicators || !settings.Panes.ShowAttentionInTitle {
+	if !settings.Panes.AttentionIndicators || !settings.Panes.ShowAttentionInTitle || !settings.Panes.PlayAttentionSound {
 		t.Fatal("legacy settings should receive enabled pane attention defaults")
 	}
 	if !settings.Panes.Terminal.IndicateAttention || !settings.Panes.OpenCode.IndicateAttention {

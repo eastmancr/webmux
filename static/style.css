@@ -2328,6 +2328,21 @@ body.mobile-mode .sidebar-panel {
     margin: 0;
 }
 
+.setting-check-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.setting-sound-preview {
+    flex: 0 0 auto;
+    padding: 4px;
+}
+
+.setting-sound-preview:disabled {
+    cursor: not-allowed;
+}
+
 .attention-indicator-options {
     display: flex;
     flex-direction: column;

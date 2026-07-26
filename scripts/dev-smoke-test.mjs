@@ -211,6 +211,43 @@ try {
 
     await tools.command('Page.navigate', { url: mountedURL });
     await waitFor(() => tools.evaluate('window.app?.terminals.size === 1'), 'embedded terminal');
+    const attentionSoundBehavior = await tools.evaluate(`(() => {
+        const terminalPane = Array.from(window.app.panes.values()).find(pane => pane.type === 'terminal');
+        const openCodePane = Array.from(window.app.panes.values()).find(pane => pane.type === 'opencode');
+        let plays = 0;
+        const originalPlay = window.app.playAttentionSound;
+        window.app.playAttentionSound = () => plays++;
+        window.app.clearPaneAttention(terminalPane.id);
+        window.app.clearPaneAttention(openCodePane.id);
+        window.app.markPaneAttention(terminalPane.id, true);
+        window.app.markPaneAttention(terminalPane.id, true);
+        window.app.markPaneAttention(openCodePane.id, true);
+        const enabledPlays = plays;
+        window.app.clearPaneAttention(terminalPane.id);
+        window.app.settings.panes.playAttentionSound = false;
+        window.app.markPaneAttention(terminalPane.id, true);
+        const disabledPlays = plays;
+        window.app.settings.panes.playAttentionSound = true;
+        window.app.clearPaneAttention(terminalPane.id);
+        window.app.clearPaneAttention(openCodePane.id);
+        window.app.playAttentionSound = originalPlay;
+        return { enabledPlays, disabledPlays };
+    })()`);
+    assert.deepEqual(attentionSoundBehavior, { enabledPlays: 1, disabledPlays: 1 }, 'attention sound should play once for new terminal attention only');
+    const attentionSoundPreview = await tools.evaluate(`(async () => {
+        let unlocked = 0;
+        let previewed = 0;
+        const originalUnlock = window.app.unlockAttentionAudio;
+        const originalPlay = window.app.playAttentionSound;
+        window.app.unlockAttentionAudio = async () => { unlocked++; return {}; };
+        window.app.playAttentionSound = preview => { if (preview) previewed++; };
+        document.getElementById('preview-attention-sound').click();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        window.app.unlockAttentionAudio = originalUnlock;
+        window.app.playAttentionSound = originalPlay;
+        return { unlocked, previewed };
+    })()`);
+    assert.deepEqual(attentionSoundPreview, { unlocked: 1, previewed: 1 }, 'attention sound preview should unlock audio and play');
     await tools.evaluate(`(() => {
         const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${openCodePane.id}'));
         window.app.activateGroup(group.id, '${openCodePane.id}');
