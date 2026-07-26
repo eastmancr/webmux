@@ -416,18 +416,34 @@ func (tr *TerminalRuntime) Monitor(pane *Pane) {
 	}
 }
 
-// getForegroundProcess returns the name of the foreground process in the terminal
+// getForegroundProcess returns the foreground command, or the current directory
+// name when the pane is sitting at its shell prompt.
 func (tr *TerminalRuntime) getForegroundProcess(tmuxSession string) string {
 	tmuxSocket := tr.tmuxSocketPath()
 
-	// Use tmux to get the current command in the pane
-	out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "-t", tmuxSession, "#{pane_current_command}").Output()
+	// Fetch both values together so directory display adds no extra tmux process.
+	out, err := exec.Command("tmux", "-S", tmuxSocket, "display-message", "-p", "-t", tmuxSession, "#{pane_current_command}\t#{pane_current_path}").Output()
 	if err != nil {
 		return ""
 	}
 
-	procName := strings.TrimSpace(string(out))
+	values := strings.SplitN(strings.TrimSuffix(string(out), "\n"), "\t", 2)
+	procName := strings.TrimSpace(values[0])
+	currentPath := ""
+	if len(values) == 2 {
+		currentPath = values[1]
+	}
+	return foregroundProcessDisplay(procName, currentPath, tr.manager.shell)
+}
 
+func foregroundProcessDisplay(procName, currentPath, shell string) string {
+	if procName == filepath.Base(shell) && currentPath != "" {
+		name := filepath.Base(currentPath)
+		if name == string(filepath.Separator) {
+			return name
+		}
+		return string(filepath.Separator) + name
+	}
 	return procName
 }
 
