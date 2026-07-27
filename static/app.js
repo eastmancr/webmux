@@ -2839,7 +2839,7 @@ class TerminalMultiplexer {
 
             const nameHtml = isRenaming
                 ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-pane-id="${pane?.id}">`
-                : `<span class="name">${this.escapeHtml(displayName)}${activityHtml}</span>`;
+                : `<span class="name"><span class="pane-name-text">${this.escapeHtml(displayName)}</span>${activityHtml}</span>`;
 
             return `
                 <div class="pane-item ${activePaneInGroup ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}"
@@ -2865,7 +2865,7 @@ class TerminalMultiplexer {
                 <div class="pane-item sub-item ${isActivePane ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
                      role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 16)}
-                    <span class="name">${this.escapeHtml(displayName)}${activityHtml}</span>
+                    <span class="name"><span class="pane-name-text">${this.escapeHtml(displayName)}</span>${activityHtml}</span>
                     ${this.renderPaneAttention(pane)}
                     ${this.renderPaneActions(pane, group.id, { breakout: true, active: isActivePane })}
                 </div>
