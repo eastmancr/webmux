@@ -98,7 +98,8 @@ class TerminalMultiplexer {
         this.pendingCloseAllButton = null;
         this.attentionPaneIds = new Set();
         this.baseDocumentTitle = document.title || 'Webmux';
-        this.attentionAudioContext = null;
+        this.attentionSoundBlob = null;
+        this.activeAttentionSounds = new Set();
 
         // Groups: visual groupings of panes (1-4 panes per group)
         // Structure: { id, name, paneIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
@@ -236,7 +237,6 @@ class TerminalMultiplexer {
     async init() {
         this.bindElements();
         this.bindEvents();
-        this.setupAttentionAudio();
         this.setupPaneDragTarget();
         this.setupPopoutRegistry();
 
@@ -1553,8 +1553,8 @@ class TerminalMultiplexer {
         document.getElementById('panes-attention-indicators')?.addEventListener('change', () => {
             this.syncAttentionSettingsDisabled();
         });
-        document.getElementById('preview-attention-sound')?.addEventListener('click', async () => {
-            if (await this.unlockAttentionAudio()) this.playAttentionSound(true);
+        document.getElementById('preview-attention-sound')?.addEventListener('click', () => {
+            this.playAttentionSound(true);
         });
 
         // Keybar settings event listeners
@@ -2705,53 +2705,63 @@ class TerminalMultiplexer {
             : this.baseDocumentTitle;
     }
 
-    setupAttentionAudio() {
-        const unlock = () => {
-            if (this.settings?.panes?.playAttentionSound !== true) return;
-            this.unlockAttentionAudio();
-        };
-        window.addEventListener('pointerdown', unlock);
-        window.addEventListener('keydown', unlock);
-        document.getElementById('panes-play-attention-sound')?.addEventListener('change', unlock);
-    }
-
-    async unlockAttentionAudio() {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContext) return null;
-        try {
-            this.attentionAudioContext ||= new AudioContext();
-        } catch (error) {
-            return null;
-        }
-        if (this.attentionAudioContext.state === 'suspended') {
-            try {
-                await this.attentionAudioContext.resume();
-            } catch (error) {
-                return null;
+    createAttentionSoundBlob() {
+        const sampleRate = 44100;
+        const sampleCount = Math.ceil(sampleRate * 0.36);
+        const buffer = new ArrayBuffer(44 + sampleCount * 2);
+        const view = new DataView(buffer);
+        const writeText = (offset, value) => {
+            for (let index = 0; index < value.length; index++) {
+                view.setUint8(offset + index, value.charCodeAt(index));
             }
+        };
+
+        writeText(0, 'RIFF');
+        view.setUint32(4, 36 + sampleCount * 2, true);
+        writeText(8, 'WAVEfmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeText(36, 'data');
+        view.setUint32(40, sampleCount * 2, true);
+
+        const tone = (time, frequency, offset) => {
+            const localTime = time - offset;
+            if (localTime < 0 || localTime > 0.24) return 0;
+            const gain = localTime < 0.015
+                ? 0.0001 * Math.pow(10000, localTime / 0.015)
+                : Math.pow(0.0001, (localTime - 0.015) / 0.225);
+            return Math.sin(2 * Math.PI * frequency * localTime) * gain;
+        };
+        for (let index = 0; index < sampleCount; index++) {
+            const time = index / sampleRate;
+            const sample = tone(time, 659.25, 0) + tone(time, 880, 0.11);
+            view.setInt16(44 + index * 2, Math.round(Math.max(-1, Math.min(1, sample)) * 32767), true);
         }
-        return this.attentionAudioContext.state === 'running' ? this.attentionAudioContext : null;
+        return new Blob([buffer], { type: 'audio/wav' });
     }
 
     playAttentionSound(preview = false) {
         if (!preview && this.settings?.panes?.playAttentionSound !== true) return;
-        const context = this.attentionAudioContext;
-        if (!context || context.state !== 'running') return;
+        if (navigator.userActivation?.hasBeenActive === false) return;
 
-        const start = context.currentTime;
-        for (const [frequency, offset] of [[659.25, 0], [880, 0.11]]) {
-            const oscillator = context.createOscillator();
-            const gain = context.createGain();
-            oscillator.type = 'sine';
-            oscillator.frequency.value = frequency;
-            gain.gain.setValueAtTime(0.0001, start + offset);
-            gain.gain.exponentialRampToValueAtTime(1.0, start + offset + 0.015);
-            gain.gain.exponentialRampToValueAtTime(0.0001, start + offset + 0.24);
-            oscillator.connect(gain);
-            gain.connect(context.destination);
-            oscillator.start(start + offset);
-            oscillator.stop(start + offset + 0.25);
-        }
+        this.attentionSoundBlob ||= this.createAttentionSoundBlob();
+        const objectURL = URL.createObjectURL(this.attentionSoundBlob);
+        const audio = new Audio(objectURL);
+        this.activeAttentionSounds.add(audio);
+        const cleanup = () => {
+            if (!this.activeAttentionSounds.delete(audio)) return;
+            audio.removeAttribute('src');
+            audio.load();
+            URL.revokeObjectURL(objectURL);
+        };
+        audio.addEventListener('ended', cleanup, { once: true });
+        audio.addEventListener('error', cleanup, { once: true });
+        audio.play().catch(cleanup);
     }
 
     reconcileAttentionSettings() {

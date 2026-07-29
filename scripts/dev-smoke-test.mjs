@@ -235,19 +235,15 @@ try {
     })()`);
     assert.deepEqual(attentionSoundBehavior, { enabledPlays: 1, disabledPlays: 1 }, 'attention sound should play once for new terminal attention only');
     const attentionSoundPreview = await tools.evaluate(`(async () => {
-        let unlocked = 0;
         let previewed = 0;
-        const originalUnlock = window.app.unlockAttentionAudio;
         const originalPlay = window.app.playAttentionSound;
-        window.app.unlockAttentionAudio = async () => { unlocked++; return {}; };
         window.app.playAttentionSound = preview => { if (preview) previewed++; };
         document.getElementById('preview-attention-sound').click();
         await new Promise(resolve => setTimeout(resolve, 0));
-        window.app.unlockAttentionAudio = originalUnlock;
         window.app.playAttentionSound = originalPlay;
-        return { unlocked, previewed };
+        return previewed;
     })()`);
-    assert.deepEqual(attentionSoundPreview, { unlocked: 1, previewed: 1 }, 'attention sound preview should unlock audio and play');
+    assert.equal(attentionSoundPreview, 1, 'attention sound preview should use the normal playback path');
     await tools.evaluate(`(() => {
         const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes('${openCodePane.id}'));
         window.app.activateGroup(group.id, '${openCodePane.id}');
