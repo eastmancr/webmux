@@ -326,8 +326,11 @@ func TestOSC52ScannerHandlesFragmentedOutput(t *testing.T) {
 }
 
 func TestTerminalPopoutPage(t *testing.T) {
-	server := &Server{}
 	pane := &Pane{ID: "pane-7701", Name: "one < two", Type: "terminal"}
+	server := &Server{
+		manager: &PaneManager{panes: map[string]*Pane{pane.ID: pane}},
+		uiState: &UIState{Groups: []UIGroup{{ID: "group-1", PaneIDs: []string{pane.ID}}}, GroupOrder: []string{"group-1"}},
+	}
 	req := httptest.NewRequest("GET", "/p/pane-7701/", nil)
 	recorder := httptest.NewRecorder()
 
@@ -349,5 +352,22 @@ func TestTerminalPopoutPage(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Errorf("popout page missing %q", expected)
 		}
+	}
+}
+
+func TestTerminalPopoutPageUsesCanonicalPositionForUnnamedPane(t *testing.T) {
+	first := &Pane{ID: "pane-1", Name: "named", Type: "terminal"}
+	second := &Pane{ID: "pane-2", Type: "terminal"}
+	server := &Server{
+		manager: &PaneManager{panes: map[string]*Pane{first.ID: first, second.ID: second}},
+		uiState: &UIState{
+			Groups:     []UIGroup{{ID: "group-1", PaneIDs: []string{second.ID, first.ID}, CellMapping: []int{1, 0}}},
+			GroupOrder: []string{"group-1"},
+		},
+	}
+	recorder := httptest.NewRecorder()
+	server.serveTerminalPopout(recorder, httptest.NewRequest(http.MethodGet, "/p/pane-2/", nil), second)
+	if !strings.Contains(recorder.Body.String(), "<title>Terminal 2</title>") {
+		t.Fatalf("popout title did not use canonical position: %s", recorder.Body.String())
 	}
 }

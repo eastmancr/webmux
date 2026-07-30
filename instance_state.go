@@ -27,7 +27,7 @@ import (
 	"time"
 )
 
-const instanceStateVersion = 1
+const instanceStateVersion = 2
 
 type PersistedBackend struct {
 	ID           string `json:"id"`
@@ -152,13 +152,48 @@ func LoadInstanceState(instanceID string) (*InstanceState, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("parse instance state: %w", err)
 	}
-	if state.Version != instanceStateVersion {
+	if state.Version != 1 && state.Version != instanceStateVersion {
 		return nil, fmt.Errorf("unsupported instance state version %d", state.Version)
 	}
 	if err := validateInstanceStateStructure(&state); err != nil {
 		return nil, fmt.Errorf("invalid instance state: %w", err)
 	}
+	if state.Version == 1 {
+		migrateInstanceStateV1(&state)
+		if err := SaveInstanceState(instanceID, state); err != nil {
+			return nil, fmt.Errorf("persist migrated instance state: %w", err)
+		}
+	}
 	return &state, nil
+}
+
+func migrateInstanceStateV1(state *InstanceState) {
+	customNames := make(map[string]bool)
+	if state.UIState != nil {
+		for _, paneID := range state.UIState.CustomNames {
+			customNames[paneID] = true
+		}
+		state.UIState.CustomNames = nil
+	}
+	for i := range state.Panes {
+		name := state.Panes[i].Name
+		if isCanonicalPositiveInteger(name) && !customNames[state.Panes[i].ID] {
+			state.Panes[i].Name = ""
+		}
+	}
+	state.Version = instanceStateVersion
+}
+
+func isCanonicalPositiveInteger(value string) bool {
+	if value == "" || value[0] < '1' || value[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateInstanceStateStructure(state *InstanceState) error {

@@ -211,6 +211,53 @@ try {
 
     await tools.command('Page.navigate', { url: mountedURL });
     await waitFor(() => tools.evaluate('window.app?.terminals.size === 1'), 'embedded terminal');
+
+    const unnamedResponse = await fetch(`${mountedURL}api/panes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'terminal', name: '' }),
+    });
+    const unnamedBody = await unnamedResponse.text();
+    assert.equal(unnamedResponse.status, 201, unnamedBody);
+    const unnamedPane = JSON.parse(unnamedBody);
+    assert.equal(unnamedPane.name, '', 'unnamed panes should store an empty custom title');
+    assert.equal(unnamedPane.displayName, '3', 'named panes should consume visual positions');
+    await waitFor(() => tools.evaluate(`window.app?.panes.has('${unnamedPane.id}')`), 'unnamed pane event');
+
+    const renameBehavior = await tools.evaluate(`(async () => {
+        const paneId = '${unnamedPane.id}';
+        const group = Array.from(window.app.groups.values()).find(candidate => candidate.paneIds.includes(paneId));
+        window.app.startInlineRename(paneId);
+        const initialValue = document.querySelector('.inline-rename-input')?.value;
+        await window.app.finishInlineRename('  Smoke Named  ');
+        const customTitle = window.app.getPaneDisplayName(window.app.panes.get(paneId));
+        window.app.startInlineRename(paneId);
+        await window.app.finishInlineRename('');
+        const resetTitle = window.app.getPaneDisplayName(window.app.panes.get(paneId));
+        window.app.reorderGroup(group.id, window.app.groupOrder[0], true);
+        await window.app.saveUIState();
+        return {
+            initialValue,
+            customTitle,
+            resetTitle,
+            reorderedTitle: window.app.getPaneDisplayName(window.app.panes.get(paneId)),
+        };
+    })()`);
+    assert.deepEqual(renameBehavior, {
+        initialValue: '',
+        customTitle: 'Smoke Named',
+        resetTitle: '3',
+        reorderedTitle: '1',
+    }, 'unnamed pane titles should derive from visual order and support reset');
+    const reorderedPanes = await fetch(`${mountedURL}api/panes`).then(response => response.json());
+    const reorderedUnnamed = reorderedPanes.find(candidate => candidate.id === unnamedPane.id);
+    assert.equal(reorderedUnnamed.position, 1, 'server pane order should follow saved browser order');
+    assert.equal(reorderedUnnamed.displayName, '1', 'server display title should follow saved browser order');
+
+    const closeUnnamedResponse = await fetch(`${mountedURL}api/panes/${unnamedPane.id}`, { method: 'DELETE' });
+    assert.equal(closeUnnamedResponse.status, 204, await closeUnnamedResponse.text());
+    await waitFor(() => tools.evaluate(`!window.app?.panes.has('${unnamedPane.id}') && window.app?.terminals.size === 1`), 'unnamed pane cleanup');
+
     const attentionSoundBehavior = await tools.evaluate(`(() => {
         const terminalPane = Array.from(window.app.panes.values()).find(pane => pane.type === 'terminal');
         const openCodePane = Array.from(window.app.panes.values()).find(pane => pane.type === 'opencode');

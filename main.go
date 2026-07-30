@@ -1326,7 +1326,7 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.uiStateMu.RLock()
-		state := s.uiState
+		state := cloneUIState(s.uiState)
 		s.uiStateMu.RUnlock()
 
 		// Validate state against current panes before returning
@@ -1375,6 +1375,10 @@ func (s *Server) handleUIState(w http.ResponseWriter, r *http.Request) {
 // validateUIState removes references to panes that no longer exist
 // and resets counters if all panes are gone
 func (s *Server) validateUIState(state *UIState) *UIState {
+	return validateUIStateForPanes(state, s.manager.ListPanes())
+}
+
+func validateUIStateForPanes(state *UIState, panes []*Pane) *UIState {
 	if state == nil {
 		return &UIState{
 			Groups:     make([]UIGroup, 0),
@@ -1382,8 +1386,6 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 		}
 	}
 
-	// Get current valid pane IDs
-	panes := s.manager.ListPanes()
 	validPaneIDs := make(map[string]bool)
 	for _, pane := range panes {
 		validPaneIDs[pane.ID] = true
@@ -1440,13 +1442,6 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 		}
 	}
 
-	// Filter custom names
-	validCustomNames := make([]string, 0)
-	for _, paneID := range state.CustomNames {
-		if validPaneIDs[paneID] {
-			validCustomNames = append(validCustomNames, paneID)
-		}
-	}
 	validAttentionPaneIDs := make([]string, 0)
 	for _, paneID := range state.AttentionPaneIDs {
 		if validPaneIDs[paneID] && !slices.Contains(validAttentionPaneIDs, paneID) {
@@ -1491,7 +1486,6 @@ func (s *Server) validateUIState(state *UIState) *UIState {
 		FocusedPaneID:    focusedPaneID,
 		GroupCounter:     groupCounter,
 		SidebarCollapsed: state.SidebarCollapsed,
-		CustomNames:      validCustomNames,
 		AttentionPaneIDs: validAttentionPaneIDs,
 	}
 }
@@ -1558,13 +1552,6 @@ func (s *Server) removePaneFromUIState(paneID string) {
 		}
 	}
 
-	// Remove from custom names
-	newCustomNames := make([]string, 0)
-	for _, id := range s.uiState.CustomNames {
-		if id != paneID {
-			newCustomNames = append(newCustomNames, id)
-		}
-	}
 	newAttentionPaneIDs := make([]string, 0)
 	for _, id := range s.uiState.AttentionPaneIDs {
 		if id != paneID {
@@ -1574,7 +1561,6 @@ func (s *Server) removePaneFromUIState(paneID string) {
 
 	s.uiState.Groups = newGroups
 	s.uiState.GroupOrder = newOrder
-	s.uiState.CustomNames = newCustomNames
 	s.uiState.AttentionPaneIDs = newAttentionPaneIDs
 	s.uiState.Revision++
 
@@ -1608,15 +1594,30 @@ func getDefaultSplitRatio(count int) []float64 {
 	}
 }
 
+func (s *Server) currentPaneViews() []PaneView {
+	s.uiStateMu.RLock()
+	state := cloneUIState(s.uiState)
+	s.uiStateMu.RUnlock()
+	panes := s.manager.ListPanes()
+	return buildPaneViews(panes, validateUIStateForPanes(state, panes))
+}
+
+func (s *Server) currentPaneView(paneID string) (PaneView, bool) {
+	for _, view := range s.currentPaneViews() {
+		if view.ID == paneID {
+			return view, true
+		}
+	}
+	return PaneView{}, false
+}
+
 // handlePanes handles pane CRUD operations.
 func (s *Server) handlePanes(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	switch r.Method {
 	case http.MethodGet:
-		// List all panes
-		panes := s.manager.ListPanes()
-		json.NewEncoder(w).Encode(panes)
+		json.NewEncoder(w).Encode(s.currentPaneViews())
 
 	case http.MethodPost:
 		// Create new pane
@@ -1662,7 +1663,8 @@ func (s *Server) handlePanes(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Pane %s created successfully", pane.ID)
 		s.notifyPaneSubscribers(paneEvent{Type: "created", Pane: pane})
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(pane)
+		view, _ := s.currentPaneView(pane.ID)
+		json.NewEncoder(w).Encode(view)
 
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

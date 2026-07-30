@@ -343,6 +343,10 @@ func (s *Server) serveTerminalPopout(w http.ResponseWriter, r *http.Request, pan
 		return
 	}
 
+	displayName := pane.Name
+	if view, ok := s.currentPaneView(pane.ID); ok {
+		displayName = view.DisplayName
+	}
 	document := fmt.Sprintf(`<!doctype html>
 <html lang="en">
 <head>
@@ -357,7 +361,7 @@ func (s *Server) serveTerminalPopout(w http.ResponseWriter, r *http.Request, pan
   <script src="../../vendor/xterm/addon-image.js"></script>
 </head>
 <body><div id="terminal"></div><div id="keybar" class="keybar user-hidden" role="toolbar" aria-label="Special keys" aria-hidden="true"></div><script src="../../terminal-popout.js"></script></body>
-</html>`, html.EscapeString(pane.Name))
+</html>`, html.EscapeString(displayName))
 	document = injectPanePopoutBridge(document)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")

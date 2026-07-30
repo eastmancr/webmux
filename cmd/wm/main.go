@@ -27,7 +27,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -52,7 +51,9 @@ func main() {
 	case "info":
 		err = cmdInfo(host)
 	case "ls", "list":
-		err = cmdList(host)
+		err = cmdList(host, args)
+	case "current":
+		err = cmdCurrent(host, args)
 	case "new":
 		err = cmdNew(host, args)
 	case "close":
@@ -92,11 +93,13 @@ Usage: wm <command> [arguments]
 
 Commands:
   info               Show server info (upload dir, work dir)
-  ls, list           List all panes
+  ls, list [--json]  List all panes
+  current            Print the invoking terminal pane ID
   new [--terminal|--opencode] [name]
                      Create a pane (defaults to terminal)
-  close <id>         Close a pane
-  rename <id> <name> Rename a pane
+  close <ref>        Close a pane
+  rename <ref> <title...> | <ref> --reset
+                     Rename a pane or reset its custom name
   upload <file>...   Upload files to the server
   scratch            Get current scratch pad text
   scratch <text>     Send text to scratch pad
@@ -273,20 +276,54 @@ func cmdInfo(host string) error {
 	return nil
 }
 
-func cmdList(host string) error {
+type paneView struct {
+	ID              string `json:"id"`
+	Type            string `json:"type"`
+	BackendID       string `json:"backendId"`
+	BackendScope    string `json:"backendScope"`
+	BackendLifetime string `json:"backendLifetime"`
+	Name            string `json:"name"`
+	Port            int    `json:"port"`
+	CreatedAt       string `json:"createdAt"`
+	CurrentActivity string `json:"currentActivity"`
+	Position        int    `json:"position"`
+	DisplayName     string `json:"displayName"`
+	Focused         bool   `json:"focused"`
+	Current         bool   `json:"current"`
+}
+
+func getPanes(host string) ([]paneView, error) {
 	body, err := apiGet(host, "/api/panes")
+	if err != nil {
+		return nil, err
+	}
+
+	var panes []paneView
+	if err := json.Unmarshal(body, &panes); err != nil {
+		return nil, fmt.Errorf("failed to parse pane list: %w", err)
+	}
+	return panes, nil
+}
+
+func cmdList(host string, args []string) error {
+	if len(args) > 1 || len(args) == 1 && args[0] != "--json" {
+		return fmt.Errorf("usage: wm list [--json]")
+	}
+
+	panes, err := getPanes(host)
 	if err != nil {
 		return err
 	}
-
-	var panes []struct {
-		ID              string `json:"id"`
-		Type            string `json:"type"`
-		Name            string `json:"name"`
-		CurrentActivity string `json:"currentActivity"`
+	currentID := validSessionPaneID(os.Getenv("WEBMUX_SESSION"))
+	for i := range panes {
+		panes[i].Current = panes[i].ID == currentID
 	}
-	if err := json.Unmarshal(body, &panes); err != nil {
-		return fmt.Errorf("failed to parse response: %w", err)
+
+	if len(args) == 1 {
+		if panes == nil {
+			panes = []paneView{}
+		}
+		return json.NewEncoder(os.Stdout).Encode(panes)
 	}
 
 	if len(panes) == 0 {
@@ -294,22 +331,22 @@ func cmdList(host string) error {
 		return nil
 	}
 
-	if stdoutIsTerminal() {
-		fmt.Printf("%-12s %-10s %-20s %s\n", "ID", "TYPE", "NAME", "ACTIVITY")
-	}
+	fmt.Printf("%-4s %-4s %-12s %-10s %-20s %s\n", "POS", "MARK", "ID", "TYPE", "TITLE", "ACTIVITY")
 	for _, p := range panes {
 		activity := p.CurrentActivity
 		if activity == "" {
 			activity = "-"
 		}
-		fmt.Printf("%-12s %-10s %-20s %s\n", p.ID, p.Type, p.Name, activity)
+		mark := ""
+		if p.Current {
+			mark += "."
+		}
+		if p.Focused {
+			mark += "*"
+		}
+		fmt.Printf("%-4d %-4s %-12s %-10s %-20s %s\n", p.Position, mark, p.ID, p.Type, p.DisplayName, activity)
 	}
 	return nil
-}
-
-func stdoutIsTerminal() bool {
-	info, err := os.Stdout.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func cmdNew(host string, args []string) error {
@@ -350,32 +387,200 @@ func cmdNew(host string, args []string) error {
 	}
 
 	var pane struct {
-		ID   string `json:"id"`
-		Type string `json:"type"`
-		Name string `json:"name"`
+		ID          string `json:"id"`
+		Type        string `json:"type"`
+		DisplayName string `json:"displayName"`
 	}
 	if err := json.Unmarshal(body, &pane); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	fmt.Printf("Created %s pane: %s (%s)\n", pane.Type, pane.Name, pane.ID)
+	fmt.Printf("Created %s pane: %s (%s)\n", pane.Type, pane.DisplayName, pane.ID)
 	return nil
 }
 
-func normalizePaneID(id string) string {
-	if _, err := strconv.Atoi(id); err == nil {
-		return "pane-" + id
+type paneSelector struct {
+	kind  string
+	value string
+}
+
+func canonicalPositiveDecimal(value string) bool {
+	if value == "" || value[0] == '0' {
+		return false
 	}
-	return id
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validPaneID(id string) bool {
+	return strings.HasPrefix(id, "pane-") && canonicalPositiveDecimal(strings.TrimPrefix(id, "pane-"))
+}
+
+func validSessionPaneID(id string) string {
+	if validPaneID(id) {
+		return id
+	}
+	return ""
+}
+
+func parsePaneSelector(ref string) (paneSelector, error) {
+	switch {
+	case ref == "":
+		return paneSelector{}, fmt.Errorf("pane selector cannot be empty")
+	case ref == ".":
+		return paneSelector{kind: "current"}, nil
+	case ref == "focused":
+		return paneSelector{kind: "focused"}, nil
+	case validPaneID(ref):
+		return paneSelector{kind: "id", value: ref}, nil
+	case strings.HasPrefix(ref, "pane-"):
+		return paneSelector{}, fmt.Errorf("invalid pane ID %q; expected pane-N", ref)
+	case strings.HasPrefix(ref, "id:"):
+		id := strings.TrimPrefix(ref, "id:")
+		if !validPaneID(id) {
+			return paneSelector{}, fmt.Errorf("invalid ID selector %q; expected id:pane-N", ref)
+		}
+		return paneSelector{kind: "id", value: id}, nil
+	case strings.HasPrefix(ref, "pos:"):
+		position := strings.TrimPrefix(ref, "pos:")
+		if !canonicalPositiveDecimal(position) {
+			return paneSelector{}, fmt.Errorf("invalid position selector %q; expected pos:N with N greater than zero and no leading zeros", ref)
+		}
+		return paneSelector{kind: "position", value: position}, nil
+	case strings.HasPrefix(ref, "name:"):
+		name := strings.TrimPrefix(ref, "name:")
+		if name == "" {
+			return paneSelector{}, fmt.Errorf("invalid name selector %q; name cannot be empty", ref)
+		}
+		return paneSelector{kind: "name", value: name}, nil
+	case canonicalPositiveDecimal(ref):
+		return paneSelector{kind: "position", value: ref}, nil
+	case decimalDigits(ref):
+		return paneSelector{}, fmt.Errorf("invalid position %q; positions must be greater than zero and have no leading zeros", ref)
+	case isNegativeDecimal(ref):
+		return paneSelector{}, fmt.Errorf("invalid position %q; positions must be greater than zero", ref)
+	case ref == "id:" || ref == "pos:" || ref == "name:":
+		return paneSelector{}, fmt.Errorf("invalid pane selector %q", ref)
+	default:
+		return paneSelector{kind: "name", value: ref}, nil
+	}
+}
+
+func isNegativeDecimal(value string) bool {
+	return strings.HasPrefix(value, "-") && canonicalPositiveDecimal(strings.TrimPrefix(value, "-"))
+}
+
+func decimalDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func resolvePaneSelector(selector paneSelector, panes []paneView, session string) (string, error) {
+	if selector.kind == "current" {
+		if !validPaneID(session) {
+			return "", fmt.Errorf("WEBMUX_SESSION must be a canonical pane ID (pane-N)")
+		}
+		selector = paneSelector{kind: "id", value: session}
+	}
+
+	matches := make([]paneView, 0, 1)
+	for _, pane := range panes {
+		switch selector.kind {
+		case "id":
+			if pane.ID == selector.value {
+				matches = append(matches, pane)
+			}
+		case "position":
+			if fmt.Sprint(pane.Position) == selector.value {
+				matches = append(matches, pane)
+			}
+		case "focused":
+			if pane.Focused {
+				matches = append(matches, pane)
+			}
+		case "name":
+			if pane.Name == selector.value {
+				matches = append(matches, pane)
+			}
+		}
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no pane matches %s", describeSelector(selector))
+	}
+	if len(matches) > 1 {
+		details := make([]string, len(matches))
+		for i, pane := range matches {
+			details[i] = fmt.Sprintf("position %d, %s, title %q", pane.Position, pane.ID, pane.DisplayName)
+		}
+		return "", fmt.Errorf("pane selector %s is ambiguous; matches %s", describeSelector(selector), strings.Join(details, ", "))
+	}
+	return matches[0].ID, nil
+}
+
+func describeSelector(selector paneSelector) string {
+	switch selector.kind {
+	case "current":
+		return "current pane"
+	case "focused":
+		return "focused pane"
+	case "id":
+		return fmt.Sprintf("ID %q", selector.value)
+	case "position":
+		return fmt.Sprintf("position %s", selector.value)
+	default:
+		return fmt.Sprintf("name %q", selector.value)
+	}
+}
+
+func resolvePaneRef(host, ref string) (string, error) {
+	selector, err := parsePaneSelector(ref)
+	if err != nil {
+		return "", err
+	}
+	session := os.Getenv("WEBMUX_SESSION")
+	if selector.kind == "current" && !validPaneID(session) {
+		return "", fmt.Errorf("WEBMUX_SESSION must be a canonical pane ID (pane-N)")
+	}
+	panes, err := getPanes(host)
+	if err != nil {
+		return "", err
+	}
+	return resolvePaneSelector(selector, panes, session)
+}
+
+func cmdCurrent(host string, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: wm current")
+	}
+	paneID, err := resolvePaneRef(host, ".")
+	if err != nil {
+		return err
+	}
+	fmt.Println(paneID)
+	return nil
 }
 
 func cmdClose(host string, args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: wm close <pane-id>")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: wm close <ref>")
 	}
 
-	paneID := normalizePaneID(args[0])
-	if err := apiDelete(host, "/api/panes/"+paneID); err != nil {
+	paneID, err := resolvePaneRef(host, args[0])
+	if err != nil {
+		return err
+	}
+	if err := apiDelete(host, "/api/panes/"+url.PathEscape(paneID)); err != nil {
 		return err
 	}
 
@@ -385,17 +590,34 @@ func cmdClose(host string, args []string) error {
 
 func cmdRename(host string, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: wm rename <pane-id> <new-name>")
+		return fmt.Errorf("usage: wm rename <ref> <title...> | wm rename <ref> --reset")
 	}
 
-	paneID := normalizePaneID(args[0])
-	newName := strings.Join(args[1:], " ")
-
-	if err := apiPatch(host, "/api/panes/"+paneID, map[string]string{"name": newName}); err != nil {
+	reset := len(args) == 2 && args[1] == "--reset"
+	if !reset && args[1] == "--reset" {
+		return fmt.Errorf("--reset cannot be combined with a title")
+	}
+	newName := ""
+	if !reset {
+		newName = strings.TrimSpace(strings.Join(args[1:], " "))
+		if newName == "" {
+			return fmt.Errorf("pane title cannot be empty; use --reset to clear it")
+		}
+	}
+	paneID, err := resolvePaneRef(host, args[0])
+	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Renamed pane %s to: %s\n", paneID, newName)
+	if err := apiPatch(host, "/api/panes/"+url.PathEscape(paneID), map[string]string{"name": newName}); err != nil {
+		return err
+	}
+
+	if reset {
+		fmt.Printf("Reset pane name: %s\n", paneID)
+	} else {
+		fmt.Printf("Renamed pane %s to: %s\n", paneID, newName)
+	}
 	return nil
 }
 

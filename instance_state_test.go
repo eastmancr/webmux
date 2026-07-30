@@ -260,6 +260,93 @@ func TestInvalidInstanceStateIsNotOverwritten(t *testing.T) {
 	}
 }
 
+func TestLoadInstanceStateMigratesV1PaneNames(t *testing.T) {
+	isolateWebmuxTest(t)
+	instance := "migration-test"
+	path := instanceStateFilePath(instance)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"1", "2", "01", "0", "-1", "notes", "999999999999999999999999999999999999"}
+	panes := make([]PersistedPane, len(names))
+	for i, name := range names {
+		id := fmt.Sprintf("pane-%d", i+1)
+		panes[i] = PersistedPane{ID: id, Type: "terminal", BackendID: id, Name: name}
+	}
+	legacy := InstanceState{
+		Version: 1,
+		Panes:   panes,
+		UIState: &UIState{CustomNames: []string{"pane-2"}},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := LoadInstanceState(instance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != 2 {
+		t.Fatalf("version = %d, want 2", state.Version)
+	}
+	wantNames := []string{"", "2", "01", "0", "-1", "notes", ""}
+	for i, want := range wantNames {
+		if state.Panes[i].Name != want {
+			t.Errorf("pane %s name = %q, want %q", state.Panes[i].ID, state.Panes[i].Name, want)
+		}
+	}
+	if len(state.UIState.CustomNames) != 0 {
+		t.Fatalf("legacy custom names remain: %v", state.UIState.CustomNames)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(persisted, []byte("customNames")) {
+		t.Fatalf("migrated state retained customNames: %s", persisted)
+	}
+	if !bytes.Contains(persisted, []byte(`"version": 2`)) {
+		t.Fatalf("migration was not persisted: %s", persisted)
+	}
+	if _, err := LoadInstanceState(instance); err != nil {
+		t.Fatalf("load migrated v2 state: %v", err)
+	}
+	afterSecondLoad, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(persisted, afterSecondLoad) {
+		t.Fatal("v2 state was persisted again on load")
+	}
+}
+
+func TestInvalidV1StateIsNotMigrated(t *testing.T) {
+	isolateWebmuxTest(t)
+	instance := "invalid-v1-migration-test"
+	path := instanceStateFilePath(instance)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"version":1,"panes":[{"id":"bad","type":"terminal","backendId":"bad","name":"1"}],"uiState":{"customNames":[]}}`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadInstanceState(instance); err == nil {
+		t.Fatal("invalid v1 state loaded")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("invalid v1 state was overwritten: %s", got)
+	}
+}
+
 func TestOpenCodeShutdownRejectsChangedProcessIdentity(t *testing.T) {
 	state := &OpenCodePaneState{
 		pid: os.Getpid(),

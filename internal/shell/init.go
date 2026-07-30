@@ -42,7 +42,7 @@ if [ -n "$BASH_VERSION" ]; then
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
     # Top-level commands
-    local commands="info ls list new close rename upload scratch mark init copy c paste p v help"
+    local commands="info ls list current new close rename upload scratch mark init copy c paste p v help"
 
     case "$prev" in
       wm)
@@ -85,6 +85,7 @@ elif [ -n "$ZSH_VERSION" ]; then
       'info:Show server info'
       'ls:List all panes'
       'list:List all panes'
+      'current:Print the invoking terminal pane ID'
       'new:Create a new terminal pane'
       'close:Close a pane'
       'rename:Rename a pane'

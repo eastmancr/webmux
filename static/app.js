@@ -120,9 +120,6 @@ class TerminalMultiplexer {
         this.uiStateRevision = 0;
         this.uiStateSavePromise = Promise.resolve();
 
-        // Track custom names (to know whether to show process name)
-        this.customNames = new Set();
-
         // Drag state for sidebar
         this.draggedPaneId = null;
         this.draggedGroupId = null;
@@ -458,12 +455,11 @@ class TerminalMultiplexer {
         const activeGroup = this.groups.get(this.activeGroupId);
         if (activeGroup && this.mobilePaneName) {
             // Update pane name display
-            if (activeGroup.paneIds.length === 1) {
-                const pane = this.panes.get(activeGroup.paneIds[0]);
-                this.mobilePaneName.textContent = pane ? this.getPaneDisplayName(pane) : 'Pane';
-            } else {
-                this.mobilePaneName.textContent = activeGroup.name || `Split (${activeGroup.paneIds.length})`;
-            }
+            const paneId = activeGroup.paneIds.includes(this.focusedPaneId)
+                ? this.focusedPaneId
+                : this.getGroupPaneIdsInVisualOrder(activeGroup)[0];
+            const pane = this.panes.get(paneId);
+            this.mobilePaneName.textContent = pane ? this.getPaneDisplayName(pane) : 'Pane';
         } else if (this.mobilePaneName) {
             // No active pane
             this.mobilePaneName.textContent = 'Panes';
@@ -593,7 +589,7 @@ class TerminalMultiplexer {
             <svg class="toast-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                 <path fill="currentColor" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
             </svg>
-            <span class="toast-message">Switched to: ${this.escapeHtml(group.name)}</span>
+            <span class="toast-message">Switched to: ${this.escapeHtml(this.getGroupDisplayName(group))}</span>
         `;
 
         const container = document.getElementById('toast-container');
@@ -990,7 +986,6 @@ class TerminalMultiplexer {
             focusedPaneId: this.focusedPaneId,
             attentionPaneIds: Array.from(this.attentionPaneIds),
             sidebarCollapsed: this.sidebar?.classList.contains('collapsed') || false,
-            customNames: Array.from(this.customNames),
             groupCounter: this.groupCounter
         };
     }
@@ -1099,7 +1094,6 @@ class TerminalMultiplexer {
             this.uiStateRevision = Number.isSafeInteger(state.revision) && state.revision > 0 ? state.revision : 0;
             this.sidebarCollapsed = !!state.sidebarCollapsed;
             this.groupCounter = state.groupCounter;
-            this.customNames = new Set(Array.isArray(state.customNames) ? state.customNames.filter(n => typeof n === 'string') : []);
             if (typeof state.focusedPaneId !== 'string') state.focusedPaneId = '';
         } catch (e) {
             console.warn('Failed to load UI state from server:', e);
@@ -1149,7 +1143,7 @@ class TerminalMultiplexer {
 
             // Refresh sidebar if process names changed
             if (needsRefresh) {
-                this.refreshSidebar();
+                this.refreshPaneTitles();
             }
 
             // Find and clean up panes that no longer exist on server
@@ -1220,13 +1214,13 @@ class TerminalMultiplexer {
             this.panes.set(pane.id, pane);
             const group = this.createGroup([pane.id]);
             this.addGroupToSidebar(group);
-            this.refreshSidebar();
+            this.refreshPaneTitles();
             return;
         }
 
         if (existing.currentActivity !== pane.currentActivity || existing.name !== pane.name || existing.type !== pane.type) {
             Object.assign(existing, pane);
-            this.refreshSidebar();
+            this.refreshPaneTitles();
         }
     }
 
@@ -1235,6 +1229,17 @@ class TerminalMultiplexer {
         for (const [groupId, group] of this.groups) {
             this.updateGroupInSidebar(group);
         }
+    }
+
+    refreshPaneTitles() {
+        this.refreshSidebar();
+        this.updateMobileToolbar();
+
+        document.querySelectorAll('iframe.pane-iframe').forEach(iframe => {
+            const paneId = iframe.dataset.activePaneId || iframe.dataset.paneId;
+            const pane = this.panes.get(paneId);
+            if (pane) iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${this.getPaneDisplayName(pane)}`;
+        });
     }
 
     handlePaneDied(paneId, options = {}) {
@@ -1304,6 +1309,7 @@ class TerminalMultiplexer {
             }
             break;
         }
+        this.refreshPaneTitles();
         if (shouldSave) this.saveUIState();
     }
 
@@ -1915,6 +1921,8 @@ class TerminalMultiplexer {
                 this.updatePaneLayout();
             }
 
+            this.refreshPaneTitles();
+
             // Clear saved state after reconciliation
             this.savedState = null;
             this.markUIStateSaved();
@@ -2079,6 +2087,34 @@ class TerminalMultiplexer {
         return ordered;
     }
 
+    getPaneIdsInCanonicalOrder() {
+        const ordered = [];
+        const seen = new Set();
+
+        for (const groupId of this.groupOrder) {
+            const group = this.groups.get(groupId);
+            for (const paneId of this.getGroupPaneIdsInVisualOrder(group)) {
+                if (!this.panes.has(paneId) || seen.has(paneId)) continue;
+                ordered.push(paneId);
+                seen.add(paneId);
+            }
+        }
+
+        for (const paneId of this.panes.keys()) {
+            if (seen.has(paneId)) continue;
+            ordered.push(paneId);
+            seen.add(paneId);
+        }
+
+        return ordered;
+    }
+
+    getGroupDisplayName(group) {
+        if (!group || group.paneIds.length === 0) return 'Panes';
+        if (group.paneIds.length > 1) return `Split (${group.paneIds.length})`;
+        return this.getPaneDisplayName(this.panes.get(group.paneIds[0]));
+    }
+
     updateGroupLayout(group) {
         const count = group.paneIds.length;
         group.layout = this.getDefaultLayout(count);
@@ -2241,6 +2277,7 @@ class TerminalMultiplexer {
             }
             const group = this.createGroup([pane.id]);
             this.addGroupToSidebar(group);
+            this.refreshPaneTitles();
             this.activateGroup(group.id);
             this.saveUIState();
             requestAnimationFrame(() => {
@@ -2375,6 +2412,7 @@ class TerminalMultiplexer {
             }
             break;
         }
+        this.refreshPaneTitles();
         if (sidebarPositions) this.animateSidebarPaneReflow(sidebarPositions);
 
         try {
@@ -2584,6 +2622,7 @@ class TerminalMultiplexer {
             }
         }
 
+        this.refreshPaneTitles();
         this.saveUIState();
     }
 
@@ -2595,7 +2634,6 @@ class TerminalMultiplexer {
         this.attentionPaneIds.delete(paneId);
         this.updateAttentionTitle();
         this.panes.delete(paneId);
-        this.customNames.delete(paneId);
 
         const hasRemainingMirror = this.isSharedPane(pane) && Array.from(this.panes.values()).some(p => p.backendId === pane.backendId);
         this.cleanupPanePopout(popoutKey, hasRemainingMirror);
@@ -2626,6 +2664,7 @@ class TerminalMultiplexer {
         const newGroup = this.createGroup([paneId]);
         this.addGroupToSidebar(newGroup);
 
+        this.refreshPaneTitles();
         this.activateGroup(newGroup.id);
     }
 
@@ -2636,6 +2675,8 @@ class TerminalMultiplexer {
         const paneIds = this.getGroupPaneIdsInVisualOrder(group);
 
         this.groups.delete(groupId);
+        this.groupOrder = this.groupOrder.filter(id => id !== groupId);
+        this.forgetGroupSelection(groupId);
         document.getElementById(`group-${groupId}`)?.remove();
 
         let firstNewGroup = null;
@@ -2649,6 +2690,7 @@ class TerminalMultiplexer {
             this.activeGroupId = null;
             this.activateGroup(firstNewGroup.id);
         }
+        this.refreshPaneTitles();
     }
 
     // SECTION: SIDEBAR
@@ -2853,13 +2895,13 @@ class TerminalMultiplexer {
             const hasAttention = this.attentionPaneIds.has(pane?.id);
 
             const nameHtml = isRenaming
-                ? `<input type="text" class="inline-rename-input" value="${this.escapeHtml(displayName)}" data-pane-id="${pane?.id}">`
+                ? `<input type="text" class="inline-rename-input" value="${this.escapeHtmlAttribute(pane?.name || '')}" placeholder="${this.escapeHtmlAttribute(displayName)}" data-pane-id="${this.escapeHtmlAttribute(pane?.id || '')}">`
                 : `<span class="name"><span class="pane-name-text">${this.escapeHtml(displayName)}</span>${activityHtml}</span>`;
 
             return `
                 <div class="pane-item ${activePaneInGroup ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}"
                      data-group-id="${group.id}" data-pane-id="${pane?.id}" draggable="${!isRenaming}"
-                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtmlAttribute(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 18)}
                     ${nameHtml}
                     ${this.renderPaneAttention(pane)}
@@ -2876,11 +2918,15 @@ class TerminalMultiplexer {
             const paneTypeLabel = this.getPaneTypeLabel(pane);
             const isActivePane = activePaneInGroup && this.focusedPaneId === sid;
             const hasAttention = this.attentionPaneIds.has(sid);
+            const isRenaming = this.renamingPaneId === sid;
+            const nameHtml = isRenaming
+                ? `<input type="text" class="inline-rename-input" value="${this.escapeHtmlAttribute(pane?.name || '')}" placeholder="${this.escapeHtmlAttribute(displayName)}" data-pane-id="${this.escapeHtmlAttribute(sid)}">`
+                : `<span class="name"><span class="pane-name-text">${this.escapeHtml(displayName)}</span>${activityHtml}</span>`;
             return `
-                <div class="pane-item sub-item ${isActivePane ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="true"
-                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtml(displayName)}${hasAttention ? ', attention requested' : ''}">
+                <div class="pane-item sub-item ${isActivePane ? 'active' : ''} ${hasAttention ? 'has-attention' : ''}" data-pane-id="${sid}" data-group-id="${group.id}" draggable="${!isRenaming}"
+                     role="button" aria-label="${paneTypeLabel} pane: ${this.escapeHtmlAttribute(displayName)}${hasAttention ? ', attention requested' : ''}">
                     ${this.getPaneIconSvg(pane, 16)}
-                    <span class="name"><span class="pane-name-text">${this.escapeHtml(displayName)}</span>${activityHtml}</span>
+                    ${nameHtml}
                     ${this.renderPaneAttention(pane)}
                     ${this.renderPaneActions(pane, group.id, { breakout: true, active: isActivePane })}
                 </div>
@@ -2889,7 +2935,7 @@ class TerminalMultiplexer {
 
         return `
             <div class="group-header compact ${activePaneInGroup ? 'active' : ''}" data-group-id="${group.id}" draggable="true"
-                 role="button" aria-label="Pane group: ${this.escapeHtml(group.name)}">
+                 role="button" aria-label="Pane group: ${this.escapeHtmlAttribute(this.getGroupDisplayName(group))}">
                 <svg class="icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
                     <path fill="currentColor" d="M3 5v14h18V5H3zm8 12H5v-5h6v5zm0-7H5V5h6v5zm8 7h-6v-5h6v5zm0-7h-6V5h6v5z"/>
                 </svg>
@@ -2998,7 +3044,7 @@ class TerminalMultiplexer {
 
         container.querySelectorAll('.pane-item.sub-item').forEach(item => {
             item.addEventListener('click', (e) => {
-                if (!e.target.closest('.actions')) {
+                if (!e.target.closest('.actions') && !e.target.closest('.inline-rename-input')) {
                     const paneId = item.dataset.paneId;
                     this.activateGroup(group.id, paneId);
                 }
@@ -3129,7 +3175,7 @@ class TerminalMultiplexer {
             renameInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    this.finishInlineRename(renameInput.value.trim());
+                    this.finishInlineRename(renameInput.value);
                 } else if (e.key === 'Escape') {
                     e.preventDefault();
                     this.cancelInlineRename();
@@ -3141,7 +3187,7 @@ class TerminalMultiplexer {
                 // Small delay to allow click events to process first
                 setTimeout(() => {
                     if (this.renamingPaneId) {
-                        this.finishInlineRename(renameInput.value.trim());
+                        this.finishInlineRename(renameInput.value);
                     }
                 }, 100);
             });
@@ -3163,7 +3209,9 @@ class TerminalMultiplexer {
 
     getPaneDisplayName(pane) {
         if (!pane) return 'Pane';
-        return pane.name;
+        if (typeof pane.name === 'string' && pane.name.length > 0) return pane.name;
+        const position = this.getPaneIdsInCanonicalOrder().indexOf(pane.id);
+        return String(position >= 0 ? position + 1 : this.panes.size + 1);
     }
 
     getPaneTypeLabel(pane) {
@@ -3237,33 +3285,24 @@ class TerminalMultiplexer {
         if (!this.renamingPaneId) return;
 
         const paneId = this.renamingPaneId;
+        const normalizedName = newName.trim();
         this.renamingPaneId = null;
 
-        if (newName) {
-            try {
-                await fetch(this.url(`/api/panes/${paneId}`), {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: newName })
-                });
+        try {
+            const response = await fetch(this.url(`/api/panes/${paneId}`), {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: normalizedName })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-                const pane = this.panes.get(paneId);
-                if (pane) {
-                    pane.name = newName;
-                    this.customNames.add(paneId);
-                }
-            } catch (error) {
-                console.error('Failed to rename pane:', error);
-            }
+            const pane = this.panes.get(paneId);
+            if (pane) pane.name = normalizedName;
+        } catch (error) {
+            console.error('Failed to rename pane:', error);
         }
 
-        // Re-render the sidebar item
-        for (const group of this.groups.values()) {
-            if (group.paneIds.includes(paneId)) {
-                this.updateGroupInSidebar(group);
-                break;
-            }
-        }
+        this.refreshPaneTitles();
     }
 
     cancelInlineRename() {
@@ -3922,7 +3961,7 @@ class TerminalMultiplexer {
     createPaneIframe(pane, options = {}) {
         const iframe = document.createElement('iframe');
         iframe.className = 'pane-iframe';
-        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
+        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${this.getPaneDisplayName(pane)}`;
         iframe.allow = 'clipboard-read; clipboard-write';
         iframe.dataset.paneId = pane.id;
         iframe.dataset.srcPaneId = pane.id;
@@ -4400,7 +4439,7 @@ class TerminalMultiplexer {
 
         iframe.dataset.paneId = pane.id;
         iframe.dataset.activePaneId = pane.id;
-        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${pane.name}`;
+        iframe.title = `${this.getPaneTypeLabel(pane)} pane: ${this.getPaneDisplayName(pane)}`;
 
         this.positionSharedIframe(iframe, container);
         iframe.classList.remove('hidden');
@@ -5091,7 +5130,7 @@ class TerminalMultiplexer {
 
         this.updatePaneLayout(true); // keepControlVisible = true
         this.pinDividerControl(); // Keep menu open after action
-        this.updateGroupInSidebar(activeGroup);
+        this.refreshPaneTitles();
         this.saveUIState();
     }
 
@@ -5219,6 +5258,8 @@ class TerminalMultiplexer {
             const pane = this.panes.get(paneId);
             return pane ? this.getPaneDisplayName(pane) : `Pane ${paneIdx + 1}`;
         };
+        const visibleLabel = panePosition => this.escapeHtml(getLabel(panePosition));
+        const attributeLabel = panePosition => this.escapeHtmlAttribute(getLabel(panePosition));
 
         if (count === 0) {
             return `<div class="drop-zone drop-full" data-position="center" data-index="0" role="button" aria-label="Drop here to create first pane">Drop here</div>`;
@@ -5226,10 +5267,10 @@ class TerminalMultiplexer {
 
         if (count === 1) {
             return `
-                <div class="drop-zone drop-edge drop-top" data-position="top" data-index="0" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(0))}">Above "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-bottom" data-position="bottom" data-index="1" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(0))}">Below "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-left" data-position="left" data-index="0" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(0))}">Left of "${getLabel(0)}"</div>
-                <div class="drop-zone drop-edge drop-right" data-position="right" data-index="1" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(0))}">Right of "${getLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-top" data-position="top" data-index="0" role="button" aria-label="Drop above ${attributeLabel(0)}">Above "${visibleLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-bottom" data-position="bottom" data-index="1" role="button" aria-label="Drop below ${attributeLabel(0)}">Below "${visibleLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-left" data-position="left" data-index="0" role="button" aria-label="Drop left of ${attributeLabel(0)}">Left of "${visibleLabel(0)}"</div>
+                <div class="drop-zone drop-edge drop-right" data-position="right" data-index="1" role="button" aria-label="Drop right of ${attributeLabel(0)}">Right of "${visibleLabel(0)}"</div>
             `;
         }
 
@@ -5245,10 +5286,10 @@ class TerminalMultiplexer {
                 // Dropping on right side: left becomes wide (left-wide)
                 const leftPct = r * 100;
                 return `
-                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: ${leftPct}%; height: 50%;" data-position="split-above-0" data-split-target="0" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(0))}">Above "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 0; top: 50%; width: ${leftPct}%; height: 50%;" data-position="split-below-0" data-split-target="0" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(0))}">Below "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 0; width: ${100 - leftPct}%; height: 50%;" data-position="split-above-1" data-split-target="1" role="button" aria-label="Drop above ${this.escapeHtml(getLabel(1))}">Above "${getLabel(1)}"</div>
-                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 50%; width: ${100 - leftPct}%; height: 50%;" data-position="split-below-1" data-split-target="1" role="button" aria-label="Drop below ${this.escapeHtml(getLabel(1))}">Below "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: ${leftPct}%; height: 50%;" data-position="split-above-0" data-split-target="0" role="button" aria-label="Drop above ${attributeLabel(0)}">Above "${visibleLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 50%; width: ${leftPct}%; height: 50%;" data-position="split-below-0" data-split-target="0" role="button" aria-label="Drop below ${attributeLabel(0)}">Below "${visibleLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 0; width: ${100 - leftPct}%; height: 50%;" data-position="split-above-1" data-split-target="1" role="button" aria-label="Drop above ${attributeLabel(1)}">Above "${visibleLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: ${leftPct}%; top: 50%; width: ${100 - leftPct}%; height: 50%;" data-position="split-below-1" data-split-target="1" role="button" aria-label="Drop below ${attributeLabel(1)}">Below "${visibleLabel(1)}"</div>
                 `;
             } else {
                 // Two panes stacked [top=0, bottom=1]
@@ -5256,10 +5297,10 @@ class TerminalMultiplexer {
                 // Dropping on bottom side: top becomes wide (top-wide)
                 const topPct = r * 100;
                 return `
-                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: 50%; height: ${topPct}%;" data-position="split-left-0" data-split-target="0" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(0))}">Left of "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 50%; top: 0; width: 50%; height: ${topPct}%;" data-position="split-right-0" data-split-target="0" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(0))}">Right of "${getLabel(0)}"</div>
-                    <div class="drop-zone drop-half" style="left: 0; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-left-1" data-split-target="1" role="button" aria-label="Drop left of ${this.escapeHtml(getLabel(1))}">Left of "${getLabel(1)}"</div>
-                    <div class="drop-zone drop-half" style="left: 50%; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-right-1" data-split-target="1" role="button" aria-label="Drop right of ${this.escapeHtml(getLabel(1))}">Right of "${getLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: 0; width: 50%; height: ${topPct}%;" data-position="split-left-0" data-split-target="0" role="button" aria-label="Drop left of ${attributeLabel(0)}">Left of "${visibleLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 50%; top: 0; width: 50%; height: ${topPct}%;" data-position="split-right-0" data-split-target="0" role="button" aria-label="Drop right of ${attributeLabel(0)}">Right of "${visibleLabel(0)}"</div>
+                    <div class="drop-zone drop-half" style="left: 0; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-left-1" data-split-target="1" role="button" aria-label="Drop left of ${attributeLabel(1)}">Left of "${visibleLabel(1)}"</div>
+                    <div class="drop-zone drop-half" style="left: 50%; top: ${topPct}%; width: 50%; height: ${100 - topPct}%;" data-position="split-right-1" data-split-target="1" role="button" aria-label="Drop right of ${attributeLabel(1)}">Right of "${visibleLabel(1)}"</div>
                 `;
             }
         }
@@ -5389,6 +5430,7 @@ class TerminalMultiplexer {
         this.groupOrder.splice(newIdx, 0, sourceGroupId);
 
         this.rerenderSidebarOrder();
+        this.refreshPaneTitles();
         this.saveUIState();
     }
 
@@ -5654,7 +5696,7 @@ class TerminalMultiplexer {
             activeGroup.expandedQuadrant = null; // 4-pane has no expanded quadrant
         }
 
-        this.updateGroupInSidebar(activeGroup);
+        this.refreshPaneTitles();
         this.updatePaneLayout();
         this.hideDragOverlay();
         this.draggedPaneId = null;
@@ -6031,6 +6073,10 @@ class TerminalMultiplexer {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    escapeHtmlAttribute(text) {
+        return this.escapeHtml(text).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
     }
 
     formatSize(bytes) {

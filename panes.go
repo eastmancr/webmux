@@ -23,6 +23,7 @@ import (
 	"log"
 	"net"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,6 +44,14 @@ type Pane struct {
 	Port            int       `json:"port"`
 	CreatedAt       time.Time `json:"createdAt"`
 	CurrentActivity string    `json:"currentActivity,omitempty"`
+}
+
+// PaneView is the additive API representation of a pane.
+type PaneView struct {
+	Pane
+	Position    int    `json:"position"`
+	DisplayName string `json:"displayName"`
+	Focused     bool   `json:"focused"`
 }
 
 // PaneTypeInfo describes a pane type that can be shown in the UI.
@@ -164,6 +173,7 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 	if paneType == "" {
 		paneType = "terminal"
 	}
+	name = strings.TrimSpace(name)
 	if !sm.isSupportedPaneType(paneType) {
 		return nil, fmt.Errorf("unsupported pane type: %s", paneType)
 	}
@@ -213,19 +223,6 @@ func (sm *PaneManager) CreatePane(paneType, name string) (*Pane, error) {
 	id := sm.allocatePaneID(port)
 	if backendID == "" {
 		backendID = id
-	}
-
-	if name == "" {
-		// Find the highest numeric name among active panes and increment from there
-		sm.mu.RLock()
-		maxNum := 0
-		for _, s := range sm.panes {
-			if num, err := strconv.Atoi(s.Name); err == nil && num > maxNum {
-				maxNum = num
-			}
-		}
-		sm.mu.RUnlock()
-		name = strconv.Itoa(maxNum + 1)
 	}
 
 	pane := &Pane{
@@ -718,7 +715,7 @@ func (sm *PaneManager) RenamePane(id, name string) error {
 		return fmt.Errorf("pane not found: %s", id)
 	}
 
-	pane.Name = name
+	pane.Name = strings.TrimSpace(name)
 	sm.mu.Unlock()
 	sm.stateChanged()
 	return nil
@@ -850,5 +847,72 @@ type UIState struct {
 	AttentionPaneIDs []string  `json:"attentionPaneIds"`
 	GroupCounter     int       `json:"groupCounter"`
 	SidebarCollapsed bool      `json:"sidebarCollapsed"`
-	CustomNames      []string  `json:"customNames"` // pane IDs with custom names
+	CustomNames      []string  `json:"customNames,omitempty"` // legacy v1 migration data
+}
+
+// canonicalPaneOrder returns panes in their server-defined visual order without
+// modifying either the pane list or UI state.
+func canonicalPaneOrder(panes []*Pane, state *UIState) []*Pane {
+	byID := make(map[string]*Pane, len(panes))
+	for _, pane := range panes {
+		byID[pane.ID] = pane
+	}
+	groups := make(map[string]UIGroup, len(state.Groups))
+	for _, group := range state.Groups {
+		groups[group.ID] = group
+	}
+
+	ordered := make([]*Pane, 0, len(panes))
+	seen := make(map[string]bool, len(panes))
+	appendPane := func(id string) {
+		if pane, ok := byID[id]; ok && !seen[id] {
+			seen[id] = true
+			ordered = append(ordered, pane)
+		}
+	}
+	for _, groupID := range state.GroupOrder {
+		group, ok := groups[groupID]
+		if !ok {
+			continue
+		}
+		for _, paneIndex := range group.CellMapping {
+			if paneIndex >= 0 && paneIndex < len(group.PaneIDs) {
+				appendPane(group.PaneIDs[paneIndex])
+			}
+		}
+		for _, paneID := range group.PaneIDs {
+			appendPane(paneID)
+		}
+	}
+
+	remaining := make([]*Pane, 0, len(panes)-len(ordered))
+	for _, pane := range panes {
+		if !seen[pane.ID] {
+			remaining = append(remaining, pane)
+		}
+	}
+	sort.Slice(remaining, func(i, j int) bool {
+		if remaining[i].CreatedAt.Equal(remaining[j].CreatedAt) {
+			return remaining[i].ID < remaining[j].ID
+		}
+		return remaining[i].CreatedAt.Before(remaining[j].CreatedAt)
+	})
+	return append(ordered, remaining...)
+}
+
+func buildPaneViews(panes []*Pane, state *UIState) []PaneView {
+	ordered := canonicalPaneOrder(panes, state)
+	views := make([]PaneView, 0, len(ordered))
+	for i, pane := range ordered {
+		position := i + 1
+		displayName := pane.Name
+		if displayName == "" {
+			displayName = strconv.Itoa(position)
+		}
+		views = append(views, PaneView{
+			Pane: *pane, Position: position, DisplayName: displayName,
+			Focused: pane.ID == state.FocusedPaneID,
+		})
+	}
+	return views
 }

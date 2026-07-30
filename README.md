@@ -42,10 +42,13 @@ Inside webmux terminals, use `wm` to interact with the server:
 ```sh
 wm info                  # show server info
 wm ls                    # list panes (alias: wm list)
+wm ls --json             # list panes as JSON
+wm current               # print the invoking terminal pane ID
 wm new [--terminal|--opencode] [name]
                          # create pane (defaults to terminal)
-wm close <id>            # close pane
-wm rename <id> <name>    # rename pane
+wm close <ref>           # close a pane
+wm rename <ref> <title>  # set a custom pane title
+wm rename <ref> --reset  # return to its automatic position title
 wm upload <file>...      # upload files
 wm scratch               # get scratch pad
 wm scratch [text]        # set scratch pad
@@ -61,6 +64,8 @@ wm paste --request -t image/png
                          # request fresh typed data from the focused browser
 wm init                  # output shell init script (wm wrapper)
 ```
+
+Pane references accept a visual position (`2` or `pos:2`), stable ID (`pane-7702` or `id:pane-7702`), the invoking terminal (`.`), the browser-focused pane (`focused`), or an exact unique custom title. Use `name:<title>` for titles that resemble another reference, such as `name:.`. Positions change with the workspace layout; scripts should use stable `pane-N` IDs or `wm ls --json`.
 
 `wm copy` updates the typed server-side clipboard. Text updates are synchronized to browser tabs when browser permissions allow it.
 `wm paste --request` asks the focused browser for fresh clipboard data through a small paste prompt, which also works when enterprise browser policy denies programmatic clipboard reads.

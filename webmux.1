@@ -35,17 +35,20 @@ Inside webmux terminals, the \fBwm\fR command is available as a shell function:
 .B wm info
 Show server info (upload dir, work dir).
 .TP
-.B wm ls
-List all active panes. Alias: \fBwm list\fR.
+.B wm ls \fR[\fB--json\fR]
+List all active panes in visual order. Use \fB--json\fR for machine-readable output. Alias: \fBwm list\fR.
+.TP
+.B wm current
+Print the stable ID of the terminal pane invoking \fBwm\fR.
 .TP
 .B wm new \fR[\fB--terminal\fR|\fB--opencode\fR] [\fIname\fR]
 Create a new pane with optional type and name. Defaults to terminal.
 .TP
-.B wm close \fR\fIid\fR
-Close a pane by ID.
+.B wm close \fR\fIref\fR
+Close a pane selected by reference.
 .TP
-.B wm rename \fR\fIid\fR \fIname\fR
-Rename a pane.
+.B wm rename \fR\fIref\fR \fItitle\fR
+Set a custom pane title. Use \fB--reset\fR in place of the title to return to the automatic position title.
 .TP
 .B wm upload \fR\fIfile\fR...
 Upload files to the server.
@@ -64,6 +67,8 @@ Output server-side clipboard contents (last text copied via \fBwm copy\fR). Does
 .TP
 .B wm init
 Output shell code that defines the wm wrapper function.
+
+Pane references may be a visual position (\fB2\fR or \fBpos:2\fR), stable ID (\fBpane-7702\fR or \fBid:pane-7702\fR), the invoking terminal (\fB.\fR), the browser-focused pane (\fBfocused\fR), or an exact unique custom title. Use \fBname:\fR for titles that resemble another reference, such as \fBname:.\fR. Positions change with the workspace layout; scripts should use stable IDs.
 
 .SH FILES
 .TP
