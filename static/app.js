@@ -100,6 +100,7 @@ class TerminalMultiplexer {
         this.baseDocumentTitle = document.title || 'Webmux';
         this.attentionSoundBlob = null;
         this.activeAttentionSounds = new Set();
+        this.knownAudibleAttentionEvents = new Set(['opencode.notification']);
 
         // Groups: visual groupings of panes (1-4 panes per group)
         // Structure: { id, name, paneIds: [], layout: 'single'|'horizontal'|'vertical'|'grid', expandedQuadrant: null, splitRatio: [] }
@@ -2661,16 +2662,20 @@ class TerminalMultiplexer {
         return panes[pane.type]?.indicateAttention === true;
     }
 
-    markPaneAttention(paneId, force = false) {
+    markPaneAttention(paneId, force = false, attentionEvent = '') {
         const pane = this.panes.get(paneId);
         if (!this.paneAttentionEnabled(pane)) return;
         if (!force && this.focusedPaneId === paneId && !document.hidden && document.hasFocus()) return;
-        if (this.attentionPaneIds.has(paneId)) return;
-
-        this.attentionPaneIds.add(paneId);
-        if (pane.type === 'terminal' && this.settings?.panes?.playAttentionSound === true) {
+        const alreadyMarked = this.attentionPaneIds.has(paneId);
+        const needsSound = attentionEvent
+            ? !this.knownAudibleAttentionEvents.has(attentionEvent)
+            : pane.type === 'terminal' && !alreadyMarked;
+        if (needsSound && this.settings?.panes?.playAttentionSound === true) {
             this.playAttentionSound();
         }
+        if (alreadyMarked) return;
+
+        this.attentionPaneIds.add(paneId);
         this.updatePaneAttentionInSidebar(paneId);
         this.updateAttentionTitle();
         this.saveUIState();
@@ -2793,7 +2798,7 @@ class TerminalMultiplexer {
             : (msg.backendId ? this.sharedIframes.get(msg.backendId) : null);
         if (iframe?.dataset.activePaneId) paneId = iframe.dataset.activePaneId;
         if (msg.active === false) this.clearPaneAttention(paneId);
-        else this.markPaneAttention(paneId, msg.force === true);
+        else this.markPaneAttention(paneId, msg.force === true, msg.attentionEvent);
     }
 
     addGroupToSidebar(group) {
@@ -4176,7 +4181,7 @@ class TerminalMultiplexer {
             this.sendTerminalInput(entry.socket, Uint8Array.from(data, char => char.charCodeAt(0)));
         });
         terminal.onResize(({ cols, rows }) => this.sendTerminalResize(entry, cols, rows));
-        terminal.onBell(() => this.markPaneAttention(pane.id));
+        terminal.onBell(() => this.markPaneAttention(pane.id, false, 'terminal.bell'));
 
         if ('ResizeObserver' in window) {
             entry.resizeObserver = new ResizeObserver(() => this.fitTerminal(pane.id));

@@ -374,7 +374,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
   } catch (e) {}
   delete serverStorage[opencodeAttentionStorageKey];
 
-  function sendWebmuxAttentionState() {
+  function sendWebmuxAttentionState(attentionSource) {
     var activeSessionID = currentOpenCodeRouteInfo(window.location.href)?.sessionID || '';
     var force = Object.keys(openCodeAttentionCauses).some(function(key) {
       var parts = key.split('\u0000');
@@ -386,17 +386,21 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       paneId: paneID,
       backendId: backendID,
       active: Object.keys(openCodeAttentionCauses).length > 0,
-      force: force
+      force: force,
+      attentionEvent: attentionSource ? 'opencode.' + attentionSource : ''
     };
     try {
-      if (window.parent !== window) window.parent.postMessage(message, window.location.origin);
+      if (window.parent !== window) {
+        window.parent.postMessage(message, window.location.origin);
+        return;
+      }
     } catch (e) {}
     try { if (attentionChannel) attentionChannel.postMessage(message); } catch (e) {}
   }
 
-  function persistOpenCodeAttention() {
+  function persistOpenCodeAttention(attentionSource) {
     queueStorageUpdate({ operation: 'set', key: opencodeAttentionStorageKey, value: JSON.stringify(openCodeAttentionCauses) });
-    sendWebmuxAttentionState();
+    sendWebmuxAttentionState(attentionSource);
   }
 
   function openCodeAttentionEvent(value, forcedType, directory) {
@@ -450,7 +454,7 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       var attentionKey = openCodeAttentionKey(source, event.properties, event.directory);
       if (openCodeAttentionCauses[attentionKey]) return;
       openCodeAttentionCauses[attentionKey] = true;
-      persistOpenCodeAttention();
+      persistOpenCodeAttention(source);
       return;
     }
     if (event.type === source + '.replied' || event.type === source + '.rejected') {
@@ -461,20 +465,27 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
 
   function syncOpenCodePendingAttention(source, value, directory) {
     var previous = JSON.stringify(openCodeAttentionCauses);
+    var previousCauses = Object.assign({}, openCodeAttentionCauses);
+    var added = false;
     var list = Array.isArray(value) ? value : (value && Array.isArray(value.data) ? value.data : []);
     var prefix = source + '\u0000' + (directory || '') + '\u0000';
     Object.keys(openCodeAttentionCauses).forEach(function(key) {
       if (key.indexOf(prefix) === 0) delete openCodeAttentionCauses[key];
     });
     list.forEach(function(item) {
-      if (item && item.id) openCodeAttentionCauses[openCodeAttentionKey(source, item, directory)] = true;
+      if (!item || !item.id) return;
+      var key = openCodeAttentionKey(source, item, directory);
+      openCodeAttentionCauses[key] = true;
+      if (!previousCauses[key]) added = true;
     });
-    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention();
+    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention(added ? source : '');
     else sendWebmuxAttentionState();
   }
 
   function syncOpenCodeNotificationAttention(value) {
     var previous = JSON.stringify(openCodeAttentionCauses);
+    var previousCauses = Object.assign({}, openCodeAttentionCauses);
+    var added = false;
     Object.keys(openCodeAttentionCauses).forEach(function(key) {
       if (key.indexOf('notification\u0000') === 0) delete openCodeAttentionCauses[key];
     });
@@ -489,10 +500,12 @@ func injectOpenCodeProxyScript(content, paneID, backendID string, storage PaneSt
       list.forEach(function(item) {
         if (!item || !openSessions[item.session] || item.viewed === true || (item.type !== 'turn-complete' && item.type !== 'error')) return;
         var id = item.type + ':' + item.time;
-        openCodeAttentionCauses[openCodeAttentionKey('notification', { sessionID: item.session, id: id }, item.directory)] = true;
+        var key = openCodeAttentionKey('notification', { sessionID: item.session, id: id }, item.directory);
+        openCodeAttentionCauses[key] = true;
+        if (!previousCauses[key]) added = true;
       });
     } catch (e) {}
-    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention();
+    if (JSON.stringify(openCodeAttentionCauses) !== previous) persistOpenCodeAttention(added ? 'notification' : '');
     else sendWebmuxAttentionState();
   }
 

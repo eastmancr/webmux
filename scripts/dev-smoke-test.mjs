@@ -254,12 +254,15 @@ try {
     assert.deepEqual(tools.scriptFailures, [], `script load failures: ${tools.scriptFailures.join('; ')}`);
 
     const fakeOpenCodeURL = `http://127.0.0.1:${openCodePane.port}`;
+    await tools.evaluate(`window.__attentionSoundCount = 0; window.app.playAttentionSound = () => { window.__attentionSoundCount++; }`);
     await fetch(`${fakeOpenCodeURL}/test/question/ask?id=focused-question`, { method: 'POST' });
     await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused interactive attention');
+    assert.equal(await tools.evaluate(`window.__attentionSoundCount`), 1, 'question attention should play a sound');
     await fetch(`${fakeOpenCodeURL}/question/focused-question/reply`, { method: 'POST' });
     await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused interactive resolution');
     await fetch(`${fakeOpenCodeURL}/test/permission/ask?id=focused-permission`, { method: 'POST' });
     await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused permission attention');
+    assert.equal(await tools.evaluate(`window.__attentionSoundCount`), 2, 'permission attention should play a sound');
     await fetch(`${fakeOpenCodeURL}/permission/focused-permission/reject`, { method: 'POST' });
     await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'focused permission rejection');
 
@@ -271,6 +274,7 @@ try {
     await fetch(`${fakeOpenCodeURL}/test/question/ask?id=question-one` , { method: 'POST' });
     await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}') && document.querySelector('[data-pane-id="${openCodePane.id}"]')?.classList.contains('has-attention')`), 'question attention');
     await fetch(`${fakeOpenCodeURL}/test/permission/ask?id=permission-one`, { method: 'POST' });
+    await waitFor(() => tools.evaluate(`window.__attentionSoundCount === 4`), 'sound for multiple interactive attention events');
     await fetch(`${fakeOpenCodeURL}/question/question-one/reply`, { method: 'POST' });
     assert.equal(await tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), true, 'resolving one of multiple causes should retain attention');
     await fetch(`${fakeOpenCodeURL}/permission/permission-one/reply`, { method: 'POST' });
@@ -286,6 +290,7 @@ try {
         }));
     })()`);
     await waitFor(() => tools.evaluate(`window.app.attentionPaneIds.has('${openCodePane.id}')`), 'unviewed notification attention');
+    assert.equal(await tools.evaluate(`window.__attentionSoundCount`), 4, 'natively audible notification should not duplicate its sound');
     await tools.evaluate(`window.app.sharedIframes.get('opencode').contentWindow.localStorage.setItem('opencode.window.browser.dat:tabs', '[]')`);
     await waitFor(() => tools.evaluate(`!window.app.attentionPaneIds.has('${openCodePane.id}')`), 'closed notification tab resolution');
     await tools.evaluate(`(() => {

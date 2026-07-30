@@ -283,6 +283,7 @@
             keybarChannel.postMessage({
                 type: 'webmux-pane-attention',
                 paneId,
+                attentionEvent: 'terminal.bell',
             });
         });
         const requestKeybarState = () => keybarChannel.postMessage({

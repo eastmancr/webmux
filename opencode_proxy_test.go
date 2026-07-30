@@ -74,6 +74,7 @@ func TestOpenCodeProxyInjectsAttentionBridge(t *testing.T) {
 		"var opencodeAttentionStorageKey = 'webmux.internal.opencode.attention'",
 		"var openCodeAttentionCauses = {}",
 		"active: Object.keys(openCodeAttentionCauses).length > 0",
+		"attentionEvent: attentionSource ? 'opencode.' + attentionSource : ''",
 		"parts[0] === 'question' || parts[0] === 'permission'",
 		"persistOpenCodeAttention()",
 		"watchOpenCodeEventStream(response)",
