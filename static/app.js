@@ -891,7 +891,11 @@ class TerminalMultiplexer {
         const serverButtons = [
             this.openUploadBtn,
             this.openDownloadBtn,
+            this.closeAllBtn,
+            ...this.closeAllOptions,
         ];
+
+        if (disabled) this.resetCloseAllConfirmation();
 
         this.newPaneSplits.forEach(split => {
             serverButtons.push(...split.querySelectorAll('button'));

@@ -3400,7 +3400,9 @@ body.mobile-mode .sidebar-panel {
 body.server-disconnected .btn:disabled,
 body.server-disconnected .btn.disabled,
 body.server-disconnected .action-btn:disabled,
-body.server-disconnected .action-btn.disabled {
+body.server-disconnected .action-btn.disabled,
+body.server-disconnected .close-all-option:disabled,
+body.server-disconnected .close-all-option.disabled {
     opacity: 0.5;
     cursor: not-allowed;
     pointer-events: none;
