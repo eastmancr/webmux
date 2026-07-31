@@ -111,6 +111,17 @@ Clipboard sync uses WebSocket notifications (`/api/clipboard/events`) instead of
 - CSS: CSS variables for colors, BEM-ish naming
 - No emoji in code or UI unless user requests it
 
+## Versioning
+
+Webmux uses Semantic Versioning and is currently pre-1.0.
+
+- `PKGBUILD` `pkgver` is the canonical version. Use the full `MAJOR.MINOR.PATCH` form and keep the version in `webmux.1` synchronized. Reset `pkgrel` to `1` when `pkgver` changes.
+- Recommend a patch bump for backward-compatible bug fixes, security hardening, and reliability improvements.
+- Recommend a minor bump for user-facing features, new CLI/API/configuration capabilities, meaningful behavior changes, or breaking changes while the project remains pre-1.0.
+- Tests, refactors, documentation, development tooling, and cosmetic-only changes do not normally require a version bump.
+- Judge the accumulated changes since the last release rather than bumping once per commit or feature. If an unreleased version is already being prepared, include additional changes in that release unless they justify changing its intended scope.
+- Proactively mention when a patch or minor bump appears advisable, but do not modify version metadata unless the task includes release preparation or the user requests it.
+
 ## Build
 ```
 make build     # production (embeds static/ including wm binary)
