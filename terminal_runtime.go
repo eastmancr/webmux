@@ -240,7 +240,8 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 	if tr.manager.workDir != "" {
 		tmuxArgs = append(tmuxArgs, "-c", tr.manager.workDir)
 	}
-	// Determine how to inject our init based on shell type
+	// Determine how to inject our init based on shell type.
+	var shellArgs []string
 	shellBase := filepath.Base(tr.manager.shell)
 	if tr.wmBinDir != "" {
 		initPath := filepath.Join(tr.wmBinDir, "init.sh")
@@ -254,7 +255,7 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 			if err := writeRuntimeFile(rcPath, []byte(rcContent), 0644); err != nil {
 				return fmt.Errorf("failed to write bash runtime config: %w", err)
 			}
-			tmuxArgs = append(tmuxArgs, tr.manager.shell, "--rcfile", rcPath)
+			shellArgs = []string{tr.manager.shell, "--rcfile", rcPath}
 		case "zsh":
 			// zsh: use ZDOTDIR with custom rc files that source user's config then our init
 			zdotdir := filepath.Join(tr.wmBinDir, "zsh")
@@ -279,15 +280,19 @@ func (tr *TerminalRuntime) Start(pane *Pane) error {
 				return fmt.Errorf("failed to write zsh runtime config: %w", err)
 			}
 			tmuxArgs = append(tmuxArgs, "-e", "ZDOTDIR="+zdotdir)
-			tmuxArgs = append(tmuxArgs, tr.manager.shell)
+			shellArgs = []string{tr.manager.shell}
 		default:
 			// Other shells: set ENV for POSIX compliance
 			tmuxArgs = append(tmuxArgs, "-e", "ENV="+initPath)
-			tmuxArgs = append(tmuxArgs, tr.manager.shell)
+			shellArgs = []string{tr.manager.shell}
 		}
 	} else {
-		tmuxArgs = append(tmuxArgs, tr.manager.shell)
+		shellArgs = []string{tr.manager.shell}
 	}
+	// Hide the implementation tmux session from applications. This also lets
+	// users run their own tmux normally inside a webmux terminal.
+	tmuxArgs = append(tmuxArgs, "env", "-u", "TMUX", "-u", "TMUX_PANE")
+	tmuxArgs = append(tmuxArgs, shellArgs...)
 
 	tmuxCmd := exec.Command("tmux", tmuxArgs...)
 	tmuxCmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
