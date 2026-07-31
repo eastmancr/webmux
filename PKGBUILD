@@ -1,6 +1,6 @@
 # Maintainer: Caleb Eastman <eastmancr@gmail.com>
 pkgname=webmux
-pkgver=0.3
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Browser-based terminal multiplexer with tmux persistence"
 arch=('x86_64' 'aarch64')
