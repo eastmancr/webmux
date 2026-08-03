@@ -183,6 +183,8 @@ class TerminalMultiplexer {
         this.mobileMode = false;
         this.mobileModeQuery = window.matchMedia('(max-width: 768px)');
         this.coarsePointerQuery = window.matchMedia('(pointer: coarse)');
+        this.mobileTerminalMode = 'type';
+        this.mobileScrollPaneId = null;
 
         // Mobile swipe navigation state
         this.swipeState = {
@@ -386,6 +388,7 @@ class TerminalMultiplexer {
 
     enterMobileMode() {
         console.log('[webmux] Entering mobile mode');
+        this.applyMobileTerminalMode();
         // Update mobile toolbar visibility
         this.updateMobileToolbar();
     }
@@ -394,6 +397,9 @@ class TerminalMultiplexer {
         console.log('[webmux] Exiting mobile mode');
         // Clean up mobile-specific state
         this.closeMobileDrawer();
+        this.closeMobileKeySheet();
+        this.applyMobileTerminalMode();
+        this.updateMobileTerminalControls();
     }
 
     // Mobile Drawer
@@ -466,6 +472,72 @@ class TerminalMultiplexer {
         }
 
         this.updateMobileKeybarVisibility();
+        this.updateMobileTerminalControls();
+    }
+
+    setMobileTerminalMode(mode) {
+        if (mode !== 'type' && mode !== 'scroll') return;
+        this.mobileTerminalMode = mode;
+        if (mode === 'type') this.mobileScrollPaneId = null;
+        else {
+            this.closeMobileKeySheet();
+            this.terminals.forEach(entry => entry.terminal.blur());
+        }
+        this.applyMobileTerminalMode();
+        this.updateMobileTerminalControls();
+    }
+
+    applyMobileTerminalMode() {
+        const scrolling = this.mobileMode && this.mobileTerminalMode === 'scroll';
+        this.terminals.forEach(entry => {
+            entry.terminal.element?.closest('.terminal-host')?.classList.toggle('mobile-scroll-mode', scrolling);
+        });
+    }
+
+    updateMobileTerminalControls() {
+        const pane = this.panes.get(this.focusedPaneId);
+        const terminalPane = pane?.type === 'terminal' && !this.isPanePoppedOut(pane);
+        const scrolling = this.mobileMode && terminalPane && this.mobileTerminalMode === 'scroll';
+
+        this.mobileTerminalModeBtn?.classList.toggle('hidden', !terminalPane);
+        this.mobileArrowPad?.classList.toggle('hidden', !terminalPane);
+        this.mobileKeysToggle?.classList.toggle('hidden', !terminalPane);
+        if (!terminalPane) this.closeMobileKeySheet();
+
+        if (this.mobileTerminalModeBtn) {
+            this.mobileTerminalModeBtn.querySelector('.mobile-terminal-mode-label').textContent = scrolling ? 'Scroll' : 'Type';
+            this.mobileTerminalModeBtn.querySelector('.mobile-mode-type-icon').classList.toggle('hidden', scrolling);
+            this.mobileTerminalModeBtn.querySelector('.mobile-mode-scroll-icon').classList.toggle('hidden', !scrolling);
+            this.mobileTerminalModeBtn.title = scrolling ? 'Switch to type mode' : 'Switch to scroll mode';
+            this.mobileTerminalModeBtn.setAttribute('aria-label', `Terminal interaction mode: ${scrolling ? 'Scroll' : 'Type'}`);
+            this.mobileTerminalModeBtn.classList.toggle('active', scrolling);
+        }
+
+        const activeGroup = this.groups.get(this.activeGroupId);
+        const scrollPaneId = activeGroup?.paneIds.includes(this.mobileScrollPaneId)
+            ? this.mobileScrollPaneId
+            : this.focusedPaneId;
+        const terminal = this.terminals.get(scrollPaneId)?.terminal;
+        const behindLiveOutput = terminal && terminal.buffer.active.viewportY < terminal.buffer.active.baseY;
+        this.mobileTerminalLive?.classList.toggle('hidden', !scrolling || !behindLiveOutput);
+    }
+
+    openMobileKeySheet() {
+        if (this.panes.get(this.focusedPaneId)?.type !== 'terminal') return;
+        this.mobileKeySheet?.classList.remove('hidden');
+        this.mobileKeySheetScrim?.classList.remove('hidden');
+        this.mobileKeysToggle?.setAttribute('aria-expanded', 'true');
+    }
+
+    closeMobileKeySheet() {
+        this.mobileKeySheet?.classList.add('hidden');
+        this.mobileKeySheetScrim?.classList.add('hidden');
+        this.mobileKeysToggle?.setAttribute('aria-expanded', 'false');
+    }
+
+    toggleMobileKeySheet() {
+        if (this.mobileKeySheet?.classList.contains('hidden')) this.openMobileKeySheet();
+        else this.closeMobileKeySheet();
     }
 
     showMobilePanePicker() {
@@ -1434,6 +1506,12 @@ class TerminalMultiplexer {
         this.mobilePanePicker = document.getElementById('mobile-pane-picker');
         this.mobilePaneName = document.querySelector('.mobile-pane-name');
         this.mobileArrowPad = document.getElementById('mobile-arrow-pad');
+        this.mobileTerminalModeBtn = document.getElementById('mobile-terminal-mode');
+        this.mobileTerminalLive = document.getElementById('mobile-terminal-live');
+        this.mobileKeysToggle = document.getElementById('mobile-keys-toggle');
+        this.mobileKeySheet = document.getElementById('mobile-key-sheet');
+        this.mobileKeySheetScrim = document.getElementById('mobile-key-sheet-scrim');
+        this.mobileKeySheetClose = document.getElementById('mobile-key-sheet-close');
         this.mobileScratchBtn = document.getElementById('mobile-scratch');
 
     }
@@ -1857,11 +1935,35 @@ class TerminalMultiplexer {
         this.bindMobileKeybarEvents();
         this.bindMobileArrowPadEvents();
 
+        this.mobileTerminalModeBtn?.addEventListener('click', () => {
+            this.setMobileTerminalMode(this.mobileTerminalMode === 'scroll' ? 'type' : 'scroll');
+            this.mobileTerminalModeBtn.blur();
+        });
+        this.mobileTerminalLive?.addEventListener('click', () => {
+            const activeGroup = this.groups.get(this.activeGroupId);
+            const paneId = activeGroup?.paneIds.includes(this.mobileScrollPaneId)
+                ? this.mobileScrollPaneId
+                : this.focusedPaneId;
+            this.terminals.get(paneId)?.terminal.scrollToBottom();
+            this.updateMobileTerminalControls();
+            this.mobileTerminalLive.blur();
+        });
+        this.mobileKeysToggle?.addEventListener('click', () => this.toggleMobileKeySheet());
+        this.mobileKeySheetClose?.addEventListener('click', () => this.closeMobileKeySheet());
+        this.mobileKeySheetScrim?.addEventListener('click', () => this.closeMobileKeySheet());
+        this.mobileKeySheet?.querySelectorAll('[data-keys]').forEach(button => {
+            button.addEventListener('click', () => {
+                this.sendInputToActivePane({ keys: [button.dataset.keys] });
+                button.blur();
+            });
+        });
+
         // Mobile utility buttons
         if (this.mobileScratchBtn) {
             this.mobileScratchBtn.addEventListener('click', () => {
                 this.toggleScratchPad();
                 this.updateScratchButtonState();
+                this.closeMobileKeySheet();
             });
         }
     }
@@ -3823,6 +3925,7 @@ class TerminalMultiplexer {
         }
         this.updateSidebarActiveStates();
         this.updateKeybarVisibility();
+        this.updateMobileToolbar();
         if (focusChanged && options.save !== false) this.saveUIState();
 
         const pane = this.panes.get(paneId);
@@ -3837,7 +3940,9 @@ class TerminalMultiplexer {
         if (container.classList.contains('popped-out')) return;
 
         if (pane?.type === 'terminal') {
-            setTimeout(() => this.terminals.get(paneId)?.terminal.focus(), 0);
+            if (!this.mobileMode || this.mobileTerminalMode !== 'scroll') {
+                setTimeout(() => this.terminals.get(paneId)?.terminal.focus(), 0);
+            }
             return;
         }
 
@@ -4004,6 +4109,7 @@ class TerminalMultiplexer {
                         this.focusedPaneId = paneId;
                         if (!document.hidden) this.clearPaneAttentionOnFocus(paneId);
                         this.updateKeybarVisibility();
+                        this.updateMobileToolbar();
                         if (focusChanged && document.hasFocus()) this.saveUIState();
                     });
                 } catch (e) {
@@ -4214,8 +4320,14 @@ class TerminalMultiplexer {
             suspended: false,
             resizeObserver: null,
             resizeFallbackTimer: null,
+            scrollDisposable: null,
+            mobileScrollCleanup: null,
         };
         this.terminals.set(pane.id, entry);
+
+        entry.scrollDisposable = terminal.onScroll(() => this.updateMobileTerminalControls());
+        entry.mobileScrollCleanup = this.setupMobileTerminalScrolling(pane.id, entry, host);
+        this.applyMobileTerminalMode();
 
         terminal.onData(data => {
             this.sendTerminalInput(entry.socket, new TextEncoder().encode(data));
@@ -4246,6 +4358,111 @@ class TerminalMultiplexer {
         requestAnimationFrame(() => this.fitTerminal(pane.id));
     }
 
+    setupMobileTerminalScrolling(paneId, entry, host) {
+        let activePointerId = null;
+        let lastY = 0;
+        let lastTime = 0;
+        let velocity = 0;
+        let lineRemainder = 0;
+        let animationFrame = null;
+
+        const scrolling = () => this.mobileMode && this.mobileTerminalMode === 'scroll';
+        const lineHeight = () => {
+            const screenHeight = entry.terminal.element?.querySelector('.xterm-screen')?.getBoundingClientRect().height || 0;
+            return screenHeight > 0 ? screenHeight / entry.terminal.rows : entry.terminal.options.fontSize * 1.2;
+        };
+        const scrollPixels = pixels => {
+            lineRemainder += pixels / Math.max(1, lineHeight());
+            const lines = Math.trunc(lineRemainder);
+            if (!lines) return;
+            lineRemainder -= lines;
+            entry.terminal.scrollLines(lines);
+        };
+        const stopMomentum = () => {
+            if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+            animationFrame = null;
+        };
+        const startMomentum = () => {
+            stopMomentum();
+            let previous = performance.now();
+            const step = now => {
+                const elapsed = Math.min(32, now - previous);
+                previous = now;
+                scrollPixels(velocity * elapsed);
+                velocity *= Math.pow(0.92, elapsed / 16);
+                if (Math.abs(velocity) < 0.02 || !scrolling()) {
+                    animationFrame = null;
+                    return;
+                }
+                animationFrame = requestAnimationFrame(step);
+            };
+            if (Math.abs(velocity) >= 0.02) animationFrame = requestAnimationFrame(step);
+        };
+        const blockTouch = event => {
+            if (!scrolling()) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+        const pointerDown = event => {
+            if (!scrolling() || (event.pointerType === 'mouse' && event.button !== 0)) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            stopMomentum();
+            activePointerId = event.pointerId;
+            lastY = event.clientY;
+            lastTime = performance.now();
+            velocity = 0;
+            lineRemainder = 0;
+            this.mobileScrollPaneId = paneId;
+            host.setPointerCapture?.(event.pointerId);
+            this.updateMobileTerminalControls();
+        };
+        const pointerMove = event => {
+            if (event.pointerId !== activePointerId || !scrolling()) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const now = performance.now();
+            const elapsed = Math.max(1, now - lastTime);
+            const pixels = lastY - event.clientY;
+            velocity = pixels / elapsed;
+            scrollPixels(pixels);
+            lastY = event.clientY;
+            lastTime = now;
+        };
+        const pointerEnd = event => {
+            if (event.pointerId !== activePointerId) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            if (host.hasPointerCapture?.(event.pointerId)) host.releasePointerCapture(event.pointerId);
+            activePointerId = null;
+            startMomentum();
+        };
+        const suppressClick = event => {
+            if (!scrolling()) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        };
+
+        host.addEventListener('pointerdown', pointerDown, true);
+        host.addEventListener('pointermove', pointerMove, true);
+        host.addEventListener('pointerup', pointerEnd, true);
+        host.addEventListener('pointercancel', pointerEnd, true);
+        host.addEventListener('touchstart', blockTouch, { capture: true, passive: false });
+        host.addEventListener('touchmove', blockTouch, { capture: true, passive: false });
+        host.addEventListener('click', suppressClick, true);
+
+        return () => {
+            stopMomentum();
+            host.removeEventListener('pointerdown', pointerDown, true);
+            host.removeEventListener('pointermove', pointerMove, true);
+            host.removeEventListener('pointerup', pointerEnd, true);
+            host.removeEventListener('pointercancel', pointerEnd, true);
+            host.removeEventListener('touchstart', blockTouch, true);
+            host.removeEventListener('touchmove', blockTouch, true);
+            host.removeEventListener('click', suppressClick, true);
+        };
+    }
+
     connectTerminal(paneId, entry) {
         if (this.connectionMode !== 'active' || entry.disposed || entry.suspended || !this.panes.has(paneId)) return;
         const socket = new WebSocket(this.wsUrl(`/api/panes/${encodeURIComponent(paneId)}/terminal`));
@@ -4258,7 +4475,9 @@ class TerminalMultiplexer {
             document.getElementById(`pane-${paneId}`)?.classList.remove('loading');
             this.fitTerminal(paneId);
             this.sendTerminalResize(entry, entry.terminal.cols, entry.terminal.rows);
-            if (this.focusedPaneId === paneId) entry.terminal.focus();
+            if (this.focusedPaneId === paneId && (!this.mobileMode || this.mobileTerminalMode !== 'scroll')) {
+                entry.terminal.focus();
+            }
             this.logDiagnostic('terminal', 'open', { paneId });
         };
         socket.onmessage = event => {
@@ -4339,6 +4558,8 @@ class TerminalMultiplexer {
         if (entry.reconnectTimer) clearTimeout(entry.reconnectTimer);
         entry.resizeObserver?.disconnect();
         if (entry.resizeFallbackTimer) clearInterval(entry.resizeFallbackTimer);
+        entry.scrollDisposable?.dispose();
+        entry.mobileScrollCleanup?.();
         entry.socket?.close(1000, 'terminal disposed');
         entry.terminal.dispose();
     }

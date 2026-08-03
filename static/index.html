@@ -177,6 +177,16 @@
                     </button>
                 </div>
 
+                <button id="mobile-terminal-mode" class="mobile-toolbar-btn mobile-terminal-mode" title="Switch to scroll mode" aria-label="Terminal interaction mode: Type">
+                    <svg class="mobile-mode-type-icon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M4 5h16v14H4V5zm2 2v10h12V7H6zm1.5 2L10 11.5 7.5 14 6 12.5 7 11.5 6 10.5 7.5 9zm3.5 4h5v2h-5v-2z"/>
+                    </svg>
+                    <svg class="mobile-mode-scroll-icon hidden" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                        <path fill="currentColor" d="M11 5.83 9.41 7.41 8 6l4-4 4 4-1.41 1.41L13 5.83V10h-2V5.83zM13 18.17l1.59-1.58L16 18l-4 4-4-4 1.41-1.41L11 18.17V14h2v4.17zM4 11h16v2H4v-2z"/>
+                    </svg>
+                    <span class="mobile-terminal-mode-label">Type</span>
+                </button>
+
                 <div class="mobile-toolbar-section mobile-toolbar-arrows">
                     <button id="mobile-arrow-pad" class="mobile-arrow-pad" title="Swipe for arrow keys" aria-label="Swipe for arrow keys">
                         <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
@@ -213,14 +223,48 @@
                     </div>
                 </div>
 
-                <!-- Right side: Scratch pad only -->
+                <!-- Right side: extended terminal keys -->
                 <div class="mobile-toolbar-section mobile-toolbar-right">
-                    <button id="mobile-scratch" class="mobile-toolbar-btn" title="Scratch pad" aria-label="Toggle scratch pad">
+                    <button id="mobile-keys-toggle" class="mobile-toolbar-btn mobile-keys-toggle" title="Extended keys" aria-label="Show extended terminal keys" aria-expanded="false">
+                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor" d="M20 5H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 12H4V7h16v10zM5 9h2v2H5V9zm3 0h2v2H8V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zm3 0h2v2h-2V9zM5 13h9v2H5v-2zm10 0h4v2h-4v-2z"/>
+                        </svg>
+                        <span class="mobile-keys-label">Keys</span>
+                    </button>
+                    <button id="mobile-scratch" class="mobile-toolbar-btn mobile-scratch" title="Scratch pad" aria-label="Toggle scratch pad">
                         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
                             <path fill="currentColor" d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V5h14v14zm-2-2H7v-2h10v2zm0-4H7v-2h10v2zm0-4H7V7h10v2z"/>
                         </svg>
-                        <span class="mobile-scratch-label">Scratch</span>
                     </button>
+                </div>
+            </div>
+
+            <button id="mobile-terminal-live" class="mobile-terminal-live hidden" aria-label="Jump to live terminal output">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M11 5h2v10.17l3.59-3.58L18 13l-6 6-6-6 1.41-1.41L11 15.17V5z"/>
+                </svg>
+                Live
+            </button>
+
+            <div id="mobile-key-sheet-scrim" class="mobile-key-sheet-scrim hidden"></div>
+            <div id="mobile-key-sheet" class="mobile-key-sheet hidden" role="dialog" aria-modal="true" aria-labelledby="mobile-key-sheet-title">
+                <div class="mobile-key-sheet-header">
+                    <span id="mobile-key-sheet-title">Extended keys</span>
+                    <button id="mobile-key-sheet-close" class="mobile-key-sheet-close" aria-label="Close extended keys">&times;</button>
+                </div>
+                <div class="mobile-key-sheet-grid">
+                    <button data-keys="Escape">Esc</button>
+                    <button data-keys="Tab">Tab</button>
+                    <button data-keys="Home">Home</button>
+                    <button data-keys="End">End</button>
+                    <button data-keys="PageUp">PgUp</button>
+                    <button data-keys="PageDown">PgDn</button>
+                    <button data-keys="Insert">Ins</button>
+                    <button data-keys="Delete">Del</button>
+                    <button data-keys="F1">F1</button>
+                    <button data-keys="F2">F2</button>
+                    <button data-keys="F3">F3</button>
+                    <button data-keys="F4">F4</button>
                 </div>
             </div>
 

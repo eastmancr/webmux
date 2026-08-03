@@ -642,6 +642,38 @@ try {
         modifiers: 2,
     });
     await waitFor(() => tools.evaluate('Boolean(document.querySelector(".xterm-cursor-pointer"))'), 'wrapped URL link hover');
+
+    const mobileTerminalControls = await tools.evaluate(`(async () => {
+        const app = window.app;
+        const terminal = app.terminals.get('${pane.id}')?.terminal;
+        app.mobileMode = true;
+        document.body.classList.add('mobile-mode');
+        app.setMobileTerminalMode('scroll');
+        await new Promise(resolve => terminal.write(Array.from({ length: 100 }, (_, index) => 'mobile-scroll-' + index + '\\r\\n').join(''), resolve));
+        terminal.scrollToTop();
+        app.updateMobileTerminalControls();
+        app.openMobileKeySheet();
+        const result = {
+            mode: document.querySelector('.mobile-terminal-mode-label')?.textContent,
+            scrollClass: document.querySelector('.terminal-host')?.classList.contains('mobile-scroll-mode'),
+            liveVisible: !document.getElementById('mobile-terminal-live')?.classList.contains('hidden'),
+            keySheetVisible: !document.getElementById('mobile-key-sheet')?.classList.contains('hidden'),
+        };
+        app.closeMobileKeySheet();
+        terminal.scrollToBottom();
+        app.setMobileTerminalMode('type');
+        app.mobileMode = false;
+        document.body.classList.remove('mobile-mode');
+        app.applyMobileTerminalMode();
+        app.updateMobileTerminalControls();
+        return result;
+    })()`);
+    assert.deepEqual(mobileTerminalControls, {
+        mode: 'Scroll',
+        scrollClass: true,
+        liveVisible: true,
+        keySheetVisible: true,
+    }, 'mobile terminal controls should expose scrollback and extended keys');
     assert.deepEqual(tools.exceptions, [], `browser exceptions: ${tools.exceptions.join('; ')}`);
     assert.deepEqual(tools.consoleErrors, [], `console errors: ${tools.consoleErrors.join('; ')}`);
     assert.deepEqual(tools.scriptFailures, [], `script load failures: ${tools.scriptFailures.join('; ')}`);
