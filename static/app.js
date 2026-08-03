@@ -1521,7 +1521,10 @@ class TerminalMultiplexer {
     bindEvents() {
         window.addEventListener('resize', () => this.scheduleSharedIframePosition());
         if ('ResizeObserver' in window) {
-            this.sharedIframeResizeObserver = new ResizeObserver(() => this.scheduleSharedIframePosition());
+            this.sharedIframeResizeObserver = new ResizeObserver(() => {
+                this.scheduleSharedIframePosition();
+                this.positionDividerControl();
+            });
             this.sharedIframeResizeObserver.observe(this.paneDisplay);
         }
 
@@ -2779,6 +2782,7 @@ class TerminalMultiplexer {
         if (!group || group.paneIds.length <= 1) return;
 
         const paneIds = this.getGroupPaneIdsInVisualOrder(group);
+        const groupIndex = this.groupOrder.indexOf(groupId);
 
         this.groups.delete(groupId);
         this.groupOrder = this.groupOrder.filter(id => id !== groupId);
@@ -2786,11 +2790,17 @@ class TerminalMultiplexer {
         document.getElementById(`group-${groupId}`)?.remove();
 
         let firstNewGroup = null;
+        const newGroupIds = [];
         for (const paneId of paneIds) {
             const newGroup = this.createGroup([paneId]);
             this.addGroupToSidebar(newGroup);
+            newGroupIds.push(newGroup.id);
             if (!firstNewGroup) firstNewGroup = newGroup;
         }
+
+        this.groupOrder = this.groupOrder.filter(id => !newGroupIds.includes(id));
+        this.groupOrder.splice(groupIndex, 0, ...newGroupIds);
+        this.rerenderSidebarOrder();
 
         if (this.activeGroupId === groupId && firstNewGroup) {
             this.activeGroupId = null;
@@ -3991,6 +4001,7 @@ class TerminalMultiplexer {
         const poppedOut = this.isPanePoppedOut(pane);
         const visible = enabled && !poppedOut;
         const paneAnchored = this.settings?.keybar?.anchor === 'pane';
+        const rowDividerPosition = paneAnchored ? null : this.captureRowDividerPosition();
         const previouslyAnchoredPaneId = document.querySelector('.pane-container.pane-keybar-active')?.dataset.paneId;
         if (!this.keybar.classList.contains('hidden') && !this.keybar.classList.contains('reserved')) {
             const currentHeight = this.keybar.getBoundingClientRect().height;
@@ -4023,6 +4034,8 @@ class TerminalMultiplexer {
         this.keybar.classList.toggle('hidden', !visible && !reserved);
         this.keybar.setAttribute('aria-hidden', String(!visible));
         this.keybarToggle.classList.toggle('active', enabled);
+        if (rowDividerPosition) this.restoreRowDividerPosition(rowDividerPosition);
+        this.positionDividerControl();
 
         if (paneContainer || previouslyAnchoredPaneId) {
             requestAnimationFrame(() => {
@@ -4037,6 +4050,38 @@ class TerminalMultiplexer {
         }
         this.scheduleSharedIframePosition();
         this.updateMobileKeybarVisibility();
+    }
+
+    captureRowDividerPosition() {
+        const divider = this.paneDisplay.querySelector('.split-divider-v');
+        if (!divider) return null;
+        const containerRect = this.paneDisplay.getBoundingClientRect();
+        const dividerRect = divider.getBoundingClientRect();
+        return {
+            height: containerRect.height,
+            index: Number(divider.dataset.index),
+            offset: dividerRect.top + dividerRect.height / 2 - containerRect.top
+        };
+    }
+
+    restoreRowDividerPosition(snapshot) {
+        const activeGroup = this.groups.get(this.activeGroupId);
+        if (!activeGroup?.splitRatio) return;
+
+        const containerRect = this.paneDisplay.getBoundingClientRect();
+        if (Math.abs(snapshot.height - containerRect.height) < 0.5) return;
+        const divider = this.paneDisplay.querySelector(`.split-divider-v[data-index="${snapshot.index}"]`);
+        if (!divider) return;
+
+        const dividerRect = divider.getBoundingClientRect();
+        const currentOffset = dividerRect.top + dividerRect.height / 2 - containerRect.top;
+        const gap = parseFloat(getComputedStyle(this.paneDisplay).rowGap) || 0;
+        const flexibleHeight = containerRect.height - dividerRect.height - 2 * gap;
+        if (flexibleHeight <= 0) return;
+
+        const ratio = activeGroup.splitRatio[snapshot.index] + (snapshot.offset - currentOffset) / flexibleHeight;
+        activeGroup.splitRatio[snapshot.index] = Math.max(0.1, Math.min(0.9, ratio));
+        this.applyGridTemplate(activeGroup.layout, activeGroup.splitRatio, activeGroup.paneIds.length);
     }
 
     hasMixedKeybarSupportAtBottom() {
@@ -5197,7 +5242,6 @@ class TerminalMultiplexer {
         if (!activeGroup) return;
 
         const layout = activeGroup.layout;
-        const ratio = activeGroup.splitRatio || [0.5, 0.5];
         const rect = this.paneDisplay.getBoundingClientRect();
 
         // If container isn't laid out yet, retry after a frame
@@ -5207,17 +5251,24 @@ class TerminalMultiplexer {
         }
 
         let x, y;
+        const horizontalDivider = this.paneDisplay.querySelector('.split-divider-h');
+        const verticalDivider = this.paneDisplay.querySelector('.split-divider-v');
+        const horizontalRect = horizontalDivider?.getBoundingClientRect();
+        const verticalRect = verticalDivider?.getBoundingClientRect();
 
         if (layout === 'horizontal') {
-            x = rect.width * ratio[0];
+            if (!horizontalRect) return;
+            x = horizontalRect.left + horizontalRect.width / 2 - rect.left;
             y = rect.height / 2;
         } else if (layout === 'vertical') {
+            if (!verticalRect) return;
             x = rect.width / 2;
-            y = rect.height * ratio[0];
+            y = verticalRect.top + verticalRect.height / 2 - rect.top;
         } else if (layout === 'grid') {
+            if (!horizontalRect || !verticalRect) return;
             // Position at the crux of dividers
-            x = rect.width * ratio[0];
-            y = rect.height * ratio[1];
+            x = horizontalRect.left + horizontalRect.width / 2 - rect.left;
+            y = verticalRect.top + verticalRect.height / 2 - rect.top;
         }
 
         control.style.left = `${x}px`;
